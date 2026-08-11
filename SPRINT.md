@@ -1,77 +1,86 @@
-# Sprint 1 — The engine
+# Sprint 2 — Release tooling and the manifest
 
-**Phase:** 1 of 8 ([roadmap](docs/ROADMAP.md))
-**Started:** 2026-08-11
+**Phase:** 2 of 8 ([roadmap](docs/ROADMAP.md))
+**Started:** 2026-08-12
 **Status:** In progress
 
 ## Goal
 
-Prove on this machine, offline, that a patch can rebuild an update artifact
-byte-for-byte — and that wrong or corrupt inputs fail loudly instead of producing
-a plausible-but-wrong file.
+Make patches producible by a real release pipeline, and close the loop: a
+manifest generated from two installers must be enough for a client to rebuild
+the new installer from a patch, verify it against both a hash and a signature,
+and fall back to a full download whenever anything is wrong.
 
-Nothing in this sprint touches Tauri. The engine is platform-agnostic, so all of
-it is verifiable on macOS despite Linux being the first target platform.
+Still no Tauri dependency. Everything here is file-in/file-out and runs on macOS.
 
 ## Definition of done
 
-- [x] `cargo test` green, including the AppImage round-trip
-- [x] `cargo fmt --check` and `cargo clippy -D warnings` clean
-- [ ] CI runs all three on every push and PR
-- [x] Real patch-size numbers in the README
-- [ ] Docs reflect what actually exists
+- [ ] Green matrix — fmt + clippy + tests on Linux, macOS, Windows
+- [ ] End-to-end manifest → apply → verify loop passes, with fallback asserted
+      for corrupt, truncated and wrong-base patches
+- [ ] `cargo fmt --check` and `cargo clippy -D warnings` clean
+- [ ] SPRINT / CHANGELOG / docs updated in the same PR
+- [ ] Phase 1's window-log gap closed using the manifest's declared size
 
 ## Tasks
 
-### Scaffolding — done
+### Shared fixtures
 
-- [x] Repo layout, Cargo workspace, `.gitignore`
-- [x] MIT license, CONTRIBUTING
-- [x] README, ARCHITECTURE, ROADMAP, CHANGELOG, this file
-- [x] `delta-core` crate with error type
-- [x] Content hashing + verification (`FileHash`, `verify_file`)
+- [ ] Move the AppImage fixture generator into its own unpublished crate so both
+      `delta-core` and the release tool test against the identical artifacts
 
-### Patch engine — done
+### Manifest
 
-- [x] `PatchBackend` trait
-- [x] zstd backend via prefix-referencing (`--patch-from` equivalent)
-- [x] Backend lookup by manifest id, with a clear error for unknown ids
-- [x] Bounded decompression output — a hostile patch cannot force an unbounded write
-- [x] Streaming apply, so the reconstructed artifact is never held in memory
+- [ ] Superset of Tauri's static updater JSON — `version`, `pub_date`,
+      `platforms -> { url, signature }` — so the full-download fallback *is* the
+      official updater's manifest and the two cannot diverge
+- [ ] Delta layer: `{ platform, from_version } -> { target_version, patch_url,
+      patch hash, target installer hash + size, backend_id, signature }`
+- [ ] Hash fields named by algorithm, plus an explicit `hash_algo` — no silent
+      BLAKE3-vs-SHA256 mismatch
+- [ ] Reject a manifest whose delta signature disagrees with its Tauri-layer
+      signature, since both describe the same artifact
+- [ ] v1 is patch-from-any-previous-to-latest only; multi-hop chains are future
+      work
 
-### Tests — done
+### Signing
 
-- [x] Deterministic AppImage-shaped fixture generator (offline, reproducible)
-- [x] **Flagship:** round-trip — diff → apply → `hash(rebuilt) == hash(new)`
-- [x] Patch is materially smaller than the full artifact
-- [x] Applying against the *wrong* base version fails verification
-- [x] Applying a corrupted patch errors instead of emitting a wrong file
-- [x] Truncated patch reported as truncation, not silent success
-- [x] Output ceiling enforced
-- [x] Edge cases: empty file, single-byte file, identical versions
+- [ ] Minisign signature over the **target installer**, using the scheme Tauri's
+      updater verifies, so the delta handoff and the fallback validate against
+      the same signature
+- [ ] Verify in tests with `minisign-verify` — the same crate Tauri uses — rather
+      than round-tripping through our own signer
 
-21 tests, all green.
+### Release tool
 
-### CI — done
+- [ ] `delta-release` binary: previous installer + new installer → patch, hashes,
+      signature, and a written/updated `manifest.json`
+- [ ] Updating an existing manifest adds a patch path without discarding others
+- [ ] Tests over the tool's logic, not just its plumbing
 
-- [x] GitHub Actions: fmt + clippy + test on push and PR
-- [x] Cargo registry/build caching
-- [x] Tests run on Linux, macOS and Windows — the only evidence the engine really
-      is platform-agnostic, given development happens on macOS only
-- [x] MSRV job that builds at the declared `rust-version` (1.85 — forced by
-      blake3's edition-2024 dependency tree; see docs/DECISIONS.md)
-- [x] Dependabot for cargo and actions
+### Engine
+
+- [ ] Bound zstd's window and output allocation using the target installer size
+      the manifest now carries — closes the Phase 1 gap
+- [ ] `try_reconstruct` that cannot return an error: the delta path either
+      produces a verified artifact or reports that a full download is required
+
+### Publish workflow
+
+- [ ] `release.yml` — runs the tool on a tagged release, uploads patch + full
+      installer + manifest
+- [ ] Dry-runnable, since no real tagged release can be cut yet
 
 ### Docs
 
-- [x] README benchmark section filled in with measured numbers
-- [ ] ARCHITECTURE: record the residual window-allocation limit found during
-      implementation (deferred to Phase 4)
+- [ ] DECISIONS: signature-over-target-installer and the constraint it imposes
+- [ ] DECISIONS: manifest redundancy between the Tauri and delta layers
+- [ ] ARCHITECTURE: manifest format and the release-time flow
+- [ ] ROADMAP / CHANGELOG / README
 
 ## In progress
 
-Nothing — Sprint 1 work is complete and awaiting review. Three PRs are open and
-stacked: `chore/scaffold` → `feat/patch-engine` → `chore/ci`.
+Shared fixtures crate, then the manifest types.
 
 ## Blocked
 
@@ -79,20 +88,14 @@ Nothing.
 
 ## Notes
 
-- `gh` CLI is not installed on the dev machine yet, so PRs are opened by hand
-  until it is. Push access over SSH works.
-- Patch-size numbers must come from a reproducible test in this repo, not quoted
-  from other projects.
-- Measured: 6,815,744 byte artifact → 393,782 byte patch (5.78%). Of that,
-  393,216 bytes are genuinely new data, so the engine's overhead over the
-  theoretical minimum is 566 bytes. The interesting result is the overhead, not
-  the ratio — the ratio is a property of the fixture.
-- Found during implementation: `apply` bounds its *output*, but a patch declaring
-  a large window log can still make zstd allocate a window of up to 2 GiB. Real
-  fix is to bound it by the artifact size the manifest declares, which does not
-  exist until Phase 2. Tracked for Phase 4.
+- `gh` is still not installed on the dev machine, so PRs are opened by hand.
+  Reading CI *status* works anonymously now the repo is public; reading CI *logs*
+  needs `gh auth login`, which is why cross-platform determinism is asserted in
+  the test suite rather than compared across logs by eye.
+- Phase 1 exit numbers, for reference: 6,815,744 byte artifact → 393,782 byte
+  patch, reproduced byte-identically on Linux, macOS and Windows.
 
 ## Next sprint
 
-Phase 2 — patch manifest format and the release-side CLI that generates patches
-from a set of published artifacts.
+Phase 3 — the Tauri plugin itself: manifest fetch, patch download, base-artifact
+caching, and the AppImage install handoff.
