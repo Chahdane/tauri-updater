@@ -46,6 +46,16 @@ pub fn appimage_pair(dir: &Path) -> Fixture {
     let old = concat(&[&stub, &assets_head, &binary_v1, &assets_tail]);
     let new = concat(&[&stub, &assets_head, &binary_v2, &added, &assets_tail]);
 
+    // Every round-trip test in the suite reduces to "these two files can be
+    // reconciled". If a change here ever made them identical, all of it would
+    // still pass while proving nothing, so the fixture polices itself.
+    // Compared with `!=` rather than assert_ne! to avoid dumping 6 MiB of bytes
+    // into a panic message.
+    assert!(
+        old != new,
+        "fixture versions are identical — every round-trip test would be vacuous"
+    );
+
     let old_path = dir.join("app_1.0.0.AppImage");
     let new_path = dir.join("app_1.0.1.AppImage");
     std::fs::write(&old_path, &old).expect("write old fixture");
