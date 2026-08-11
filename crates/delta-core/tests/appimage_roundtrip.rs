@@ -11,7 +11,7 @@
 //! and patches applied against the wrong base version. None of them may ever
 //! yield a file that passes verification.
 
-mod common;
+use tauri_updater_delta_fixtures as common;
 
 use std::path::Path;
 
