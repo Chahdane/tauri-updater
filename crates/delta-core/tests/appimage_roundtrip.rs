@@ -282,3 +282,55 @@ fn a_backend_resolved_from_a_manifest_id_round_trips() {
     )
     .expect("rebuilt artifact must match");
 }
+
+/// Byte-for-byte digest of the patch produced from the fixture pair at the
+/// default level. Pinned deliberately — see the test below.
+const EXPECTED_PATCH_DIGEST: &str =
+    "6892d72ab49da606bbeb98c04c8110aa145038492fbf849568590b99d8d5b546";
+
+/// Size of that same patch, asserted separately so a failure says *how* the
+/// output moved rather than only that it did.
+const EXPECTED_PATCH_SIZE: u64 = 393_782;
+
+#[test]
+fn patch_bytes_are_identical_on_every_platform() {
+    let dir = tempdir();
+    let fixture = common::appimage_pair(dir.path());
+    let patch = dir.path().join("delta.patch");
+
+    ZstdBackend::new()
+        .diff(&fixture.old, &fixture.new, &patch)
+        .expect("diff should succeed");
+
+    let size = common::size_of(&patch);
+    let digest = FileHash::of_file(&patch).expect("hash patch");
+    println!("patch {size} bytes | blake3 {digest}");
+
+    // This is the platform-agnostic claim, made testable.
+    //
+    // zstd-sys compiles a vendored C library, so the same inputs go through
+    // Clang on Linux, Apple Clang on macOS and MSVC on Windows. Deterministic
+    // output is expected — zstd is single-threaded here with every parameter
+    // pinned — but "expected" is not "verified". Pinning the digest means each
+    // platform's CI job independently reproduces the exact same bytes, and any
+    // divergence turns that platform's job red on its own.
+    //
+    // The point is that the job's pass/fail *is* the evidence. Reading a size
+    // out of three CI logs and comparing them by eye proves it once; this proves
+    // it on every run, forever, and needs no access to the logs.
+    //
+    // Legitimate reasons for this to change: a zstd version bump, a fixture
+    // change, or a change to the backend's compression parameters. All three are
+    // deliberate and visible in the diff, so re-baseline both constants from the
+    // printed line above and say why in the commit message. An *unexplained*
+    // change, especially on one platform only, is a bug — do not re-baseline it.
+    assert_eq!(
+        size, EXPECTED_PATCH_SIZE,
+        "patch size changed — see the comment above before re-baselining"
+    );
+    assert_eq!(
+        digest.to_hex(),
+        EXPECTED_PATCH_DIGEST,
+        "patch bytes changed — see the comment above before re-baselining"
+    );
+}
