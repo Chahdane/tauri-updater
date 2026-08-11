@@ -48,6 +48,37 @@ pub enum Error {
         /// The digest the file actually has.
         actual: String,
     },
+
+    /// A patch backend failed while producing or applying a patch.
+    #[error("{backend} backend failed to {operation}: {message}")]
+    Backend {
+        /// Identifier of the backend that failed.
+        backend: &'static str,
+        /// What it was doing.
+        operation: &'static str,
+        /// The backend's own description of the failure.
+        message: String,
+    },
+
+    /// The manifest named a backend this build cannot apply.
+    ///
+    /// Expected whenever a client is older than the release tooling, so it is
+    /// handled the same way as any other delta failure rather than surfaced.
+    #[error("unknown patch backend `{0}`")]
+    UnknownBackend(String),
+
+    /// The patch ended mid-frame — truncated download or corrupt file.
+    #[error("patch is truncated")]
+    TruncatedPatch,
+
+    /// Applying the patch would write more than the configured ceiling.
+    ///
+    /// Guards against a hostile patch crafted to fill the user's disk.
+    #[error("patch output exceeds the {limit} byte limit")]
+    OutputTooLarge {
+        /// The ceiling that was hit, in bytes.
+        limit: u64,
+    },
 }
 
 impl Error {

@@ -19,7 +19,7 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | Piece | State |
 | --- | --- |
 | Content hashing + verification (`delta-core`) | Working, tested |
-| `PatchBackend` trait + zstd backend | In progress |
+| `PatchBackend` trait + zstd backend | Working, tested |
 | Release-side patch generation tooling | Planned |
 | Tauri plugin + install handoff | Planned |
 
@@ -62,11 +62,29 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Benchmarks
 
-The headline number — patch size as a percentage of a full artifact download —
-will be published here once the engine lands, measured with a reproducible
-round-trip test rather than quoted from other projects.
+From the round-trip test in this repository — reproduce with
+`cargo test -p tauri-updater-delta-core -- --nocapture`:
 
-*Not yet measured.*
+| | Bytes | |
+| --- | ---: | --- |
+| Full artifact | 6,815,744 | 6.50 MiB |
+| Patch | 393,782 | 0.38 MiB |
+| **Download** | | **5.78% — 17.3× smaller** |
+
+Read these honestly. The fixture is a *synthetic* AppImage, not a real app: an
+ELF stub plus high-entropy payload, where a release rewrites the 256 KiB app
+binary and inserts a 128 KiB asset. That makes 393,216 bytes of it genuinely new.
+
+The patch came to 393,782 bytes — **566 bytes of overhead over the theoretical
+minimum**. So the number to take from this is not "17× smaller"; it is that the
+engine reuses effectively everything reusable, including across an insertion that
+shifts every following byte. The ratio you actually get is set by how much your
+release changes, not by the engine.
+
+The fixture is deliberately incompressible, which is what makes the result
+meaningful: with a compressible fixture zstd would post a good number by simply
+compressing the artifact, proving nothing about deltas. Numbers from real Tauri
+apps will land here as Phase 2 produces them.
 
 ## Installation
 
