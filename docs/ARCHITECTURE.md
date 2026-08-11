@@ -154,8 +154,14 @@ malformed or hostile input.
   comes from the signature over the release manifest and from Tauri's minisign
   check on the artifact. A patch is untrusted input; it is only ever used to
   produce a candidate file that must then pass both checks.
-- **Patches are treated as hostile.** Decompression output is bounded so a
-  malicious patch cannot force an unbounded allocation or fill the disk.
+- **Patches are treated as hostile.** Apply streams its output to disk and stops
+  at a configurable ceiling, so a malicious patch cannot expand indefinitely or
+  fill the user's disk.
+- **Known gap.** The output is bounded, but the zstd *window* is not: a patch
+  whose frame header declares a large window log can still make the decompressor
+  allocate up to 2 GiB. Bounding it properly needs the artifact size the patch
+  manifest declares, which does not exist until Phase 2, so this is tracked as
+  Phase 4 work.
 - **No new network surface.** The plugin fetches from the update server the app
   already configures, and sends no telemetry.
 

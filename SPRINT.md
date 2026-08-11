@@ -15,10 +15,10 @@ it is verifiable on macOS despite Linux being the first target platform.
 
 ## Definition of done
 
-- [ ] `cargo test` green, including the AppImage round-trip
-- [ ] `cargo fmt --check` and `cargo clippy -D warnings` clean
+- [x] `cargo test` green, including the AppImage round-trip
+- [x] `cargo fmt --check` and `cargo clippy -D warnings` clean
 - [ ] CI runs all three on every push and PR
-- [ ] Real patch-size numbers in the README
+- [x] Real patch-size numbers in the README
 - [ ] Docs reflect what actually exists
 
 ## Tasks
@@ -31,35 +31,41 @@ it is verifiable on macOS despite Linux being the first target platform.
 - [x] `delta-core` crate with error type
 - [x] Content hashing + verification (`FileHash`, `verify_file`)
 
-### Patch engine — in progress
+### Patch engine — done
 
-- [ ] `PatchBackend` trait
-- [ ] zstd backend via prefix-referencing (`--patch-from` equivalent)
-- [ ] Backend lookup by manifest id, with a clear error for unknown ids
-- [ ] Bounded decompression output — a hostile patch cannot force a huge allocation
+- [x] `PatchBackend` trait
+- [x] zstd backend via prefix-referencing (`--patch-from` equivalent)
+- [x] Backend lookup by manifest id, with a clear error for unknown ids
+- [x] Bounded decompression output — a hostile patch cannot force an unbounded write
+- [x] Streaming apply, so the reconstructed artifact is never held in memory
 
-### Tests
+### Tests — done
 
-- [ ] Deterministic AppImage-shaped fixture generator (offline, reproducible)
-- [ ] **Flagship:** round-trip — diff → apply → `hash(rebuilt) == hash(new)`
-- [ ] Patch is materially smaller than the full artifact
-- [ ] Applying against the *wrong* base version fails verification
-- [ ] Applying a corrupted patch errors instead of emitting a wrong file
-- [ ] Edge cases: empty file, single-byte file, identical versions
+- [x] Deterministic AppImage-shaped fixture generator (offline, reproducible)
+- [x] **Flagship:** round-trip — diff → apply → `hash(rebuilt) == hash(new)`
+- [x] Patch is materially smaller than the full artifact
+- [x] Applying against the *wrong* base version fails verification
+- [x] Applying a corrupted patch errors instead of emitting a wrong file
+- [x] Truncated patch reported as truncation, not silent success
+- [x] Output ceiling enforced
+- [x] Edge cases: empty file, single-byte file, identical versions
 
-### CI
+21 tests, all green.
+
+### CI — next
 
 - [ ] GitHub Actions: fmt + clippy + test on push and PR
 - [ ] Cargo registry/build caching
 
 ### Docs
 
-- [ ] README benchmark section filled in with measured numbers
-- [ ] ARCHITECTURE updated if the trait shape changes during implementation
+- [x] README benchmark section filled in with measured numbers
+- [ ] ARCHITECTURE: record the residual window-allocation limit found during
+      implementation (deferred to Phase 4)
 
 ## In progress
 
-Patch engine — `PatchBackend` trait and the zstd backend.
+CI workflow.
 
 ## Blocked
 
@@ -71,6 +77,14 @@ Nothing.
   until it is. Push access over SSH works.
 - Patch-size numbers must come from a reproducible test in this repo, not quoted
   from other projects.
+- Measured: 6,815,744 byte artifact → 393,782 byte patch (5.78%). Of that,
+  393,216 bytes are genuinely new data, so the engine's overhead over the
+  theoretical minimum is 566 bytes. The interesting result is the overhead, not
+  the ratio — the ratio is a property of the fixture.
+- Found during implementation: `apply` bounds its *output*, but a patch declaring
+  a large window log can still make zstd allocate a window of up to 2 GiB. Real
+  fix is to bound it by the artifact size the manifest declares, which does not
+  exist until Phase 2. Tracked for Phase 4.
 
 ## Next sprint
 
