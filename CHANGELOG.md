@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the declared minimum supported Rust version from 1.77 to 1.85. The
+  1.77 claim was wrong and CI's `msrv` job failed on it: `blake3` pulls in
+  edition-2024 crates, which no toolchain before 1.85 can parse. Reasoning
+  recorded in `docs/DECISIONS.md`.
+
 ### Added
+
+- `docs/DECISIONS.md` — log of non-obvious decisions and the conditions that
+  would cause them to be revisited.
 
 - Cargo workspace with the `tauri-updater-delta-core` crate, holding the
   platform-agnostic diff/apply engine.
