@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # All branches, not just main. Work happens on feature branches, and waiting
+  # for a PR to exist before getting any signal means pushing blind. On a public
+  # repo the runners are free, so the duplicate run a PR branch gets (once for
+  # the push, once for the pull_request) is worth the earlier feedback.
   push:
-    branches: [main]
   pull_request:
 
 concurrency:
