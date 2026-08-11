@@ -1,0 +1,275 @@
+//! Minisign signing, in the shape Tauri's updater expects.
+//!
+//! Tauri stores signatures and keys as **base64 of the whole minisign file** —
+//! comment lines included — rather than as the raw signature bytes. Anything
+//! this tool writes into a manifest therefore has to go through the same
+//! encoding, or the official updater will reject it.
+//!
+//! Signing is prehashed (minisign's `ED` algorithm: Ed25519 over a BLAKE2b
+//! digest). That is what the `minisign` crate produces and what Tauri's own
+//! signer produces, and `minisign-verify` — the crate Tauri verifies with —
+//! accepts it.
+
+use std::path::Path;
+
+use base64::Engine as _;
+use minisign::{PublicKeyBox, SecretKey, SecretKeyBox};
+
+use crate::{Error, Result};
+
+/// A minisign secret key, ready to sign release artifacts.
+pub struct SigningKey {
+    secret: SecretKey,
+}
+
+impl SigningKey {
+    /// Load a key from the text form Tauri uses.
+    ///
+    /// Accepts either the raw minisign secret key file, or that file base64
+    /// encoded, which is what `tauri signer generate` prints and what people
+    /// paste into `TAURI_SIGNING_PRIVATE_KEY`. Trying raw first and base64
+    /// second means both work without the caller having to say which it has.
+    ///
+    /// `password` of `None` means **the key is unencrypted** — not "ask the
+    /// user". The `minisign` crate treats `None` as a request to prompt on the
+    /// terminal, which in CI has no TTY: the run dies with
+    /// `Device not configured (os error 6)`, or worse, hangs waiting for input
+    /// that will never come. A release tool must never do either, so `None` is
+    /// translated to an empty password here.
+    pub fn from_str(text: &str, password: Option<String>) -> Result<Self> {
+        let text = normalize_key_text(text, "secret key")?;
+
+        let boxed = SecretKeyBox::from_string(&text)
+            .map_err(|e| Error::Key(format!("unusable secret key: {e}")))?;
+
+        // Always Some(_), never None — see the note on this function.
+        let secret = boxed
+            .into_secret_key(Some(password.unwrap_or_default()))
+            .map_err(|e| Error::Key(format!("could not unlock the secret key: {e}")))?;
+
+        Ok(Self { secret })
+    }
+
+    /// Load a key from a file on disk.
+    pub fn from_file(path: &Path, password: Option<String>) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| Error::Io(format!("reading key {}: {e}", path.display())))?;
+        Self::from_str(&text, password)
+    }
+
+    /// Sign a file, returning the base64 form Tauri stores in its manifest.
+    ///
+    /// The signature is over the artifact's bytes, so it stays valid however the
+    /// artifact reached the user — downloaded whole, or rebuilt from a patch.
+    pub fn sign_file(&self, path: &Path) -> Result<String> {
+        let file = std::fs::File::open(path)
+            .map_err(|e| Error::Io(format!("opening {} to sign: {e}", path.display())))?;
+
+        let signature = minisign::sign(None, &self.secret, file, None, None)
+            .map_err(|e| Error::Sign(format!("signing {}: {e}", path.display())))?;
+
+        Ok(base64::engine::general_purpose::STANDARD.encode(signature.into_string()))
+    }
+}
+
+/// Decode a Tauri-style base64 public key into its raw minisign form.
+///
+/// Useful for verifying what this tool produced without shelling out.
+pub fn decode_public_key(text: &str) -> Result<minisign::PublicKey> {
+    let text = normalize_key_text(text, "public key")?;
+    PublicKeyBox::from_string(&text)
+        .map_err(|e| Error::Key(format!("unusable public key: {e}")))?
+        .into_public_key()
+        .map_err(|e| Error::Key(format!("unusable public key: {e}")))
+}
+
+/// Minisign key and signature files all begin with this line.
+const COMMENT_PREFIX: &str = "untrusted comment:";
+
+/// Return the raw minisign file text, decoding the base64 wrapper if present.
+///
+/// This has to branch on *content*, not on whether parsing succeeds:
+/// `SecretKeyBox::from_string` and `PublicKeyBox::from_string` accept any string
+/// at all and only fail later, when the key is used. A "try raw, fall back to
+/// base64" approach therefore never reaches the fallback, and a base64 key fails
+/// much later with a confusing "Missing encoded key" instead.
+fn normalize_key_text(text: &str, what: &str) -> Result<String> {
+    let trimmed = text.trim();
+    if trimmed.starts_with(COMMENT_PREFIX) {
+        return Ok(trimmed.to_owned());
+    }
+
+    // Tauri stores keys base64-encoded; some tools wrap that at column 64.
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&compact)
+        .map_err(|_| Error::Key(format!("{what} is neither minisign text nor base64")))?;
+    let decoded = String::from_utf8(decoded)
+        .map_err(|_| Error::Key(format!("{what} base64 did not decode to text")))?;
+
+    if !decoded.trim_start().starts_with(COMMENT_PREFIX) {
+        return Err(Error::Key(format!(
+            "{what} base64 did not decode to a minisign file"
+        )));
+    }
+    Ok(decoded.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minisign::KeyPair;
+
+    /// An unencrypted keypair that can actually be serialised and read back.
+    ///
+    /// Not `generate_unencrypted_keypair()`: that leaves the secret key's
+    /// checksum zeroed, and `write_checksum` is private to the minisign crate,
+    /// so anything it produces fails to load again with "Wrong password for
+    /// that key". Generating with an empty password writes the checksum and
+    /// then skips encryption, which is the shape a real unencrypted key has.
+    fn keypair() -> KeyPair {
+        KeyPair::generate_encrypted_keypair(Some(String::new())).expect("generate keypair")
+    }
+
+    fn secret_key_text(pair: &KeyPair) -> String {
+        pair.sk.to_box(None).expect("box secret key").into_string()
+    }
+
+    fn public_key_base64(pair: &KeyPair) -> String {
+        pair.pk
+            .to_box()
+            .expect("box public key")
+            .into_string()
+            .lines()
+            .nth(1)
+            .expect("public key line")
+            .to_owned()
+    }
+
+    /// Verify exactly the way Tauri's updater does: base64-decode the manifest
+    /// field, parse it as a minisign signature, check it against the artifact
+    /// bytes with `minisign-verify`.
+    fn verify_like_tauri(signature_b64: &str, data: &[u8], pair: &KeyPair) -> bool {
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(signature_b64) else {
+            return false;
+        };
+        let Ok(text) = String::from_utf8(decoded) else {
+            return false;
+        };
+        let Ok(signature) = minisign_verify::Signature::decode(&text) else {
+            return false;
+        };
+        let Ok(public) = minisign_verify::PublicKey::from_base64(&public_key_base64(pair)) else {
+            return false;
+        };
+        public.verify(data, &signature, true).is_ok()
+    }
+
+    #[test]
+    fn accepts_a_raw_minisign_key() {
+        let pair = keypair();
+        SigningKey::from_str(&secret_key_text(&pair), None).expect("raw minisign key should load");
+    }
+
+    #[test]
+    fn accepts_the_base64_form_tauri_prints() {
+        let pair = keypair();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(secret_key_text(&pair));
+        SigningKey::from_str(&encoded, None).expect("base64 key should load");
+    }
+
+    #[test]
+    fn accepts_a_password_protected_key() {
+        let pair = KeyPair::generate_encrypted_keypair(Some("correct horse".to_owned()))
+            .expect("generate keypair");
+        let text = secret_key_text(&pair);
+
+        SigningKey::from_str(&text, Some("correct horse".to_owned()))
+            .expect("the right password should unlock the key");
+
+        let Err(err) = SigningKey::from_str(&text, Some("wrong".to_owned())) else {
+            panic!("the wrong password must not unlock the key");
+        };
+        assert!(matches!(err, Error::Key(_)));
+    }
+
+    #[test]
+    fn a_missing_password_never_prompts() {
+        // The minisign crate treats `None` as "ask on the terminal", which in CI
+        // means dying with "Device not configured" or hanging forever. This must
+        // fail cleanly instead.
+        let pair = KeyPair::generate_encrypted_keypair(Some("secret".to_owned()))
+            .expect("generate keypair");
+        let Err(err) = SigningKey::from_str(&secret_key_text(&pair), None) else {
+            panic!("an encrypted key must not load without its password");
+        };
+        assert!(matches!(err, Error::Key(_)), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_nonsense() {
+        let Err(err) = SigningKey::from_str("clearly not a key", None) else {
+            panic!("nonsense should not load as a key");
+        };
+        assert!(matches!(err, Error::Key(_)));
+    }
+
+    #[test]
+    fn signatures_verify_with_the_crate_tauri_uses() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artifact = dir.path().join("app.AppImage");
+        let bytes = b"pretend installer bytes";
+        std::fs::write(&artifact, bytes).expect("write artifact");
+
+        let pair = keypair();
+        let key = SigningKey::from_str(&secret_key_text(&pair), None).expect("load key");
+        let signature = key.sign_file(&artifact).expect("sign");
+
+        assert!(
+            verify_like_tauri(&signature, bytes, &pair),
+            "the signature this tool writes must verify the way Tauri verifies it"
+        );
+    }
+
+    #[test]
+    fn a_signature_does_not_verify_against_different_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artifact = dir.path().join("app.AppImage");
+        std::fs::write(&artifact, b"the real installer").expect("write artifact");
+
+        let pair = keypair();
+        let key = SigningKey::from_str(&secret_key_text(&pair), None).expect("load key");
+        let signature = key.sign_file(&artifact).expect("sign");
+
+        assert!(
+            !verify_like_tauri(&signature, b"a tampered installer", &pair),
+            "a signature must not validate bytes it does not cover"
+        );
+    }
+
+    #[test]
+    fn a_signature_does_not_verify_against_another_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let artifact = dir.path().join("app.AppImage");
+        let bytes = b"the real installer";
+        std::fs::write(&artifact, bytes).expect("write artifact");
+
+        let pair = keypair();
+        let key = SigningKey::from_str(&secret_key_text(&pair), None).expect("load key");
+        let signature = key.sign_file(&artifact).expect("sign");
+
+        assert!(
+            !verify_like_tauri(&signature, bytes, &keypair()),
+            "a signature must not validate under an unrelated key"
+        );
+    }
+
+    #[test]
+    fn public_keys_round_trip_through_the_tauri_encoding() {
+        let pair = keypair();
+        let raw = pair.pk.to_box().expect("box pk").into_string();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&raw);
+        decode_public_key(&encoded).expect("base64 public key should decode");
+        decode_public_key(&raw).expect("raw public key should decode");
+    }
+}
