@@ -16,7 +16,8 @@ arguing with the design before it hardens.
 
 ## Getting set up
 
-You need a recent stable Rust toolchain (1.77 or newer):
+You need a recent stable Rust toolchain (1.85 or newer — see
+[docs/DECISIONS.md](docs/DECISIONS.md) for why the floor sits there):
 
 ```sh
 git clone git@github.com:Chahdane/tauri-updater.git
