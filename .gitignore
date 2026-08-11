@@ -1,0 +1,49 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+
+# JavaScript / TypeScript bindings
+node_modules/
+dist/
+dist-js/
+*.tsbuildinfo
+
+# Tauri example apps
+gen/
+examples/**/src-tauri/target/
+
+# Build & test artifacts
+/fixtures/generated/
+*.patch
+*.AppImage
+*.dmg
+*.msi
+*.app.tar.gz
+
+# Signing keys — never commit these
+*.key
+minisign.key
+minisign.pub
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~
