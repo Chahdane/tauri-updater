@@ -79,6 +79,26 @@ pub enum Error {
         /// The ceiling that was hit, in bytes.
         limit: u64,
     },
+
+    /// Reconstruction finished but produced the wrong number of bytes.
+    ///
+    /// The manifest states exactly how large the target installer is, so a
+    /// mismatch is caught before the digest is even computed.
+    #[error("reconstructed {actual} bytes, manifest declares {expected}")]
+    UnexpectedOutputSize {
+        /// Size the manifest promised.
+        expected: u64,
+        /// Size actually produced.
+        actual: u64,
+    },
+
+    /// A manifest was malformed, unsupported, or internally inconsistent.
+    #[error("invalid manifest: {0}")]
+    Manifest(String),
+
+    /// The minisign signature over the target installer did not verify.
+    #[error("signature verification failed: {0}")]
+    Signature(String),
 }
 
 impl Error {
