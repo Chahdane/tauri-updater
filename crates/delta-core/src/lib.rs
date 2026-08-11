@@ -38,7 +38,11 @@
 pub mod backend;
 mod error;
 pub mod hash;
+pub mod manifest;
+mod reconstruct;
 
 pub use backend::PatchBackend;
 pub use error::{Error, Result};
 pub use hash::FileHash;
+pub use manifest::Manifest;
+pub use reconstruct::{try_reconstruct, Reconstruction, TargetSpec};
