@@ -49,6 +49,17 @@ fn rebuilds_the_new_appimage_exactly() {
     let patch = dir.path().join("1.0.0-to-1.0.1.patch");
     let rebuilt = dir.path().join("rebuilt.AppImage");
 
+    // Prove the two versions actually differ before proving they can be
+    // reconciled. Without this, the hash assertion below would pass trivially if
+    // the fixture generator ever stopped producing a real change — green,
+    // executed, and worthless.
+    let installed = FileHash::of_file(&fixture.old).expect("hash installed artifact");
+    let released = FileHash::of_file(&fixture.new).expect("hash released artifact");
+    assert_ne!(
+        installed, released,
+        "fixture versions are identical, so this test would prove nothing"
+    );
+
     let backend = ZstdBackend::new();
     backend
         .diff(&fixture.old, &fixture.new, &patch)
@@ -58,11 +69,18 @@ fn rebuilds_the_new_appimage_exactly() {
         .expect("apply should succeed");
 
     // The assertion the whole project rests on.
-    let expected = FileHash::of_file(&fixture.new).expect("hash released artifact");
-    verify_file(&rebuilt, &expected).expect("rebuilt artifact must match the released one");
+    verify_file(&rebuilt, &released).expect("rebuilt artifact must match the released one");
 
     let full = common::size_of(&fixture.new);
     let patch_size = common::size_of(&patch);
+
+    // A "patch" the size of the artifact is not a delta, and would make the
+    // reconstruction above true but pointless.
+    assert!(
+        patch_size < full / 2,
+        "patch ({patch_size} bytes) is not meaningfully smaller than the artifact ({full} bytes)"
+    );
+
     println!(
         "artifact {full} bytes ({:.2} MiB) | patch {patch_size} bytes ({:.2} MiB) | \
          {:.2}% of a full download | {:.1}x smaller",
