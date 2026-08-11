@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/delta-core", "crates/fixtures"]
+members = ["crates/delta-core", "crates/delta-release", "crates/fixtures"]
 
 [workspace.package]
 version = "0.1.0"
