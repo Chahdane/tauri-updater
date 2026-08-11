@@ -52,10 +52,15 @@ it is verifiable on macOS despite Linux being the first target platform.
 
 21 tests, all green.
 
-### CI — next
+### CI — done
 
-- [ ] GitHub Actions: fmt + clippy + test on push and PR
-- [ ] Cargo registry/build caching
+- [x] GitHub Actions: fmt + clippy + test on push and PR
+- [x] Cargo registry/build caching
+- [x] Tests run on Linux, macOS and Windows — the only evidence the engine really
+      is platform-agnostic, given development happens on macOS only
+- [x] MSRV job that builds at the declared `rust-version` (1.77; highest
+      dependency floor is thiserror at 1.71)
+- [x] Dependabot for cargo and actions
 
 ### Docs
 
@@ -65,7 +70,8 @@ it is verifiable on macOS despite Linux being the first target platform.
 
 ## In progress
 
-CI workflow.
+Nothing — Sprint 1 work is complete and awaiting review. Three PRs are open and
+stacked: `chore/scaffold` → `feat/patch-engine` → `chore/ci`.
 
 ## Blocked
 
