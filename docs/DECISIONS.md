@@ -297,3 +297,53 @@ replace design exists to prevent, arrived at while believing the opposite.
 **Revisit when:** upstream moves verification into `install`, or exposes a
 verifying handoff. Then this becomes redundant and should be deleted rather than
 left to rot alongside a second implementation.
+
+---
+
+## 11. Everything falls back except a signature failure
+
+**Decided:** 2026-08-12 · **Status:** active
+
+The delta path falls back to a full download on every failure — corrupt patch,
+truncated patch, transport error, wrong base version, unknown backend, digest
+mismatch, out of disk. **One case does not: a signature failure aborts.**
+
+The precise rule is not "delta failures fall back". It is:
+
+> Fall back on any failure that does not call the *manifest's authenticity* into
+> question. A signature failure is the sole case where the manifest itself is
+> under suspicion, so no fallback path exists.
+
+Everything else is a statement about one artifact or one transfer, and says
+nothing about whether the release document is genuine. A signature failure says
+the opposite.
+
+### Why there is nothing to fall back to
+
+This follows directly from decision #5, the manifest-as-superset. The
+full-download URL and the delta information live in **one document**, covered by
+**one signature over the target installer**. So if that signature does not check
+out, the document is untrustworthy in its entirety — including the
+`platforms.<target>.url` a fallback would fetch from.
+
+Falling back would download an artifact chosen by a document we have just decided
+we cannot trust, and would then verify it against a signature from that same
+document. It preserves the risk while presenting itself as the safe option, which
+is worse than failing loudly: the user believes a safety mechanism engaged when
+it did not.
+
+### The load-bearing condition
+
+**This reasoning depends on the full-artifact URL and hash sharing one signed
+document with the delta information.** That is true of schema 1 and is a
+consequence of #5.
+
+If a future change ever splits them — a Tauri-native manifest plus a separate
+delta sidecar, signed independently — **this asymmetry must be re-examined**. In
+that world a delta-side signature failure would say nothing about the
+Tauri-native document, and falling back could be both safe and correct. The
+conclusion would change even though the code would still compile and every test
+would still pass.
+
+Not a change being made. Recorded so a later refactor cannot quietly reopen the
+question by moving the ground the argument stands on.
