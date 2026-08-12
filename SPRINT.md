@@ -28,7 +28,7 @@ is not a reason to implement that fix.
 | 2 | Signature-failure reasoning overclaims | **CONFIRMED** (wording only; policy stands) | A |
 | 3 | One coherent update identity | Design proposed | A |
 | 4 | Downgrade / replay / version policy | **CONFIRMED** | A |
-| 5 | HTTP transport hardening | **CONFIRMED** (7 of 8 sub-claims) | B |
+| 5 | HTTP transport hardening | **CONFIRMED** (all 8 sub-claims) | B |
 | 6 | Resource exhaustion caps | **CONFIRMED** | B |
 | 7 | Atomic file handling | **PARTIALLY CONFIRMED** | B |
 | 8 | Concurrent update protection | **CONFIRMED** | B |
