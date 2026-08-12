@@ -151,9 +151,20 @@ malformed or hostile input.
 ## Security notes
 
 - **The hash check is a correctness gate, not the trust anchor.** Authenticity
-  comes from the signature over the release manifest and from Tauri's minisign
-  check on the artifact. A patch is untrusted input; it is only ever used to
-  produce a candidate file that must then pass both checks.
+  comes from the minisign signature over the target installer. A patch is
+  untrusted input; it is only ever used to produce a candidate file that must
+  then pass both checks.
+- **The plugin performs the signature check itself, and must.** This was
+  originally written assuming Tauri would verify whatever it was handed. It does
+  not. In `tauri-plugin-updater` 2.10.1, `verify_signature` is called from
+  exactly one place — inside `Update::download()` — and the handoff seam,
+  `Update::install(bytes)`, goes straight to the installer with no verification.
+  Since the delta path exists precisely to avoid `download()`, nothing would
+  check the signature unless the plugin does. It therefore runs the check before
+  every handoff, using Tauri's own verification code reproduced verbatim and
+  pinned by `tauri_signature_compat.rs`. Skipping it would turn the delta path
+  into a way to install unsigned artifacts, which is the one outcome this design
+  exists to prevent.
 - **Patches are treated as hostile.** Apply streams its output to disk and stops
   at a configurable ceiling, so a malicious patch cannot expand indefinitely or
   fill the user's disk.

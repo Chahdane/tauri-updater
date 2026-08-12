@@ -99,6 +99,13 @@ pub enum Error {
     /// The minisign signature over the target installer did not verify.
     #[error("signature verification failed: {0}")]
     Signature(String),
+
+    /// A download failed.
+    ///
+    /// Carries the host transport's own message, since this layer does nothing
+    /// with a network failure except fall back.
+    #[error("fetch failed: {0}")]
+    Fetch(String),
 }
 
 impl Error {
