@@ -100,3 +100,123 @@ higher floor costs nothing.
 `Cargo.toml` rather than pinning a second copy, so the tested version and the
 declared version cannot disagree. If a dependency later raises its own floor, the
 job goes red rather than the requirement silently drifting up.
+
+---
+
+## 5. The manifest is a superset of Tauri's, not a second document
+
+**Decided:** 2026-08-12 · **Status:** active
+
+`manifest.json` carries Tauri's own `version`, `notes`, `pub_date` and
+`platforms` fields untouched, with the delta information under a separate
+`delta` key.
+
+The alternative — publishing a delta manifest next to Tauri's — means two
+documents that must agree about URLs, versions and signatures, updated by
+different code paths. They *will* drift, and the failure mode is the worst one
+available: a client that falls back to a full download and finds the fallback
+description stale.
+
+Making one document serve both readers removes the possibility. A delta-unaware
+Tauri client reads this file and behaves exactly as it does today; the delta path
+is additive. `the_published_manifest_is_a_valid_tauri_document` asserts that
+property directly against the JSON the tool writes.
+
+**Revisit when:** Tauri's static manifest format changes shape.
+
+---
+
+## 6. The signature covers the target installer, not the patch
+
+**Decided:** 2026-08-12 · **Status:** active
+
+The minisign signature in both layers is over the **installer that gets
+installed** — never over the patch.
+
+Both paths converge on the same artifact: a full download fetches it, the delta
+path rebuilds it. Signing that artifact means one signature validates both, and
+the delta path is incapable of installing anything the full-download path would
+have rejected. Signing the *patch* instead would establish only that the patch
+was authentic, which says nothing about what it produced.
+
+**Constraints this imposes:**
+
+- **Every published delta requires the release signing key.** There is no way to
+  produce a valid manifest entry without it, and CI fails loudly rather than
+  emitting an unsigned manifest.
+- **Signing happens after the artifact is final.** The signature covers exact
+  bytes, so anything that rewrites the installer afterwards — re-compression, a
+  notarization staple — invalidates it and must run before this tool.
+- **Re-signing is not idempotent.** Minisign includes randomness, so signing the
+  same file twice yields different strings. Both layers are therefore written
+  from a single signing operation per run, and `Manifest::validate` rejects a
+  document where they disagree.
+- **Not yet validated against a real Tauri release.** Signatures are produced by
+  the `minisign` crate in prehashed mode and verified in tests by
+  `minisign-verify`, the same crate Tauri's updater uses, with the same base64
+  envelope. That is strong evidence but not proof of end-to-end compatibility.
+  Phase 3 must confirm it against an actual Tauri updater.
+
+---
+
+## 7. Schema 1 patches only to the latest release
+
+**Decided:** 2026-08-12 · **Status:** active
+
+Every entry in a platform's `patches` map reconstructs the *current* release
+directly. A user on any listed previous version applies exactly one patch.
+
+Multi-hop chaining — 1.0.0 → 1.0.1 → 1.0.2 — would let a release publish one
+small patch instead of one per supported previous version. It also means a client
+applying several patches in sequence, where an intermediate result must be
+verified before it can be used as the next base, and a single missing link
+strands everyone downstream of it. Not worth it before there is evidence that
+publishing N patches per release is a real cost.
+
+Because of this, publishing a new version *replaces* the delta layer rather than
+merging into it: entries that rebuild the previous release are stale the moment a
+newer one ships. `a_new_release_replaces_patches_that_target_the_old_one` pins
+that behaviour.
+
+**Revisit when:** the number of supported upgrade paths makes per-release patch
+generation expensive. Chaining would ship as `schema: 2`, and the `schema` field
+exists so an older client refuses it cleanly instead of misreading it.
+
+---
+
+## 8. The window bound is enforced now, not deferred to Phase 4
+
+**Decided:** 2026-08-12 · **Status:** active
+
+Phase 1 left a gap: `apply` bounded the bytes it wrote, but not the window zstd
+was allowed to allocate. A patch whose frame header declared a large window log
+could force an allocation of up to 2 GiB before anything was validated.
+
+The manifest now states the target installer's exact size, so the fix is
+available immediately and is a few lines — derive the window log from
+`max(base size, declared size)` instead of permitting zstd's maximum. Deferring
+it to Phase 4 would have meant shipping a known allocation vector through an
+entire phase for no benefit, so it is closed here.
+
+The declared size doubles as a correctness gate: a patch that decompresses
+cleanly to the wrong length now fails with `UnexpectedOutputSize` before the
+digest is even computed.
+
+**Note:** this bounds allocation for patches applied *through a manifest*. The
+backend still accepts an unbounded call for use without one, which is what the
+release tool and the Phase 1 round-trip tests use. Client code always goes
+through `try_reconstruct`, which always supplies the size.
+
+---
+
+## 9. `try_reconstruct` cannot fail
+
+**Decided:** 2026-08-12 · **Status:** active
+
+The delta path's entry point returns a `Reconstruction`, not a `Result`. Its two
+variants are "here is a verified artifact" and "download the full one".
+
+The safety property — a bad patch can never break an install — is otherwise
+enforced only by every caller remembering to catch every error. Making the
+function infallible moves that from convention into the type system: there is no
+error value that can escape the delta path and abort an update.

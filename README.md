@@ -20,7 +20,8 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | --- | --- |
 | Content hashing + verification (`delta-core`) | Working, tested |
 | `PatchBackend` trait + zstd backend | Working, tested |
-| Release-side patch generation tooling | Planned |
+| Release manifest (Tauri superset) | Working, tested |
+| `delta-release` patch + manifest tool | Working, tested |
 | Tauri plugin + install handoff | Planned |
 
 The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
@@ -86,12 +87,50 @@ release changes, not by the engine.
 The fixture is deliberately incompressible, which is what makes the result
 meaningful: with a compressible fixture zstd would post a good number by simply
 compressing the artifact, proving nothing about deltas. Numbers from real Tauri
-apps will land here as Phase 2 produces them.
+apps will land here in Phase 3, once there is an example app producing real
+bundles to measure.
+
+These bytes are reproduced identically on Linux, macOS and Windows — asserted in
+CI rather than compared by eye, since `zstd-sys` compiles a vendored C library
+and MSVC is the likeliest place a divergence would hide.
 
 ## Installation
 
 Not published to crates.io or npm yet. Once it is, this section will carry the
 real install steps.
+
+## Producing a release
+
+`delta-release` turns two installers into a patch and a manifest. It is
+file-in/file-out and needs no network access, so it runs by hand exactly as it
+runs on CI:
+
+```sh
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/myapp.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
+
+delta-release \
+  --platform linux-x86_64 \
+  --version 1.0.1 \
+  --from-version 1.0.0 \
+  --previous-installer dist/app_1.0.0.AppImage \
+  --new-installer     dist/app_1.0.1.AppImage \
+  --installer-url https://releases.example.com/app_1.0.1.AppImage \
+  --patch-url     https://releases.example.com/1.0.0-to-1.0.1.zst \
+  --patch-out     dist/1.0.0-to-1.0.1.zst \
+  --manifest      dist/manifest.json
+```
+
+The `manifest.json` it writes **is** a valid Tauri static updater document — the
+same `version`, `pub_date` and `platforms` fields the official updater already
+reads, with delta information added alongside. Point Tauri's updater at it and a
+delta-unaware client behaves exactly as before.
+
+The signature it records is over the **target installer**, not the patch, so the
+same signature validates whether a user rebuilt the artifact from a patch or
+downloaded it whole. Run the tool once per upgrade path you want to support;
+repeated runs against the same version add to the manifest rather than replacing
+it. Pass `--dry-run` to see the manifest without writing it.
 
 ## Configuration
 
