@@ -298,9 +298,11 @@ fn a_signature_failure_does_not_fall_back_and_installs_nothing() {
 
     let result = run(&w, &handoff, &dir.path().join("work"), Some(&w.base));
 
-    // DECISIONS #11: the manifest itself is under suspicion, and the fallback
-    // target is described by that same manifest, so there is nowhere safe to
-    // fall back to. Loud failure is the only honest outcome.
+    // DECISIONS #11: a signature failure is a fault of unknown origin, and the
+    // fallback target is described by the same unauthenticated document. Retrying
+    // there grants a second attempt rather than a safer one, so loud failure is
+    // the only honest outcome. (Note the document is not signed, so this does not
+    // prove it forged — the older wording here claimed that and was wrong.)
     assert!(
         matches!(result, Err(Error::Signature(_))),
         "expected a loud signature failure, got {result:?}"
