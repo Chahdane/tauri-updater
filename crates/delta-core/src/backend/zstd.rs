@@ -45,6 +45,7 @@ const WRITE_CHUNK: usize = 256 * 1024;
 pub struct ZstdBackend {
     level: i32,
     max_output_bytes: u64,
+    expected_output_bytes: Option<u64>,
 }
 
 impl ZstdBackend {
@@ -69,6 +70,7 @@ impl ZstdBackend {
         Self {
             level: Self::DEFAULT_LEVEL,
             max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
+            expected_output_bytes: None,
         }
     }
 
@@ -81,6 +83,25 @@ impl ZstdBackend {
     /// Override how many bytes [`PatchBackend::apply`] may write before it gives
     /// up and reports [`Error::OutputTooLarge`].
     pub fn with_max_output_bytes(mut self, bytes: u64) -> Self {
+        self.max_output_bytes = bytes;
+        self
+    }
+
+    /// Tell the backend exactly how large the reconstructed artifact must be,
+    /// as declared by the release manifest.
+    ///
+    /// This is what closes the window-allocation gap. Without it, `apply` has to
+    /// permit the largest window zstd supports, so a patch whose frame header
+    /// declares a huge window log can make the decompressor allocate up to 2 GiB
+    /// before a single byte is checked. With it, both the window and the output
+    /// ceiling are derived from a size the manifest committed to in advance, so
+    /// a hostile patch is rejected during frame setup rather than after it has
+    /// already cost memory.
+    ///
+    /// It also turns a wrong-size reconstruction into
+    /// [`Error::UnexpectedOutputSize`] before any hashing happens.
+    pub fn with_expected_output_bytes(mut self, bytes: u64) -> Self {
+        self.expected_output_bytes = Some(bytes);
         self.max_output_bytes = bytes;
         self
     }
@@ -123,9 +144,16 @@ impl PatchBackend for ZstdBackend {
         let old_data = read_file(old)?;
 
         let mut dctx = zstd_safe::DCtx::create();
-        // The frame header carries the window log `diff` chose; permitting the
-        // maximum here simply means we do not reject our own patches.
-        dctx.set_parameter(DParameter::WindowLogMax(WINDOW_LOG_MAX))
+        // The frame header carries the window log `diff` chose, and the window
+        // has to span both the prefix and the output. When the manifest tells us
+        // the output size we can derive that bound exactly; without it we have
+        // to permit the largest window zstd supports, which is the residual
+        // allocation exposure documented in ARCHITECTURE.md.
+        let window_log = match self.expected_output_bytes {
+            Some(expected) => window_log_for(old_data.len() as u64).max(window_log_for(expected)),
+            None => WINDOW_LOG_MAX,
+        };
+        dctx.set_parameter(DParameter::WindowLogMax(window_log))
             .map_err(|code| backend_error("configure the decompressor", code))?;
         dctx.ref_prefix(&old_data)
             .map_err(|code| backend_error("reference the old artifact", code))?;
@@ -187,6 +215,18 @@ impl PatchBackend for ZstdBackend {
 
         if !frame_complete {
             return Err(Error::TruncatedPatch);
+        }
+
+        // A patch that decompresses cleanly but to the wrong length cannot be
+        // the artifact the manifest describes. Catching it here means the caller
+        // never hashes a file that was already known to be wrong.
+        if let Some(expected) = self.expected_output_bytes {
+            if written != expected {
+                return Err(Error::UnexpectedOutputSize {
+                    expected,
+                    actual: written,
+                });
+            }
         }
 
         out_file.flush().map_err(|e| Error::io("flush", out, e))?;

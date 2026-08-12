@@ -1,13 +1,20 @@
-//! Deterministic AppImage-shaped fixtures.
+//! Deterministic AppImage-shaped fixtures, shared by every crate's tests.
 //!
 //! Real AppImages are an ELF runtime stub followed by a squashfs image, and that
-//! squashfs image is *compressed*. That detail is what makes this fixture honest:
-//! the bulk of the file is high-entropy data that zstd cannot shrink on its own,
-//! so a small patch can only come from referencing the old artifact. A fixture
-//! made of compressible filler would flatter the engine and prove nothing.
+//! squashfs image is *compressed*. That detail is what makes these fixtures
+//! honest: the bulk of the file is high-entropy data that zstd cannot shrink on
+//! its own, so a small patch can only come from referencing the old artifact. A
+//! fixture made of compressible filler would flatter the engine and prove
+//! nothing.
 //!
-//! Generated rather than downloaded, so the suite runs offline and produces
-//! identical numbers on every machine.
+//! Generated rather than downloaded, so test suites run offline and produce
+//! identical numbers on every machine — which is what lets the patch bytes be
+//! pinned and cross-platform determinism be asserted rather than eyeballed.
+//!
+//! This crate is a test dependency and is never published.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +29,11 @@ const ADDED_LEN: usize = 128 * 1024;
 /// Payload following the app binary. Unchanged between the two versions.
 const ASSETS_TAIL_LEN: usize = 3 * 1024 * 1024;
 
+/// Version string of the installed artifact in [`appimage_pair`].
+pub const OLD_VERSION: &str = "1.0.0";
+/// Version string of the released artifact in [`appimage_pair`].
+pub const NEW_VERSION: &str = "1.0.1";
+
 /// Two versions of the same synthetic AppImage.
 pub struct Fixture {
     /// The installed version — the base a patch is applied against.
@@ -35,6 +47,12 @@ pub struct Fixture {
 /// The difference between them models a routine release: the runtime stub and
 /// the bulk of the payload are byte-identical, the app binary is rewritten, and
 /// one new asset is inserted so that all following bytes shift position.
+///
+/// # Panics
+///
+/// If the two generated versions are identical. Every round-trip test reduces to
+/// "these two files can be reconciled", so a generator change that made them the
+/// same would leave the whole suite green while proving nothing.
 pub fn appimage_pair(dir: &Path) -> Fixture {
     let stub = elf_stub();
     let assets_head = pseudo_random(0xA55E_5EED, ASSETS_HEAD_LEN);
@@ -46,9 +64,6 @@ pub fn appimage_pair(dir: &Path) -> Fixture {
     let old = concat(&[&stub, &assets_head, &binary_v1, &assets_tail]);
     let new = concat(&[&stub, &assets_head, &binary_v2, &added, &assets_tail]);
 
-    // Every round-trip test in the suite reduces to "these two files can be
-    // reconciled". If a change here ever made them identical, all of it would
-    // still pass while proving nothing, so the fixture polices itself.
     // Compared with `!=` rather than assert_ne! to avoid dumping 6 MiB of bytes
     // into a panic message.
     assert!(
@@ -56,8 +71,8 @@ pub fn appimage_pair(dir: &Path) -> Fixture {
         "fixture versions are identical — every round-trip test would be vacuous"
     );
 
-    let old_path = dir.join("app_1.0.0.AppImage");
-    let new_path = dir.join("app_1.0.1.AppImage");
+    let old_path = dir.join(format!("app_{OLD_VERSION}.AppImage"));
+    let new_path = dir.join(format!("app_{NEW_VERSION}.AppImage"));
     std::fs::write(&old_path, &old).expect("write old fixture");
     std::fs::write(&new_path, &new).expect("write new fixture");
 
