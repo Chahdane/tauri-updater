@@ -1,4 +1,4 @@
-//! The update flow, from manifest URL to a verified artifact handed to an installer.
+//! The update flow, from a checked update to a verified artifact handed to an installer.
 //!
 //! Both boundaries are traits — [`Fetch`] for the network,
 //! [`InstallHandoff`] for the platform installer — so this whole path is
@@ -268,7 +268,10 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(Error::Refused(Refusal::IdentityMismatch { field: "version", .. }))
+                Err(Error::Refused(Refusal::IdentityMismatch {
+                    field: "version",
+                    ..
+                }))
             ),
             "expected a version identity mismatch, got {result:?}"
         );
