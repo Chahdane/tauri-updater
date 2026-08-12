@@ -18,7 +18,7 @@ use minisign::KeyPair;
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::Error;
 use tauri_updater_delta_core::client::Fetch;
-use tauri_updater_delta_core::VerifiedArtifact;
+use tauri_updater_delta_core::{Refusal, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
 
@@ -27,11 +27,18 @@ const MANIFEST_URL: &str = "https://example.com/manifest.json";
 const PATCH_URL: &str = "https://example.com/patch.zst";
 const INSTALLER_URL: &str = "https://example.com/app_1.0.1.AppImage";
 
-struct FakeServer(RefCell<HashMap<String, Vec<u8>>>);
+struct FakeServer {
+    files: RefCell<HashMap<String, Vec<u8>>>,
+    /// Every URL requested, in order. Lets a test assert on what was *not*
+    /// fetched, which is the only way to prove the second manifest request is
+    /// gone rather than merely moved.
+    requested: RefCell<Vec<String>>,
+}
 
 impl Fetch for FakeServer {
     fn fetch(&self, url: &str, out: &Path) -> Result<(), String> {
-        let map = self.0.borrow();
+        self.requested.borrow_mut().push(url.to_owned());
+        let map = self.files.borrow();
         let body = map.get(url).ok_or_else(|| format!("404 {url}"))?;
         std::fs::write(out, body).map_err(|e| e.to_string())
     }
@@ -65,6 +72,25 @@ struct World {
     pubkey: String,
     base: std::path::PathBuf,
     released: std::path::PathBuf,
+    /// The document the release tooling produced, exactly as a server would
+    /// serve it and as Tauri would retain it on `Update::raw_json`.
+    manifest_json: String,
+    /// The signature Tauri's platform search would have selected from it.
+    signature: String,
+}
+
+impl World {
+    /// The identity an honest `Updater::check()` produces for this release.
+    fn identity(&self, current_version: &str) -> UpdateIdentity {
+        UpdateIdentity::new(
+            current_version,
+            "1.0.1",
+            PLATFORM,
+            INSTALLER_URL,
+            &self.signature,
+            &self.manifest_json,
+        )
+    }
 }
 
 /// Run the real release tooling and stand up a server holding what it produced.
@@ -109,10 +135,15 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
     ]);
 
     World {
-        server: FakeServer(RefCell::new(files)),
+        server: FakeServer {
+            files: RefCell::new(files),
+            requested: RefCell::new(Vec::new()),
+        },
         pubkey: pubkey_b64(pair),
         base: fixture.old,
         released: fixture.new,
+        signature: manifest.platforms[PLATFORM].signature.clone(),
+        manifest_json: manifest.to_json().expect("serialise"),
     }
 }
 
@@ -122,11 +153,19 @@ fn run(
     work: &Path,
     base: Option<&Path>,
 ) -> tauri_plugin_updater_delta::Result<Outcome> {
+    run_with(w, &w.identity("1.0.0"), handoff, work, base)
+}
+
+fn run_with(
+    w: &World,
+    identity: &UpdateIdentity,
+    handoff: &RecordingHandoff,
+    work: &Path,
+    base: Option<&Path>,
+) -> tauri_plugin_updater_delta::Result<Outcome> {
     run_update(
-        MANIFEST_URL,
+        identity,
         &Context {
-            platform: PLATFORM,
-            current_version: "1.0.0",
             pubkey: &w.pubkey,
             base,
             work_dir: work,
@@ -187,7 +226,7 @@ fn a_corrupt_patch_still_installs_the_right_bytes() {
     let pair = keypair();
     let w = world(dir.path(), &pair);
     w.server
-        .0
+        .files
         .borrow_mut()
         .insert(PATCH_URL.to_owned(), b"not a patch".to_vec());
     let handoff = RecordingHandoff::default();
@@ -211,7 +250,7 @@ fn a_patch_server_outage_still_installs_the_right_bytes() {
     let dir = tempfile::tempdir().expect("temp dir");
     let pair = keypair();
     let w = world(dir.path(), &pair);
-    w.server.0.borrow_mut().remove(PATCH_URL);
+    w.server.files.borrow_mut().remove(PATCH_URL);
     let handoff = RecordingHandoff::default();
 
     let outcome =
@@ -246,7 +285,7 @@ fn a_tampered_full_download_installs_nothing() {
     let pair = keypair();
     let w = world(dir.path(), &pair);
     w.server
-        .0
+        .files
         .borrow_mut()
         .insert(INSTALLER_URL.to_owned(), b"a malicious installer".to_vec());
     let handoff = RecordingHandoff::default();
@@ -266,11 +305,11 @@ fn a_tampered_artifact_served_as_a_patch_target_installs_nothing() {
     let w = world(dir.path(), &pair);
     // Break both: the patch is junk and the full artifact is malicious.
     w.server
-        .0
+        .files
         .borrow_mut()
         .insert(PATCH_URL.to_owned(), b"junk".to_vec());
     w.server
-        .0
+        .files
         .borrow_mut()
         .insert(INSTALLER_URL.to_owned(), b"a malicious installer".to_vec());
     let handoff = RecordingHandoff::default();
@@ -300,4 +339,136 @@ fn nothing_is_left_in_the_work_directory() {
             "{leftover} should not survive a completed update"
         );
     }
+}
+
+// ---- Gate A: the update identity, against real signatures ---------------
+//
+// These are the cases where verification genuinely succeeds and is genuinely
+// not enough. Everything above proves unverified bytes cannot be installed;
+// these prove the *right* release is installed, which is a different claim.
+
+#[test]
+fn replaying_an_old_genuinely_signed_release_installs_nothing() {
+    // Gate A test 5, and the attack the whole gate exists for.
+    //
+    // The attacker needs no signing key. They take a real past release —
+    // manifest, artifact and signature all authentic, and the signature will
+    // verify forever because minisign signatures do not expire — and serve it to
+    // a client already running something newer. Every cryptographic check
+    // passes. Only the version policy can refuse it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let handoff = RecordingHandoff::default();
+
+    // Same release, same real signature, same real artifact — replayed at a
+    // client on 2.0.0.
+    let replayed = w.identity("2.0.0");
+
+    let result = run_with(
+        &w,
+        &replayed,
+        &handoff,
+        &dir.path().join("work"),
+        Some(&w.base),
+    );
+
+    assert!(
+        matches!(result, Err(Error::Refused(Refusal::Downgrade { .. }))),
+        "a replayed older release must be refused, got {result:?}"
+    );
+    assert!(
+        handoff.installed.borrow().is_empty(),
+        "the artifact verifies correctly — only the version policy stops it"
+    );
+}
+
+#[test]
+fn the_replayed_artifact_really_does_verify() {
+    // The test above is only meaningful if the bytes it refuses would otherwise
+    // have been installed. This proves the refusal is doing the work, rather
+    // than the signature check quietly failing for an unrelated reason.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let handoff = RecordingHandoff::default();
+
+    // The identical release, offered to a client on an older version.
+    let outcome = run_with(
+        &w,
+        &w.identity("1.0.0"),
+        &handoff,
+        &dir.path().join("work"),
+        Some(&w.base),
+    )
+    .expect("the same artifact installs cleanly when it is genuinely an upgrade");
+
+    assert!(matches!(outcome, Outcome::InstalledFromDelta { .. }));
+    assert_eq!(handoff.installed.borrow().len(), 1);
+}
+
+#[test]
+fn a_version_tauri_never_checked_installs_nothing() {
+    // Gate A test 1 against a real signed release: the document describes
+    // 1.0.1, but Tauri was told 9.9.9 so its semver gate would pass. Under the
+    // old two-fetch architecture these were separate responses and nothing
+    // compared them.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let handoff = RecordingHandoff::default();
+
+    let lying = UpdateIdentity::new(
+        "1.0.0",
+        "9.9.9",
+        PLATFORM,
+        INSTALLER_URL,
+        &w.signature,
+        &w.manifest_json,
+    );
+
+    let result = run_with(
+        &w,
+        &lying,
+        &handoff,
+        &dir.path().join("work"),
+        Some(&w.base),
+    );
+
+    assert!(
+        matches!(
+            result,
+            Err(Error::Refused(Refusal::IdentityMismatch {
+                field: "version",
+                ..
+            }))
+        ),
+        "expected a version identity mismatch, got {result:?}"
+    );
+    assert!(handoff.installed.borrow().is_empty());
+}
+
+#[test]
+fn the_manifest_is_never_fetched() {
+    // Gate A test 10. The flow has no manifest URL any more, so the only
+    // request a delta install may make is the patch. Asserting on the server's
+    // request log rather than on the type signature keeps this honest if a
+    // fetch is ever reintroduced somewhere less visible.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let handoff = RecordingHandoff::default();
+
+    run(&w, &handoff, &dir.path().join("work"), Some(&w.base)).expect("should update");
+
+    let requested = w.server.requested.borrow();
+    assert!(
+        !requested.iter().any(|url| url == MANIFEST_URL),
+        "the manifest must never be fetched a second time: {requested:?}"
+    );
+    assert_eq!(
+        requested.as_slice(),
+        &[PATCH_URL.to_owned()],
+        "a delta install downloads the patch and nothing else"
+    );
 }

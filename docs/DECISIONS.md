@@ -302,51 +302,73 @@ left to rot alongside a second implementation.
 
 ## 11. Everything falls back except a signature failure
 
-**Decided:** 2026-08-12 · **Status:** active
+**Decided:** 2026-08-12 · **Status:** active · **Reasoning corrected 2026-08-12**
 
 The delta path falls back to a full download on every failure — corrupt patch,
 truncated patch, transport error, wrong base version, unknown backend, digest
 mismatch, out of disk. **One case does not: a signature failure aborts.**
 
-The precise rule is not "delta failures fall back". It is:
+The policy stands. The original argument for it did not, and the correction
+matters more than the conclusion, so both are recorded.
 
-> Fall back on any failure that does not call the *manifest's authenticity* into
-> question. A signature failure is the sole case where the manifest itself is
-> under suspicion, so no fallback path exists.
+### What the original reasoning got wrong
 
-Everything else is a statement about one artifact or one transfer, and says
-nothing about whether the release document is genuine. A signature failure says
-the opposite.
+This decision used to say:
 
-### Why there is nothing to fall back to
+> if that signature does not check out, the document is untrustworthy in its
+> entirety
 
-This follows directly from decision #5, the manifest-as-superset. The
-full-download URL and the delta information live in **one document**, covered by
-**one signature over the target installer**. So if that signature does not check
-out, the document is untrustworthy in its entirety — including the
-`platforms.<target>.url` a fallback would fetch from.
+That claim cannot be supported, because it describes a mechanism that does not
+exist. **The manifest is not signed.** There is no signature over the document,
+so a failed *artifact* signature cannot invalidate it — there was never a claim
+about the document to disprove. The document was unauthenticated before the
+failure and is exactly as unauthenticated after it.
 
-Falling back would download an artifact chosen by a document we have just decided
-we cannot trust, and would then verify it against a signature from that same
-document. It preserves the risk while presenting itself as the safe option, which
-is worse than failing loudly: the user believes a safety mechanism engaged when
-it did not.
+The error was conflating two properties that a single minisign check does not
+combine:
+
+| | What it means | What our signature actually gives us |
+| --- | --- | --- |
+| **Artifact authenticity** | These *bytes* were signed by the expected key | **Yes** |
+| **Manifest authenticity** | This *description* — version, URL, sizes, digests — came from the release process | **No** |
+
+A signature over the installer covers the installer. It covers no manifest
+field, so it authenticates no manifest field.
+
+### The corrected argument for the same policy
+
+A signature failure means the relationship between the artifact bytes, the
+supplied signature and the trusted public key does not hold. That is evidence
+something in the chain that produced this release is wrong. It does not tell us
+*what* is wrong, and — this is the part that decides the policy — it gives us no
+way to localise the fault.
+
+Falling back would fetch a second artifact chosen by the same unauthenticated
+document and check it against a signature from that same document. If the
+document is being manipulated, that is a second attempt at the same attack down
+a different branch; if the release tooling is broken, it is a second draw from
+the same broken process. Neither is safer than the first attempt, and both
+present themselves as a safety mechanism having engaged.
+
+Note what this argument does **not** rely on: it never claims the document has
+been proven false. It only claims that a failure of unknown origin does not
+license a retry through the same unverified channel. That holds whether or not
+the manifest is authenticated, which is why the policy survives the correction.
 
 ### The load-bearing condition
 
-**This reasoning depends on the full-artifact URL and hash sharing one signed
-document with the delta information.** That is true of schema 1 and is a
-consequence of #5.
+**This reasoning depends on the full-artifact URL and the delta information
+arriving in one document, from one fetch.** That is true of schema 1 as a
+consequence of #5, and is now enforced structurally by #13 rather than left to
+convention.
 
-If a future change ever splits them — a Tauri-native manifest plus a separate
-delta sidecar, signed independently — **this asymmetry must be re-examined**. In
-that world a delta-side signature failure would say nothing about the
-Tauri-native document, and falling back could be both safe and correct. The
-conclusion would change even though the code would still compile and every test
-would still pass.
+If a future change ever splits them — a Tauri-native manifest plus a separately
+signed delta sidecar — **this asymmetry must be re-examined**. In that world a
+delta-side failure would say nothing about the Tauri-native document, and
+falling back could be both safe and correct.
 
-Not a change being made. Recorded so a later refactor cannot quietly reopen the
-question by moving the ground the argument stands on.
+Recorded so a later refactor cannot quietly reopen the question by moving the
+ground the argument stands on.
 
 ---
 

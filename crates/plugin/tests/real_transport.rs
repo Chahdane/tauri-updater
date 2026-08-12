@@ -26,7 +26,7 @@ use minisign::KeyPair;
 use support::server::{read, Route, TestServer};
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::{Error, HttpFetch};
-use tauri_updater_delta_core::{FileHash, VerifiedArtifact};
+use tauri_updater_delta_core::{FileHash, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
 
@@ -80,6 +80,10 @@ struct World {
     pubkey: String,
     base: std::path::PathBuf,
     released_hash: FileHash,
+    /// The document Tauri would have retained on `Update::raw_json`.
+    manifest_json: String,
+    /// The signature Tauri's platform search would have selected from it.
+    signature: String,
 }
 
 /// Publish two versions with the real release tool and serve the result.
@@ -128,10 +132,31 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
     server.serve("/app_1.0.1.AppImage", read(&fixture.new));
 
     World {
-        server,
         pubkey: pubkey_b64(pair),
         base: fixture.old,
         released_hash,
+        signature: manifest.platforms[PLATFORM].signature.clone(),
+        manifest_json: manifest.to_json().expect("serialise"),
+        server,
+    }
+}
+
+impl World {
+    /// The identity Tauri's own check would have produced from the document
+    /// this server serves at `/manifest.json`.
+    ///
+    /// The manifest endpoint is still served, because in the real app Tauri
+    /// fetches it — but the flow under test never does, which is what
+    /// `the_flow_never_requests_the_manifest` asserts.
+    fn identity(&self, current_version: &str) -> UpdateIdentity {
+        UpdateIdentity::new(
+            current_version,
+            "1.0.1",
+            PLATFORM,
+            self.server.url("/app_1.0.1.AppImage"),
+            &self.signature,
+            &self.manifest_json,
+        )
     }
 }
 
@@ -143,10 +168,8 @@ fn run(
 ) -> tauri_plugin_updater_delta::Result<Outcome> {
     let fetch = HttpFetch::new().expect("build http client");
     run_update(
-        &w.server.url("/manifest.json"),
+        &w.identity("1.0.0"),
         &Context {
-            platform: PLATFORM,
-            current_version: "1.0.0",
             pubkey: &w.pubkey,
             base,
             work_dir: work,
@@ -323,15 +346,27 @@ fn falling_back_does_not_lower_the_bar() {
 }
 
 #[test]
-fn an_unreachable_manifest_installs_nothing() {
+fn the_flow_never_requests_the_manifest() {
+    // Gate A test 10, over a real socket and stated as bluntly as it can be:
+    // take the manifest endpoint off the server entirely and the update still
+    // succeeds, because the flow reads the document Tauri already fetched.
+    //
+    // Under the old two-fetch architecture this test was
+    // `an_unreachable_manifest_installs_nothing` and asserted `Err(Fetch)`. That
+    // it now asserts the opposite is the whole point of the change: there is no
+    // second request left to fail.
     let dir = tempfile::tempdir().expect("temp dir");
     let pair = keypair();
     let w = world(dir.path(), &pair);
     w.server.remove("/manifest.json");
     let handoff = RecordingHandoff::default();
 
-    let result = run(&w, &handoff, &dir.path().join("work"), Some(&w.base));
+    let outcome = run(&w, &handoff, &dir.path().join("work"), Some(&w.base))
+        .expect("the manifest is not fetched here, so removing it changes nothing");
 
-    assert!(matches!(result, Err(Error::Fetch(_))));
-    handoff.assert_nothing_installed();
+    assert!(
+        matches!(outcome, Outcome::InstalledFromDelta { .. }),
+        "expected a delta install, got {outcome:?}"
+    );
+    handoff.assert_installed_exactly(&w.released_hash);
 }
