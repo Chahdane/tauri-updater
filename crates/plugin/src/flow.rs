@@ -1,4 +1,4 @@
-//! The update flow, from manifest URL to a verified artifact handed to an installer.
+//! The update flow, from a checked update to a verified artifact handed to an installer.
 //!
 //! Both boundaries are traits — [`Fetch`] for the network,
 //! [`InstallHandoff`] for the platform installer — so this whole path is
@@ -7,20 +7,24 @@
 //!
 //! # The safety invariant, end to end
 //!
-//! Two things cannot be expressed here, by construction rather than by care:
+//! Three things cannot be expressed here, by construction rather than by care:
 //!
-//! - **An update that fails.** [`plan_update`] returns
-//!   `Delta | Full | Unavailable`, so a delta failure resolves to a full
-//!   download rather than an error.
+//! - **An update that fails.** [`plan_update`] returns an `UpdateSource`, so a
+//!   delta failure resolves to a full download rather than an error.
 //! - **An unverified install.** [`InstallHandoff::install`] takes a
 //!   [`VerifiedArtifact`], which only `verify_artifact` can produce. Since
 //!   Tauri does not verify what it is handed (see `docs/DECISIONS.md` #10),
 //!   this is the sole gate — so it is the compiler's job, not a reviewer's.
+//! - **A second opinion about which release this is.** [`run_update`] takes an
+//!   [`UpdateIdentity`] and performs **no manifest fetch of its own**. There is
+//!   no URL parameter here to point somewhere else, so the release planned,
+//!   verified and installed is necessarily the one Tauri checked. See
+//!   `docs/DECISIONS.md` #13.
 
 use std::path::Path;
 
 use tauri_updater_delta_core::client::{plan_update, Fetch, UpdateSource};
-use tauri_updater_delta_core::{verify_artifact, Manifest, VerifiedArtifact};
+use tauri_updater_delta_core::{verify_artifact, UpdateIdentity, VerifiedArtifact};
 
 use crate::{Error, Result};
 
@@ -45,16 +49,17 @@ pub enum Outcome {
     },
     /// Installed after downloading the whole artifact.
     InstalledFromFullDownload,
-    /// Nothing published for this platform.
-    Unavailable,
+    /// The release is already installed.
+    UpToDate,
 }
 
 /// Everything the flow needs to know about the host.
+///
+/// Note what is *not* here: the platform, the version being installed, and the
+/// manifest URL. All three come from the [`UpdateIdentity`], because all three
+/// describe the release rather than the host — and a release described from two
+/// places is a release that can be described two ways.
 pub struct Context<'a> {
-    /// Tauri platform identifier, e.g. `"linux-x86_64"`.
-    pub platform: &'a str,
-    /// Version currently installed.
-    pub current_version: &'a str,
     /// Base64 minisign public key, as in `tauri.conf.json`.
     pub pubkey: &'a str,
     /// Previously cached installer, if any.
@@ -63,39 +68,30 @@ pub struct Context<'a> {
     pub work_dir: &'a Path,
 }
 
-/// Fetch the manifest, take the cheapest safe path to the release, install it.
+/// Take the cheapest safe path to the release `identity` names, and install it.
 ///
-/// The delta path is attempted when it can be; anything wrong with it results
-/// in the full download the official updater would have performed anyway.
+/// The delta path is attempted when it can be; anything wrong with it results in
+/// the full download the official updater would have performed anyway. A
+/// downgrade or an identity mismatch is refused outright instead — see
+/// [`Error::Refused`].
 pub fn run_update(
-    manifest_url: &str,
+    identity: &UpdateIdentity,
     ctx: &Context<'_>,
     fetch: &dyn Fetch,
     handoff: &dyn InstallHandoff,
 ) -> Result<Outcome> {
-    let manifest_path = ctx.work_dir.join("manifest.json");
     std::fs::create_dir_all(ctx.work_dir)
         .map_err(|e| Error::Io(format!("creating {}: {e}", ctx.work_dir.display())))?;
 
-    fetch
-        .fetch(manifest_url, &manifest_path)
-        .map_err(|e| Error::Fetch(format!("fetching the manifest: {e}")))?;
-
-    let text = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| Error::Io(format!("reading the manifest: {e}")))?;
-    let manifest = Manifest::from_json(&text).map_err(|e| Error::Manifest(e.to_string()))?;
-
-    let source = plan_update(
-        &manifest,
-        ctx.platform,
-        ctx.current_version,
-        ctx.base,
-        ctx.work_dir,
-        fetch,
-    );
+    let source = plan_update(identity, ctx.base, ctx.work_dir, fetch);
 
     match source {
-        UpdateSource::Unavailable => Ok(Outcome::Unavailable),
+        UpdateSource::UpToDate => Ok(Outcome::UpToDate),
+
+        // Never a fallback. The full-download path is described by the same
+        // document that just failed the check, so there is nothing safer to
+        // reach for.
+        UpdateSource::Refused { reason } => Err(Error::Refused(reason)),
 
         UpdateSource::Delta {
             artifact,
@@ -119,10 +115,16 @@ pub fn run_update(
                     })
                 }
                 Err(_) => {
-                    // A rebuilt artifact that matches the digest but not the
-                    // signature means the manifest itself is not trustworthy.
-                    // Falling back would download an artifact described by that
-                    // same manifest, so there is nothing safe to fall back to.
+                    // The artifact matched the digest this document published
+                    // but not the signature it published alongside it. That
+                    // does not prove the document is forged — it is not signed,
+                    // so there was never a claim to disprove. What it does mean
+                    // is that something in the chain that produced this release
+                    // is wrong, and we cannot tell what. Falling back would
+                    // fetch a second artifact chosen by the same document and
+                    // check it against a signature from that same document,
+                    // which grants a second attempt rather than a safer one.
+                    // See docs/DECISIONS.md #11.
                     let _ = std::fs::remove_file(&artifact);
                     Err(Error::Signature(
                         "the rebuilt artifact did not match the manifest's signature".to_owned(),
@@ -154,6 +156,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use tauri_updater_delta_core::Refusal;
 
     struct FakeServer(HashMap<String, Vec<u8>>);
 
@@ -180,21 +183,39 @@ mod tests {
         }
     }
 
+    /// A minimal manifest with no delta layer, describing one release.
+    fn manifest_json(version: &str, url: &str, signature: &str) -> String {
+        format!(
+            r#"{{"version":"{version}","platforms":{{"linux-x86_64":{{"url":"{url}","signature":"{signature}"}}}}}}"#
+        )
+    }
+
+    fn identity(current: &str, target: &str) -> UpdateIdentity {
+        UpdateIdentity::new(
+            current,
+            target,
+            "linux-x86_64",
+            "https://example.com/full.bin",
+            "a-signature",
+            manifest_json(target, "https://example.com/full.bin", "a-signature"),
+        )
+    }
+
     // The full harness lives in tests/update_flow.rs, which builds a real
     // manifest with the release tooling. These cover the paths that need no
     // signing key.
 
     #[test]
-    fn a_missing_manifest_is_an_error_not_a_silent_success() {
+    fn a_refused_downgrade_installs_nothing_and_does_not_fall_back() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeServer(HashMap::new());
         let handoff = RecordingHandoff::default();
 
+        // A genuinely signed older release. Verification would succeed on those
+        // bytes, so the only thing that can stop this is the version policy.
         let result = run_update(
-            "https://example.com/manifest.json",
+            &identity("2.0.0", "1.0.0"),
             &Context {
-                platform: "linux-x86_64",
-                current_version: "1.0.0",
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
@@ -203,25 +224,35 @@ mod tests {
             &handoff,
         );
 
-        assert!(matches!(result, Err(Error::Fetch(_))));
+        assert!(
+            matches!(result, Err(Error::Refused(Refusal::Downgrade { .. }))),
+            "expected a downgrade refusal, got {result:?}"
+        );
         assert!(
             handoff.installed.borrow().is_empty(),
-            "nothing may be installed when the manifest could not be fetched"
+            "a downgrade must never reach the installer"
         );
     }
 
     #[test]
-    fn a_malformed_manifest_installs_nothing() {
+    fn an_identity_mismatch_installs_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let url = "https://example.com/manifest.json".to_owned();
-        let server = FakeServer(HashMap::from([(url.clone(), b"{ not json".to_vec())]));
+        let server = FakeServer(HashMap::new());
         let handoff = RecordingHandoff::default();
 
+        // Tauri was told 3.0.0; the document describes 1.0.1.
+        let lying = UpdateIdentity::new(
+            "1.0.0",
+            "3.0.0",
+            "linux-x86_64",
+            "https://example.com/full.bin",
+            "a-signature",
+            manifest_json("1.0.1", "https://example.com/full.bin", "a-signature"),
+        );
+
         let result = run_update(
-            &url,
+            &lying,
             &Context {
-                platform: "linux-x86_64",
-                current_version: "1.0.0",
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
@@ -230,28 +261,28 @@ mod tests {
             &handoff,
         );
 
-        assert!(matches!(result, Err(Error::Manifest(_))));
+        assert!(
+            matches!(
+                result,
+                Err(Error::Refused(Refusal::IdentityMismatch {
+                    field: "version",
+                    ..
+                }))
+            ),
+            "expected a version identity mismatch, got {result:?}"
+        );
         assert!(handoff.installed.borrow().is_empty());
     }
 
     #[test]
-    fn an_unlisted_platform_installs_nothing() {
+    fn an_already_installed_release_is_not_an_error() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let url = "https://example.com/manifest.json".to_owned();
-        let manifest = r#"{
-            "version": "1.0.1",
-            "platforms": {
-                "linux-x86_64": { "url": "https://example.com/a", "signature": "sig" }
-            }
-        }"#;
-        let server = FakeServer(HashMap::from([(url.clone(), manifest.as_bytes().to_vec())]));
+        let server = FakeServer(HashMap::new());
         let handoff = RecordingHandoff::default();
 
         let outcome = run_update(
-            &url,
+            &identity("1.0.1", "1.0.1"),
             &Context {
-                platform: "windows-x86_64",
-                current_version: "1.0.0",
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
@@ -259,9 +290,64 @@ mod tests {
             &server,
             &handoff,
         )
-        .expect("an unlisted platform is not an error");
+        .expect("already being up to date is not a failure");
 
-        assert_eq!(outcome, Outcome::Unavailable);
+        assert_eq!(outcome, Outcome::UpToDate);
+        assert!(handoff.installed.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_refusal_downloads_nothing() {
+        // Gate A test 10, at the flow level: the flow has no manifest URL to
+        // fetch, and a refusal stops before the artifact download too.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeServer(HashMap::new());
+        let handoff = RecordingHandoff::default();
+
+        // Every fetch would 404, so reaching the network at all would surface as
+        // Error::Fetch rather than Error::Refused.
+        let result = run_update(
+            &identity("2.0.0", "1.0.0"),
+            &Context {
+                pubkey: "",
+                base: None,
+                work_dir: dir.path(),
+            },
+            &server,
+            &handoff,
+        );
+        assert!(matches!(result, Err(Error::Refused(_))), "got {result:?}");
+    }
+
+    #[test]
+    fn a_target_with_no_published_artifact_installs_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeServer(HashMap::new());
+        let handoff = RecordingHandoff::default();
+
+        // No platforms at all in the document, so there is nothing to install
+        // and the full download 404s rather than silently succeeding.
+        let identity = UpdateIdentity::new(
+            "1.0.0",
+            "1.0.1",
+            "windows-x86_64",
+            "https://example.com/missing.bin",
+            "a-signature",
+            r#"{"version":"1.0.1","platforms":{}}"#,
+        );
+
+        let result = run_update(
+            &identity,
+            &Context {
+                pubkey: "",
+                base: None,
+                work_dir: dir.path(),
+            },
+            &server,
+            &handoff,
+        );
+
+        assert!(matches!(result, Err(Error::Fetch(_))), "got {result:?}");
         assert!(handoff.installed.borrow().is_empty());
     }
 }

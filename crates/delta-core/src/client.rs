@@ -9,12 +9,27 @@
 //!
 //! [`plan_update`] cannot fail. It returns an [`UpdateSource`], and the caller's
 //! job is to act on whichever variant it gets — never to handle an error. Every
-//! way the delta path can go wrong resolves to
-//! [`UpdateSource::Full`], which is exactly what the official updater would have
-//! done unaided.
+//! way the delta path can go *wrong* resolves to [`UpdateSource::Full`], which is
+//! exactly what the official updater would have done unaided.
+//!
+//! [`UpdateSource::Refused`] is the one outcome that is not a fallback, and the
+//! distinction is deliberate. A transfer failure says nothing about which
+//! release we are being pointed at, so retrying it whole is safe. A downgrade or
+//! an identity mismatch says the *pointer itself* is wrong — and the
+//! full-download path is pointed at a release by that same document, so falling
+//! back would re-run the problem down the other branch. See [`crate::identity`].
+//!
+//! # One document, one release
+//!
+//! Everything here is planned from [`UpdateIdentity`], which carries the single
+//! response Tauri's own check already fetched. There is no second manifest
+//! request, so there is no second answer that could describe a different
+//! release. What the manifest is *not* is authenticated — see
+//! [`crate::identity`] for exactly what the signature does and does not cover.
 
 use std::path::{Path, PathBuf};
 
+use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 use crate::manifest::Manifest;
 use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 
@@ -59,8 +74,22 @@ pub enum UpdateSource {
         reason: Option<Error>,
     },
 
-    /// The manifest publishes nothing for this platform.
-    Unavailable,
+    /// The release is already installed. Not an error, and nothing to do.
+    ///
+    /// There is deliberately no `Unavailable` variant. "Nothing published for
+    /// this platform" cannot arise here: an identity only exists because Tauri's
+    /// `get_urls` already found a target for it, so a platform with no build
+    /// never produces an `Update` to plan from in the first place.
+    UpToDate,
+
+    /// The release must not be installed at all.
+    ///
+    /// Deliberately **not** a fallback. See [`Refusal`] for why each reason
+    /// disqualifies the full-download path along with the delta path.
+    Refused {
+        /// Why the update was refused.
+        reason: Refusal,
+    },
 }
 
 impl UpdateSource {
@@ -80,37 +109,62 @@ impl UpdateSource {
     }
 }
 
-/// Decide how to obtain the release described by `manifest`, and if a patch can
-/// be used, fetch and apply it.
+/// Decide how to obtain the release `identity` points at, and if a patch can be
+/// used, fetch and apply it.
 ///
 /// `base` is the installer the user already has, if it was cached after the last
 /// update. `None` is ordinary — the very first delta update has nothing to patch
 /// against, and so does anyone who installed from a download page.
 ///
-/// Never fails.
+/// Never fails. Note that "never fails" is not "always proceeds": a
+/// [`UpdateSource::Refused`] is a normal return, and the caller must not treat
+/// it as a delta failure to be recovered from.
 pub fn plan_update(
-    manifest: &Manifest,
-    platform: &str,
-    installed_version: &str,
+    identity: &UpdateIdentity,
     base: Option<&Path>,
     work_dir: &Path,
     fetch: &dyn Fetch,
 ) -> UpdateSource {
-    // No build for this platform at all — nothing to do, delta or otherwise.
-    let Some(full) = manifest.platforms.get(platform) else {
-        return UpdateSource::Unavailable;
+    // The document Tauri fetched, parsed here rather than fetched again. A
+    // malformed delta layer disqualifies the delta path only; the full download
+    // is described by the identity, which parsed fine by definition.
+    let manifest = Manifest::from_json(identity.raw_json()).ok();
+
+    // Bind our reading of that document to Tauri's. These are the seams where
+    // one document can still be read two ways.
+    if let Some(manifest) = &manifest {
+        if let Some(reason) = identity_mismatch(manifest, identity) {
+            return UpdateSource::Refused { reason };
+        }
+    }
+
+    // Version policy, applied to the identity's own pair so it is the same
+    // comparison Tauri made, on the same document.
+    match evaluate_version(identity.current_version(), identity.version()) {
+        VersionVerdict::Upgrade => {}
+        VersionVerdict::UpToDate => return UpdateSource::UpToDate,
+        VersionVerdict::Refused(reason) => return UpdateSource::Refused { reason },
+    }
+
+    // The full path always uses the URL and signature Tauri selected, never a
+    // platform entry this crate looked up for itself.
+    let fallback = |reason: Option<Error>| UpdateSource::Full {
+        url: identity.download_url().to_owned(),
+        signature: identity.signature().to_owned(),
+        reason,
     };
 
-    let fallback = |reason: Option<Error>| UpdateSource::Full {
-        url: full.url.clone(),
-        signature: full.signature.clone(),
-        reason,
+    let Some(manifest) = manifest else {
+        return fallback(Some(Error::Manifest(
+            "the delta layer could not be parsed".to_owned(),
+        )));
     };
 
     // Each of these is an ordinary "no patch for you", not a failure: the
     // manifest may publish no delta layer, none for this platform, or none from
     // the version this user is on.
-    let Some((entry, patch)) = manifest.patch_for(platform, installed_version) else {
+    let Some((entry, patch)) = manifest.patch_for(identity.target(), identity.current_version())
+    else {
         return fallback(None);
     };
 
@@ -121,12 +175,54 @@ pub fn plan_update(
     match attempt_delta(entry, patch, base, work_dir, fetch) {
         Ok(artifact) => UpdateSource::Delta {
             artifact,
-            signature: entry.signature.clone(),
+            // The identity's signature, not the entry's. They were just proven
+            // equal, so this is the same value — taking it from the identity
+            // keeps the authoritative source obvious at the point of use.
+            signature: identity.signature().to_owned(),
             downloaded: patch.patch_size,
             would_have_downloaded: entry.target_installer_size,
         },
         Err(reason) => fallback(Some(reason)),
     }
+}
+
+/// Check that the delta metadata describes the update Tauri actually checked.
+///
+/// Two things can still diverge inside a single document:
+///
+/// - **The version.** Our parse could differ from Tauri's — an alias field, a
+///   duplicate key, a numeric coercion. Cheap to check, so it is checked.
+/// - **The platform entry.** Tauri searches `{os}-{arch}-{installer}` before
+///   `{os}-{arch}` (`updater.rs:1420`) and does not report which key it used.
+///   Rather than reimplement that search — which would be a second selection
+///   algorithm free to drift from the real one — the entry we looked up must
+///   carry the signature Tauri selected. If it does not, the delta layer is
+///   describing a different artifact and we stop.
+fn identity_mismatch(manifest: &Manifest, identity: &UpdateIdentity) -> Option<Refusal> {
+    if manifest.version != identity.version() {
+        return Some(Refusal::IdentityMismatch {
+            field: "version",
+            checked: identity.version().to_owned(),
+            delta: manifest.version.clone(),
+        });
+    }
+
+    // Only meaningful when a delta entry exists for this target. No entry means
+    // no delta is published, which is an ordinary full download, not a mismatch.
+    let entry = manifest
+        .delta
+        .as_ref()
+        .and_then(|delta| delta.platforms.get(identity.target()))?;
+
+    if entry.signature != identity.signature() {
+        return Some(Refusal::IdentityMismatch {
+            field: "signature",
+            checked: identity.signature().to_owned(),
+            delta: entry.signature.clone(),
+        });
+    }
+
+    None
 }
 
 fn attempt_delta(
@@ -188,14 +284,18 @@ mod tests {
 
     const PLATFORM: &str = "linux-x86_64";
     const SIGNATURE: &str = "a-signature";
+    const FULL_URL: &str = "https://example.com/full.bin";
 
     /// Serves canned bytes, and can be told to fail.
     struct FakeServer {
         files: HashMap<String, Vec<u8>>,
+        /// Every URL requested, in order. Used to prove what was *not* fetched.
+        requested: std::cell::RefCell<Vec<String>>,
     }
 
     impl Fetch for FakeServer {
         fn fetch(&self, url: &str, out: &Path) -> Result<(), String> {
+            self.requested.borrow_mut().push(url.to_owned());
             let body = self.files.get(url).ok_or_else(|| format!("404 {url}"))?;
             std::fs::write(out, body).map_err(|e| e.to_string())
         }
@@ -208,6 +308,22 @@ mod tests {
         base: PathBuf,
         released: PathBuf,
         patch_url: String,
+    }
+
+    impl Fixture {
+        /// The identity a well-behaved server and an honest Tauri check produce
+        /// for this release: every field read out of the one document.
+        fn identity(&self, current_version: &str) -> UpdateIdentity {
+            let tauri = &self.manifest.platforms[PLATFORM];
+            UpdateIdentity::new(
+                current_version,
+                &self.manifest.version,
+                PLATFORM,
+                &tauri.url,
+                &tauri.signature,
+                self.manifest.to_json().expect("serialize"),
+            )
+        }
     }
 
     fn fixture(dir: &Path) -> Fixture {
@@ -239,7 +355,7 @@ mod tests {
             platforms: BTreeMap::from([(
                 PLATFORM.to_owned(),
                 TauriPlatform {
-                    url: "https://example.com/full.bin".to_owned(),
+                    url: FULL_URL.to_owned(),
                     signature: SIGNATURE.to_owned(),
                 },
             )]),
@@ -276,6 +392,7 @@ mod tests {
             manifest,
             server: FakeServer {
                 files: HashMap::from([(patch_url.clone(), patch_bytes)]),
+                requested: std::cell::RefCell::new(Vec::new()),
             },
             base: old,
             released: new,
@@ -283,15 +400,22 @@ mod tests {
         }
     }
 
+    fn refusal(source: UpdateSource) -> Refusal {
+        match source {
+            UpdateSource::Refused { reason } => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    // ---- the happy paths, unchanged in substance ------------------------
+
     #[test]
     fn uses_the_delta_when_everything_lines_up() {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
@@ -324,9 +448,7 @@ mod tests {
 
         // The common case for a user's first delta update. Not an error.
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             None,
             &dir.path().join("work"),
             &f.server,
@@ -335,7 +457,7 @@ mod tests {
         let UpdateSource::Full { url, reason, .. } = source else {
             panic!("expected a full download, got {source:?}");
         };
-        assert_eq!(url, "https://example.com/full.bin");
+        assert_eq!(url, FULL_URL);
         assert!(
             reason.is_none(),
             "a missing base is ordinary, not a failure"
@@ -347,16 +469,369 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
+        // Gate A test 9: no patch published from this version, but the target is
+        // a legitimate newer release, so the full path must still be reached.
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "0.1.0",
+            &f.identity("0.1.0"),
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
         );
-        assert!(matches!(source, UpdateSource::Full { reason: None, .. }));
+        let UpdateSource::Full {
+            url,
+            signature,
+            reason,
+        } = source
+        else {
+            panic!("expected a full download, got {source:?}");
+        };
+        assert!(reason.is_none());
+        assert_eq!(url, FULL_URL, "the full URL must be Tauri's selection");
+        assert_eq!(signature, SIGNATURE);
     }
+
+    #[test]
+    fn a_target_several_versions_ahead_still_uses_its_patch() {
+        // Gate A test 8. Schema 1 patches straight from any previous version to
+        // the latest, so a user far behind is ordinary rather than a special case.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+
+        f.manifest.version = "9.9.9".to_owned();
+        let entry = f
+            .manifest
+            .delta
+            .as_mut()
+            .unwrap()
+            .platforms
+            .get_mut(PLATFORM)
+            .unwrap();
+        entry.target_version = "9.9.9".to_owned();
+        let patch = entry.patches.remove("1.0.0").expect("fixture patch");
+        entry.patches.insert("0.2.0".to_owned(), patch);
+
+        let source = plan_update(
+            &f.identity("0.2.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+        assert!(
+            matches!(source, UpdateSource::Delta { .. }),
+            "a legitimate multi-version jump should still patch: {source:?}"
+        );
+    }
+
+    // ---- Gate A: the update identity ------------------------------------
+
+    #[test]
+    fn refuses_when_the_checked_version_is_not_the_delta_target() {
+        // Gate A test 1, and the core of the double-fetch attack: Tauri was told
+        // 9.9.9 so its semver gate would pass, while the document actually
+        // describes 1.0.1. Under the old architecture these came from two
+        // separate fetches and nothing compared them.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let honest = f.identity("1.0.0");
+        let lying = UpdateIdentity::new(
+            "1.0.0",
+            "9.9.9", // what Tauri was told
+            PLATFORM,
+            honest.download_url(),
+            honest.signature(),
+            honest.raw_json(), // what the document says: 1.0.1
+        );
+
+        let reason = refusal(plan_update(
+            &lying,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ));
+        assert!(
+            matches!(
+                &reason,
+                Refusal::IdentityMismatch { field: "version", checked, delta }
+                    if checked == "9.9.9" && delta == "1.0.1"
+            ),
+            "expected a version identity mismatch, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_when_the_delta_signature_is_not_the_one_tauri_selected() {
+        // Gate A test 2. The delta layer describes a different artifact than the
+        // one Tauri picked, so its digest and size describe the wrong file.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let honest = f.identity("1.0.0");
+        let diverged = UpdateIdentity::new(
+            "1.0.0",
+            honest.version(),
+            PLATFORM,
+            honest.download_url(),
+            "a-different-signature-tauri-selected",
+            honest.raw_json(),
+        );
+
+        let reason = refusal(plan_update(
+            &diverged,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ));
+        assert!(
+            matches!(
+                &reason,
+                Refusal::IdentityMismatch {
+                    field: "signature",
+                    ..
+                }
+            ),
+            "expected a signature identity mismatch, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn stays_bound_to_the_target_tauri_selected() {
+        // Gate A test 3 and the platform-selection finding. Tauri searches
+        // `{os}-{arch}-{installer}` before `{os}-{arch}` and does not report
+        // which key won. Here both exist with different values, and Tauri picked
+        // the installer-specific one. The generic entry must not be substituted
+        // just because its key is the one this crate would have computed.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+
+        f.manifest.platforms.insert(
+            "linux-x86_64-appimage".to_owned(),
+            TauriPlatform {
+                url: "https://example.com/real.AppImage".to_owned(),
+                signature: "the-appimage-signature".to_owned(),
+            },
+        );
+
+        // Tauri selected the AppImage entry; the delta layer describes the
+        // generic one.
+        let selected = UpdateIdentity::new(
+            "1.0.0",
+            &f.manifest.version,
+            PLATFORM,
+            "https://example.com/real.AppImage",
+            "the-appimage-signature",
+            f.manifest.to_json().expect("serialize"),
+        );
+
+        let source = plan_update(
+            &selected,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+
+        // It must not have used the generic delta entry.
+        assert!(
+            !matches!(source, UpdateSource::Delta { .. }),
+            "the delta entry describes a different artifact than Tauri selected"
+        );
+        let reason = refusal(source);
+        assert!(
+            matches!(&reason, Refusal::IdentityMismatch { field: "signature", checked, .. }
+                if checked == "the-appimage-signature"),
+            "expected the refusal to name Tauri's selection, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn the_full_path_always_uses_the_url_tauri_selected() {
+        // Even when the delta layer is absent entirely, the fallback URL is the
+        // one Tauri resolved — never a platform entry looked up here.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        f.manifest.delta = None;
+
+        let identity = UpdateIdentity::new(
+            "1.0.0",
+            &f.manifest.version,
+            PLATFORM,
+            "https://cdn.example.com/selected-by-tauri.AppImage",
+            "tauri-selected-signature",
+            f.manifest.to_json().expect("serialize"),
+        );
+
+        let UpdateSource::Full { url, signature, .. } = plan_update(
+            &identity,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ) else {
+            panic!("expected a full download");
+        };
+        assert_eq!(url, "https://cdn.example.com/selected-by-tauri.AppImage");
+        assert_eq!(signature, "tauri-selected-signature");
+    }
+
+    // ---- Gate A: version policy -----------------------------------------
+
+    #[test]
+    fn refuses_a_downgrade() {
+        // Gate A test 4. The manifest describes a real, older, genuinely signed
+        // release. Nothing downstream can catch this: that signature is valid
+        // and always will be.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let reason = refusal(plan_update(
+            &f.identity("2.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ));
+        assert!(
+            matches!(&reason, Refusal::Downgrade { current, target }
+                if current == "2.0.0" && target == "1.0.1"),
+            "expected a downgrade refusal, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn a_downgrade_never_becomes_a_full_download() {
+        // The distinction Gate A turns on: refusing must not degrade into the
+        // full path, which is described by the same document.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let source = plan_update(
+            &f.identity("2.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+        assert!(
+            !matches!(
+                source,
+                UpdateSource::Full { .. } | UpdateSource::Delta { .. }
+            ),
+            "a refusal must not resolve to any install path: {source:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_version_is_up_to_date() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let source = plan_update(
+            &f.identity("1.0.1"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+        assert!(matches!(source, UpdateSource::UpToDate), "got {source:?}");
+    }
+
+    #[test]
+    fn refuses_an_uncomparable_version() {
+        // Gate A test 6. Without an ordering we cannot apply the downgrade
+        // policy at all, so proceeding would reopen exactly the hole it closes.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let reason = refusal(plan_update(
+            &f.identity("not-a-version"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ));
+        assert!(
+            matches!(
+                &reason,
+                Refusal::UncomparableVersion {
+                    which: "installed",
+                    ..
+                }
+            ),
+            "expected an uncomparable-version refusal, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn refuses_an_uncomparable_target_version() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        f.manifest.version = "1.0".to_owned();
+        f.manifest
+            .delta
+            .as_mut()
+            .unwrap()
+            .platforms
+            .get_mut(PLATFORM)
+            .unwrap()
+            .target_version = "1.0".to_owned();
+
+        let reason = refusal(plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ));
+        assert!(
+            matches!(
+                &reason,
+                Refusal::UncomparableVersion {
+                    which: "target",
+                    ..
+                }
+            ),
+            "expected an uncomparable target, got {reason:?}"
+        );
+    }
+
+    // ---- Gate A: no second fetch ----------------------------------------
+
+    #[test]
+    fn never_fetches_the_manifest() {
+        // Gate A test 10. The only request a delta plan may make is the patch.
+        // There is no manifest URL parameter any more, so this asserts the
+        // shape of the flow rather than a policy that could be forgotten.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let _ = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+
+        let requested = f.server.requested.borrow();
+        assert_eq!(
+            requested.len(),
+            1,
+            "exactly one request — the patch — expected, got {requested:?}"
+        );
+        assert_eq!(requested[0], f.patch_url);
+    }
+
+    #[test]
+    fn a_refusal_makes_no_network_request_at_all() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let _ = plan_update(
+            &f.identity("2.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        );
+        assert!(
+            f.server.requested.borrow().is_empty(),
+            "a refused update must not download anything"
+        );
+    }
+
+    // ---- delta failures still fall back ---------------------------------
 
     #[test]
     fn falls_back_when_the_patch_download_fails() {
@@ -365,9 +840,7 @@ mod tests {
         f.server.files.clear(); // every request 404s
 
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
@@ -389,9 +862,7 @@ mod tests {
             .insert(f.patch_url.clone(), b"not the patch at all".to_vec());
 
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
@@ -414,9 +885,7 @@ mod tests {
         std::fs::write(&wrong, b"a completely different installer").expect("write");
 
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             Some(&wrong),
             &dir.path().join("work"),
             &f.server,
@@ -431,19 +900,59 @@ mod tests {
     }
 
     #[test]
-    fn reports_unavailable_for_a_platform_with_no_build() {
+    fn falls_back_when_the_delta_layer_is_unparseable() {
+        // A broken delta layer costs the delta path, not the update: the full
+        // download is described by the identity, which parsed by definition.
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let source = plan_update(
-            &f.manifest,
-            "windows-x86_64",
+        let identity = UpdateIdentity::new(
             "1.0.0",
+            "1.0.1",
+            PLATFORM,
+            FULL_URL,
+            SIGNATURE,
+            "{ not json at all",
+        );
+
+        let UpdateSource::Full { url, reason, .. } = plan_update(
+            &identity,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+        ) else {
+            panic!("expected a full download");
+        };
+        assert_eq!(url, FULL_URL);
+        assert!(matches!(reason, Some(Error::Manifest(_))));
+    }
+
+    #[test]
+    fn a_platform_with_no_delta_entry_still_reaches_the_full_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        // Tauri would not have produced an Update at all here — get_urls would
+        // have failed first — but the flow must still be well-defined if it
+        // somehow does, and "well-defined" means the authenticated full path.
+        let identity = UpdateIdentity::new(
+            "1.0.0",
+            &f.manifest.version,
+            "windows-x86_64",
+            FULL_URL,
+            SIGNATURE,
+            f.manifest.to_json().expect("serialize"),
+        );
+        let source = plan_update(
+            &identity,
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
         );
-        assert!(matches!(source, UpdateSource::Unavailable));
+        assert!(
+            matches!(source, UpdateSource::Full { .. }),
+            "got {source:?}"
+        );
     }
 
     #[test]
@@ -452,14 +961,7 @@ mod tests {
         let f = fixture(dir.path());
         let work = dir.path().join("work");
 
-        let _ = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
-            Some(&f.base),
-            &work,
-            &f.server,
-        );
+        let _ = plan_update(&f.identity("1.0.0"), Some(&f.base), &work, &f.server);
 
         assert!(
             !work.join("update.patch").exists(),
@@ -473,9 +975,7 @@ mod tests {
         let f = fixture(dir.path());
 
         let source = plan_update(
-            &f.manifest,
-            PLATFORM,
-            "1.0.0",
+            &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
@@ -489,7 +989,7 @@ mod tests {
             "implausible saving: {percent}%"
         );
         assert!(
-            UpdateSource::Unavailable.downloaded_percent().is_none(),
+            UpdateSource::UpToDate.downloaded_percent().is_none(),
             "only a delta has a saving to report"
         );
     }
