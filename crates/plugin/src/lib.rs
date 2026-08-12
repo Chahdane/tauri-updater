@@ -27,9 +27,11 @@
 
 pub mod flow;
 mod http;
+mod tauri_glue;
 
 pub use flow::{run_update, Context, InstallHandoff, Outcome};
 pub use http::HttpFetch;
+pub use tauri_glue::{Builder, Config, TauriInstall};
 
 /// Convenience alias for results produced by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
