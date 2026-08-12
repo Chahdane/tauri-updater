@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Corrected the declared minimum supported Rust version from 1.77 to 1.85. The
+  1.77 claim was wrong and CI's `msrv` job failed on it: `blake3` pulls in
+  edition-2024 crates, which no toolchain before 1.85 can parse. Reasoning
+  recorded in `docs/DECISIONS.md`.
+- The AppImage round-trip test can no longer pass vacuously. Nothing asserted
+  that the two fixture versions actually differ, so a generator change making
+  them identical would have left the whole suite green while proving nothing.
+
 ### Added
+
+- `docs/DECISIONS.md` — log of non-obvious decisions and the conditions that
+  would cause them to be revisited.
 
 - Cargo workspace with the `tauri-updater-delta-core` crate, holding the
   platform-agnostic diff/apply engine.

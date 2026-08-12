@@ -58,8 +58,8 @@ it is verifiable on macOS despite Linux being the first target platform.
 - [x] Cargo registry/build caching
 - [x] Tests run on Linux, macOS and Windows — the only evidence the engine really
       is platform-agnostic, given development happens on macOS only
-- [x] MSRV job that builds at the declared `rust-version` (1.77; highest
-      dependency floor is thiserror at 1.71)
+- [x] MSRV job that builds at the declared `rust-version` (1.85 — forced by
+      blake3's edition-2024 dependency tree; see docs/DECISIONS.md)
 - [x] Dependabot for cargo and actions
 
 ### Docs
