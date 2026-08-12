@@ -47,20 +47,38 @@ adapter that hands the finished artifact to the installer.
 
 ```mermaid
 flowchart TD
-    A[App checks for update] --> B[Official updater reports<br/>version + artifact URL]
-    B --> C{Patch manifest lists a patch<br/>from installed → target version?}
-    C -- no --> F[Full download]
-    C -- yes --> D[Download patch]
+    A[App calls Updater::check] --> B[ONE fetch of the release document<br/>Tauri retains it on Update.raw_json]
+    B --> P{Version policy:<br/>target newer than installed?}
+    P -- "older / uncomparable" --> R([REFUSED — install nothing])
+    P -- equal --> U([Up to date])
+    P -- newer --> Q{Delta metadata matches<br/>the target Tauri selected?}
+    Q -- no --> R
+    Q -- "no delta published" --> F[Full download<br/>from Update.download_url]
+    Q -- yes --> D[Download patch]
     D --> E[Apply patch to cached base artifact]
     E --> G{Rebuilt hash == manifest hash?}
     G -- no --> F
-    G -- yes --> H[Hand artifact to Tauri's install step]
-    F --> H
-    H --> I[Tauri verifies signature and installs]
+    G -- yes --> V
+    F --> V{Minisign signature valid?<br/>THE PLUGIN CHECKS THIS}
+    V -- no --> R
+    V -- yes --> H[VerifiedArtifact]
+    H --> I[Update::install — installs, verifies nothing]
 
     D -. any error .-> F
     E -. any error .-> F
 ```
+
+Two things in that diagram are easy to get backwards, and both were wrong in
+earlier drafts of this document:
+
+- **There is exactly one fetch of the release document.** The delta layer is
+  read out of the response `Updater::check()` already made, not fetched
+  separately. See `docs/DECISIONS.md` #13 for the downgrade attack the earlier
+  two-fetch flow allowed.
+- **Tauri does not verify what it is handed.** `Update::install` goes straight
+  to the installer; verification lives in `Update::download`, which the delta
+  path exists to skip. The signature check in this plugin is therefore the only
+  one on this path — see #10.
 
 Four stages, in order:
 
@@ -154,6 +172,18 @@ malformed or hostile input.
   comes from the minisign signature over the target installer. A patch is
   untrusted input; it is only ever used to produce a candidate file that must
   then pass both checks.
+- **Artifact authenticity is not manifest authenticity.** The signature proves
+  the *bytes* came from the holder of the signing key. It covers no manifest
+  field — not the version, the URLs, the sizes or the digests — because the
+  release document is **not signed at all**. Anything in this repository that
+  reads as though the manifest were authenticated is a bug in the prose; see
+  `docs/DECISIONS.md` #11.
+- **The release is bound to the one Tauri checked.** Because a signature says
+  nothing about *which* release it covers, and old signatures stay valid
+  forever, signature verification alone cannot stop a downgrade to a genuinely
+  signed vulnerable version. An explicit version policy does, and the delta
+  metadata is bound to Tauri's own selected target and signature so the two
+  cannot describe different releases. See #13 and #14.
 - **The plugin performs the signature check itself, and must.** This was
   originally written assuming Tauri would verify whatever it was handed. It does
   not. In `tauri-plugin-updater` 2.10.1, `verify_signature` is called from

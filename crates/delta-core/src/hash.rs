@@ -9,9 +9,19 @@
 //! desktop installer — and it hashes them several times faster than SHA-256
 //! while remaining a 256-bit cryptographic digest.
 //!
-//! This is a *correctness* check, not the security boundary. Authenticity is
-//! still established by the update server's signature over the release
-//! manifest, and by Tauri's own signature check on the artifact we hand back.
+//! This is a *correctness* check, not the security boundary — it proves the
+//! reconstruction produced the file the manifest described, nothing more.
+//!
+//! Authenticity is established solely by the minisign signature over the
+//! **target artifact**, checked in [`crate::signature`] before the bytes reach
+//! an installer. Two things this module must not be read as claiming:
+//!
+//! - **There is no signature over the release manifest.** The manifest is not
+//!   authenticated at all; matching a digest it published proves only internal
+//!   consistency. See `docs/DECISIONS.md` #11 and #13.
+//! - **Tauri does not re-check the artifact we hand back.** `Update::install`
+//!   verifies nothing; verification lives in `Update::download`, which the delta
+//!   path exists to skip. See `docs/DECISIONS.md` #10.
 
 use std::fmt;
 use std::fs::File;
