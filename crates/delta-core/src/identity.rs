@@ -60,8 +60,8 @@ use semver::Version;
 /// The single authoritative description of the release being installed.
 ///
 /// Built from the `Update` that Tauri's own check returned — see the plugin
-/// crate's `From<&Update>` impl. Deliberately Tauri-independent so the whole
-/// policy below is testable without an app, a runtime, or a network.
+/// crate's `UpdateExt::delta_identity`. Deliberately Tauri-independent so the
+/// whole policy below is testable without an app, a runtime, or a network.
 ///
 /// Every field originates from **one** HTTP response. That is the entire point:
 /// there is no second fetch whose answer could differ.
@@ -81,8 +81,8 @@ impl UpdateIdentity {
     /// The plugin builds this from `tauri_plugin_updater::Update`; tests build
     /// it directly. All six values must come from the same update check, or the
     /// guarantee this type exists to provide does not hold — which is why the
-    /// only supported construction in the shipping path is the `From<&Update>`
-    /// impl, not this constructor.
+    /// only supported construction in the shipping path is
+    /// `UpdateExt::delta_identity`, not this constructor.
     pub fn new(
         current_version: impl Into<String>,
         version: impl Into<String>,
@@ -378,10 +378,9 @@ mod tests {
             ("1.0.0", "1.0", "target"),
         ] {
             match refuses(from, to) {
-                Refusal::UncomparableVersion { which: got, .. } => assert_eq!(
-                    got, which,
-                    "{from} -> {to} should name the {which} version"
-                ),
+                Refusal::UncomparableVersion { which: got, .. } => {
+                    assert_eq!(got, which, "{from} -> {to} should name the {which} version")
+                }
                 other => panic!("{from} -> {to}: expected uncomparable, got {other:?}"),
             }
         }

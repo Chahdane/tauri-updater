@@ -126,10 +126,7 @@ pub fn plan_update(
     // The document Tauri fetched, parsed here rather than fetched again. A
     // malformed delta layer disqualifies the delta path only; the full download
     // is described by the identity, which parsed fine by definition.
-    let manifest = match Manifest::from_json(identity.raw_json()) {
-        Ok(manifest) => Some(manifest),
-        Err(_) => None,
-    };
+    let manifest = Manifest::from_json(identity.raw_json()).ok();
 
     // Bind our reading of that document to Tauri's. These are the seams where
     // one document can still be read two ways.
@@ -271,7 +268,6 @@ fn attempt_delta(
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -449,7 +445,12 @@ mod tests {
         let f = fixture(dir.path());
 
         // The common case for a user's first delta update. Not an error.
-        let source = plan_update(&f.identity("1.0.0"), None, &dir.path().join("work"), &f.server);
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            None,
+            &dir.path().join("work"),
+            &f.server,
+        );
 
         let UpdateSource::Full { url, reason, .. } = source else {
             panic!("expected a full download, got {source:?}");
@@ -474,7 +475,12 @@ mod tests {
             &dir.path().join("work"),
             &f.server,
         );
-        let UpdateSource::Full { url, signature, reason } = source else {
+        let UpdateSource::Full {
+            url,
+            signature,
+            reason,
+        } = source
+        else {
             panic!("expected a full download, got {source:?}");
         };
         assert!(reason.is_none());
@@ -575,7 +581,13 @@ mod tests {
             &f.server,
         ));
         assert!(
-            matches!(&reason, Refusal::IdentityMismatch { field: "signature", .. }),
+            matches!(
+                &reason,
+                Refusal::IdentityMismatch {
+                    field: "signature",
+                    ..
+                }
+            ),
             "expected a signature identity mismatch, got {reason:?}"
         );
     }
@@ -695,7 +707,10 @@ mod tests {
             &f.server,
         );
         assert!(
-            !matches!(source, UpdateSource::Full { .. } | UpdateSource::Delta { .. }),
+            !matches!(
+                source,
+                UpdateSource::Full { .. } | UpdateSource::Delta { .. }
+            ),
             "a refusal must not resolve to any install path: {source:?}"
         );
     }
@@ -728,7 +743,13 @@ mod tests {
             &f.server,
         ));
         assert!(
-            matches!(&reason, Refusal::UncomparableVersion { which: "installed", .. }),
+            matches!(
+                &reason,
+                Refusal::UncomparableVersion {
+                    which: "installed",
+                    ..
+                }
+            ),
             "expected an uncomparable-version refusal, got {reason:?}"
         );
     }
@@ -754,7 +775,13 @@ mod tests {
             &f.server,
         ));
         assert!(
-            matches!(&reason, Refusal::UncomparableVersion { which: "target", .. }),
+            matches!(
+                &reason,
+                Refusal::UncomparableVersion {
+                    which: "target",
+                    ..
+                }
+            ),
             "expected an uncomparable target, got {reason:?}"
         );
     }
@@ -919,7 +946,10 @@ mod tests {
             &dir.path().join("work"),
             &f.server,
         );
-        assert!(matches!(source, UpdateSource::Full { .. }), "got {source:?}");
+        assert!(
+            matches!(source, UpdateSource::Full { .. }),
+            "got {source:?}"
+        );
     }
 
     #[test]
