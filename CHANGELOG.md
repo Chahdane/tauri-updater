@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `VerifiedArtifact` — a token obtainable only through successful minisign
+  verification, so the install handoff cannot be reached with unverified bytes.
+  It owns the verified bytes rather than a path, closing the window in which a
+  file could be swapped between the check and the handoff.
+- `client::plan_update` and the `Fetch` trait — the whole client decision path,
+  testable with canned responses and with no Tauri or network dependency.
 - `delta-release` — release-time tool that turns the previous and new installers
   into a patch, digests, a minisign signature and a `manifest.json`. File-in,
   file-out, no network access.
