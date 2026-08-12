@@ -62,9 +62,9 @@ remembering it.
 - [x] Full-download fallback wired into every failure path
 - [x] `HttpFetch` — blocking HTTP over reqwest, the stack `tauri-plugin-updater`
       itself uses
-- [ ] `InstallHandoff` implementation over `tauri_plugin_updater::Update`
-- [ ] Plugin registration (`tauri::plugin::Builder`) and configuration
-- [ ] Linux CI: webkit2gtk apt dependencies, once `tauri` enters the build
+- [x] `InstallHandoff` implementation over `tauri_plugin_updater::Update`
+- [x] Plugin registration (`tauri::plugin::Builder`) and configuration
+- [x] Linux CI: webkit2gtk apt dependencies, now `tauri` is in the build
 
 ### Base artifact
 
@@ -92,7 +92,9 @@ remembering it.
 
 ## In progress
 
-Plugin crate scaffold — now that it has real behaviour to hold, per DECISIONS #2.
+The example app — a real Tauri updater accepting a served update. This is the
+only remaining claim, and nothing green so far substitutes for it: every test to
+date uses a fake handoff, by design.
 
 ## Blocked
 
