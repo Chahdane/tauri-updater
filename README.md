@@ -23,8 +23,10 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | Release-side patch generation tooling | Planned |
 | Tauri plugin + install handoff | Planned |
 
-The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan, and
-[SPRINT.md](SPRINT.md) tracks what is being worked on right now.
+The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
+[SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
+[docs/DECISIONS.md](docs/DECISIONS.md) records the non-obvious calls and why they
+were made.
 
 ## How it works
 
