@@ -1,100 +1,92 @@
-# Sprint 3 — The Tauri plugin
+# Sprint 4 — The real-app end-to-end
 
-**Phase:** 3 of 8 ([roadmap](docs/ROADMAP.md))
+**Phase:** 3 of 8, final gate ([roadmap](docs/ROADMAP.md))
 **Started:** 2026-08-12
 **Status:** In progress
 
 ## Goal
 
-First end-to-end delta update in a real Tauri app, on Linux/AppImage: the plugin
-wraps `tauri-plugin-updater`, fetches the manifest, picks a patch, applies it,
-verifies it, and hands the finished artifact to Tauri's own install step.
+Close the one claim still open: **a running Tauri app accepts a served update.**
+
+Everything to date proves the algorithm. Nothing proves that a real
+`Update`, obtained from a real `Updater::check()` inside a real app, installs a
+delta-rebuilt artifact. 103 tests use a fake handoff — by design, and that is
+exactly why none of them substitutes for this.
+
+## Why an app is unavoidable
+
+`tauri_plugin_updater::Update` has private fields (`run_on_main_thread`,
+`config`, `extract_path`, `app_name`, `installer_args`). No test can construct
+one. `Updater::check()` inside a running app is the only source, so the
+control-surface route is **forced, not chosen**.
+
+The counterweight: macOS `install_inner` is pure file manipulation — gzip, tar
+extract, rename the live bundle, move the new one in. No GUI surface, so once a
+real `Update` exists the install is mechanical and hash-assertable.
 
 ## Definition of done
 
-- [ ] Green matrix — fmt + clippy + tests on Linux, macOS, Windows
-- [ ] An example app updates itself from a patch
-- [ ] Every failure path demonstrably falls back to a full download
+- [ ] Two versions built by `cargo tauri build`, published through `delta-release`
+- [ ] Local plain-HTTP server, no cloud, no external dependencies
+- [ ] Post-install BLAKE3 of the **main binary** matches v_new, by name, by hash
+- [ ] Failure branches asserted by outcome, not by error
+- [ ] DECISIONS #13 recording the Gatekeeper path taken and what it proves
 - [ ] SPRINT / CHANGELOG / docs updated in the same PR
 
 ## Tasks
 
-### Signature compatibility — done, and done first
+### 1. Example app — done
 
-This gated everything else: if Tauri rejected our signatures, the manifest format
-and the whole handoff design would have needed rework, and finding that out after
-building a client on top would have been expensive.
+- [x] `examples/desktop-app`, Tauri v2, plain HTML frontend, no npm build step
+- [x] Registers both plugins; real "check for updates" action in the UI
+- [x] The update path is the genuine integration: Tauri's own `check()` reads
+      the manifest (works because it is a *superset*, decision #5), yielding the
+      `Update` that installs; our flow substitutes only the download
 
-- [x] Reproduce `tauri-plugin-updater` 2.10.1's `verify_signature` verbatim and
-      run it against real `delta-release` output
-- [x] Confirm the signature is **prehashed**, proven two independent ways rather
-      than inferred from a green test
-- [x] Confirm Tauri rejects wrong bytes and wrong keys
-- [x] Confirm a **delta-rebuilt** artifact satisfies the same signature
-- [x] Record the result and the remaining gap in `docs/DECISIONS.md` #6
+### 2. Control surface — done, and verified absent by default
 
-Result: cleared at the algorithm level. Six tests. The remaining gap — a
-*running* Tauri app accepting an update served this way — is the example app
-below, and is deliberately tracked as a separate claim.
+- [x] `#[cfg(feature = "e2e-control")]`, feature **not** in `default`
+- [x] Loopback HTTP only: `/trigger`, `/outcome`, `/version`
+- [x] Triggers the *same* function the UI button calls, so tested path and
+      shipped path are the same code
+- [x] **Verified by evidence, not inspection:** default build has no marker
+      string in the binary; the check is non-vacuous because the marker *is*
+      present when the feature is explicitly enabled
 
-### Verification is the sole gate — enforced by the type system
+No private key is committed either — the harness generates one per run. A
+test-only key in the repo is the same hazard class as a shipped test surface.
 
-Tauri does not verify what it is handed (DECISIONS #10), so this plugin's check
-is the only one. A sole gate with no backstop must not depend on call sites
-remembering it.
+### 3. Two published versions — in progress
 
-- [x] `VerifiedArtifact` — private field, no public constructor, so
-      `verify_artifact` is the only way in the language to obtain one
-- [x] Token owns the verified *bytes*, not a path, closing the window where a
-      file could be swapped between check and handoff
-- [x] `compile_fail` doctests proving forgery does not build, mutation-tested so
-      they are not vacuously green
-- [x] Handoff signature takes `&VerifiedArtifact`, so unverified bytes cannot be
-      expressed at the call site
+- [ ] `cargo tauri build` producing `.app` and `.app.tar.gz`
+- [ ] v_old and v_new differing in the **main binary**, not just metadata
+- [ ] Both published through `delta-release`, not hand-crafted
 
-### Plugin crate — client flow done, Tauri glue next
+### 4. Harness
 
-- [x] `tauri-plugin-updater-delta` crate with the full client flow
-- [x] Manifest fetch from a configured URL
-- [x] Patch selection for the installed version and current platform
-- [x] Patch download, with the manifest's digest checked before applying
-- [x] Reconstruct via `try_reconstruct`, then verify, then hand off
-- [x] Full-download fallback wired into every failure path
-- [x] `HttpFetch` — blocking HTTP over reqwest, the stack `tauri-plugin-updater`
-      itself uses
-- [x] `InstallHandoff` implementation over `tauri_plugin_updater::Update`
-- [x] Plugin registration (`tauri::plugin::Builder`) and configuration
-- [x] Linux CI: webkit2gtk apt dependencies, now `tauri` is in the build
+- [ ] Serve manifest + patch + `.app.tar.gz` over the existing `TestServer`
+- [ ] Assert v_old != v_new **at the main-binary layer** — different metadata
+      around an identical binary is the `appimage_pair` vacuous pass arriving
+      through a different door
 
-### Base artifact
+### 5. The install
 
-- [ ] Cache the installer after a successful update, so the next update has a base
-- [ ] Behave correctly when no base is available — plain full download, no error
+- [ ] Direct route: ad-hoc codesign, `xattr -cr`, run `Update::install` on the
+      live bundle
+- [ ] Assert the installed bundle's main binary hashes to v_new
+- [ ] If `PermissionDenied` or an authorization prompt blocks a headless run,
+      take the stripped-down fallback and record it — do not paper over it
 
-### Install handoff
+### 6. Failure branches
 
-- [ ] AppImage adapter: hand the verified artifact to Tauri's install step
-- [ ] Keep the seam narrow enough that Windows and macOS adapters slot in later
-
-### Example app
-
-- [ ] Minimal Tauri app using both plugins
-- [ ] Serve a manifest and artifacts locally
-- [ ] **Prove a real Tauri updater accepts a delta-rebuilt artifact end to end** —
-      closes the remaining gap in DECISIONS #6
-- [ ] Real-world patch ratio numbers for the README
-
-### Docs
-
-- [ ] README install and configuration, replacing the aspirational example
-- [ ] ARCHITECTURE: the client flow as built
-- [ ] DECISIONS: base-artifact caching strategy
+- [ ] corrupt / truncated / wrong-base patch → fallback → installed bytes are
+      the released artifact
+- [ ] signature failure → no install, loud failure, per DECISIONS #11
+- [ ] corrupt full download → nothing installed
 
 ## In progress
 
-The example app — a real Tauri updater accepting a served update. This is the
-only remaining claim, and nothing green so far substitutes for it: every test to
-date uses a fake handoff, by design.
+Building the two app versions.
 
 ## Blocked
 
@@ -102,15 +94,15 @@ Nothing.
 
 ## Notes
 
-- `gh` is still not installed, so PRs are opened by hand. Reading CI *status*
-  works anonymously now the repo is public; reading CI *logs* needs
-  `gh auth login`.
-- Two PRs are open and awaiting review: `fix/msrv`, and `feat/release-tooling`
-  stacked on it. This sprint's branch stacks on those in turn.
-- Phase 2 exit state: 63 tests green across Linux, macOS and Windows.
+- Claim status: **"a running Tauri app accepts a served update" is OPEN.** It
+  closes only if the direct install path succeeds. The stripped-down fallback
+  closes a weaker claim and leaves the full one open, recorded as such.
+- Base-artifact caching is not built; the harness supplies the previous
+  artifact directly. A shipping plugin would cache it after each update. That
+  gap is real and belongs to Phase 3 proper.
 
 ## Next sprint
 
-Phase 4 — robustness and security: forcing every failure path in tests, resume
-and retry for interrupted downloads, disk-space checks, and fuzzing the apply
-path against malformed patches.
+Phase 4 — robustness: resumable downloads, disk-full, atomic writes, and an
+audit of every failure branch. Much of it already exists; the work is closing
+gaps rather than starting fresh.

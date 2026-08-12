@@ -721,6 +721,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "delta-updater-example"
+version = "1.0.1"
+dependencies = [
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-updater",
+ "tauri-plugin-updater-delta",
+ "tauri-updater-delta-core",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"

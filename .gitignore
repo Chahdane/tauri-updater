@@ -7,6 +7,8 @@
 node_modules/
 dist/
 dist-js/
+# ...but the example app's frontend is source, not build output.
+!examples/desktop-app/dist/
 *.tsbuildinfo
 
 # Tauri example apps
@@ -47,3 +49,8 @@ desktop.ini
 !.vscode/extensions.json
 *.swp
 *~
+
+# Example app build output
+examples/desktop-app/icons/android/
+examples/desktop-app/icons/ios/
+examples/desktop-app/app-icon.png
