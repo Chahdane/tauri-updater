@@ -376,3 +376,99 @@ along the right seam.
 **How this stays honest:** the `msrv` job reads `rust-version` from `Cargo.toml`,
 so it tests whatever is declared. It caught this drift on the branch rather than
 after release, which is the whole reason the job exists.
+
+---
+
+## 13. Delta is correctness-only on macOS until the tar layer is addressed
+
+**Decided:** 2026-08-12 · **Status:** active, tracked as Phase 4/5 work
+
+Measured on the real example app, two versions built by `cargo tauri build` and
+published by `delta-release`:
+
+| Platform | Artifact | Patch | Full | Patch as % of download |
+| --- | --- | ---: | ---: | ---: |
+| Linux | `.AppImage` (synthetic fixture) | 393,782 | 6,815,744 | **5.78%** |
+| macOS | `.app.tar.gz` (real bundle) | 3,860,122 | 4,057,308 | **95.14%** |
+
+macOS saves almost nothing. This was predicted in ARCHITECTURE before it was
+measured, and the measurement confirms the mechanism rather than revealing a bug.
+
+### Why
+
+`.app.tar.gz` is **gzip-compressed**, and gzip (DEFLATE) is a streaming format:
+its output at any point depends on everything that came before. Change a few
+bytes in the main binary and every compressed byte after that point shifts —
+different back-references, different Huffman coding, different bit alignment. The
+uncompressed tars are nearly identical; the compressed ones share almost nothing.
+
+The engine reuses whatever the two inputs genuinely share. Here they share very
+little *as presented*, so a 95% patch is the correct answer to the question being
+asked. The question is wrong, not the answer.
+
+### The fix, already sketched
+
+Delta the **uncompressed tar**, then reproduce the gzip layer deterministically
+so the reconstructed `.app.tar.gz` is byte-identical to the published one — which
+it must be, because the signature covers those exact bytes (#6). That is more
+involved than it sounds: it requires pinning the compressor's parameters so the
+same input always yields the same output, and confirming Tauri's bundler is
+reproducible in the same way.
+
+Phase 4/5 work. **Not a Phase 3 blocker** — a 95% patch exercises the install
+path exactly as a 5% one does, so it does not weaken the end-to-end proof at all.
+
+### What this means for adopters
+
+State ratios per platform, never as one number:
+
+- **Linux / AppImage** — the intended case, and the engine performs as designed.
+- **macOS** — correct but not yet worth enabling; wait for the uncompressed-tar
+  work.
+- **Windows** — unmeasured. NSIS `.exe` and `.msi` are also compressed
+  containers, so expect something closer to macOS than Linux until measured.
+
+A single "delta updates for Tauri" claim that quietly averages these would
+overpromise on two platforms out of three.
+
+---
+
+## 14. rsign2 and the `minisign` crate disagree about empty passwords
+
+**Decided:** 2026-08-12 · **Status:** active
+
+A key produced by `tauri signer generate --password ""` **cannot be loaded by
+`delta-release` at all** — not with an empty password, not with any password. It
+fails with `Wrong password for that key`, which is a baffling thing to read about
+a key that has no password.
+
+This is not a Tauri bug. Tauri signs with that key perfectly well.
+
+### The divergence
+
+Tauri's CLI signs with **rsign2**; this project uses the **`minisign` crate**.
+Both write the same file format, and the key's header confirms the encryption
+fields are populated (`kdf_alg: Sc`, non-zero salt). They differ in one place:
+
+- **rsign2** runs its KDF over the password whatever it is, including `""`.
+- **`minisign`** skips encryption entirely when the password is empty:
+  `if !password.is_empty() { sk = sk.encrypt(password)? }`.
+
+So rsign2 writes a key encrypted under the empty password; `minisign` then reads
+it without decrypting and the checksum check fails. Same format, same input,
+different behaviour.
+
+### Why it is worth a decision entry
+
+This is precisely the failure that kills adoption quietly. Someone follows
+Tauri's own documentation, accepts the default of no password, gets an error that
+appears to be about a password they never set, and concludes the tool is broken.
+
+Handled in two ways: the error now names the cause and the remedy, and a test
+pins the behaviour so a version bump in either library cannot change it
+unnoticed.
+
+**Revisit when:** either library changes its empty-password handling — at which
+point the test fails and this entry explains why it was ever there. The
+longer-term fix is to sign with rsign2 directly, guaranteeing key compatibility
+with whatever Tauri's CLI produces.
