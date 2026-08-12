@@ -427,12 +427,21 @@ fn a_version_tauri_never_checked_installs_nothing() {
         &w.manifest_json,
     );
 
-    let result = run_with(&w, &lying, &handoff, &dir.path().join("work"), Some(&w.base));
+    let result = run_with(
+        &w,
+        &lying,
+        &handoff,
+        &dir.path().join("work"),
+        Some(&w.base),
+    );
 
     assert!(
         matches!(
             result,
-            Err(Error::Refused(Refusal::IdentityMismatch { field: "version", .. }))
+            Err(Error::Refused(Refusal::IdentityMismatch {
+                field: "version",
+                ..
+            }))
         ),
         "expected a version identity mismatch, got {result:?}"
     );
