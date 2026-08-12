@@ -104,17 +104,36 @@ intended reason, then restored. No mutations committed.
 - [ ] 12. Documentation audit against current code
 - [ ] 16. `research/` evidence structure and findings ledger, no fabricated data
 
-## Preserved work
+## Preserved work — now in `main`
 
-`feat/e2e-real-app` carries the example desktop app, the two-version build
-script, the E2E harness scripts and the Codex audit transcript. Pushed to origin
-as a backup on 2026-08-12; not to be reset, deleted or merged. It stacks on
-`main` at 34a79db.
+`feat/e2e-real-app` carried the example desktop app, the two-version build
+script, the E2E harness scripts and the Codex audit transcript. It was **merged
+into `main` as PR #12 out of order**, before Gate A; see `docs/DECISIONS.md` #17.
+Not reverted.
 
-Note that its `examples/desktop-app/src/update.rs` still calls the old
-two-fetch `run_update(manifest_url, …)` API and will not compile against this
-branch. Porting it to `UpdateExt::delta_identity` is the first task when real-app
-E2E resumes, and is itself a useful check that the new API is usable.
+Three consequences, all handled in the Gate A PR:
+
+- **The example was ported** to `UpdateExt::delta_identity`. It is a workspace
+  member, so Gate A could not compile until it moved.
+- **`main` was red on all five CI jobs** when #12 landed. A stale `Cargo.lock`
+  (example `Cargo.toml` at 1.0.0, lock recording 1.0.1) failed every `--locked`
+  job — four of the five — and `crates/delta-release/src/signing.rs` failed
+  `cargo fmt --check`. Both fixed here.
+- **A GitHub "Update branch" merge on the PR dropped Gate A's DECISIONS #13 and
+  #14**, leaving four code comments pointing at the wrong sections. Resolved by
+  keeping both sets and renumbering: Gate A holds #13/#14, the macOS and rsign2
+  entries moved to #15/#16.
+
+### First tasks when real-app E2E resumes
+
+1. **Review `examples/desktop-app/e2e/*.sh`.** Deliberately untouched. They were
+   written against the two-fetch flow, and `DELTA_E2E_MANIFEST_URL` now feeds
+   only Tauri's `endpoints()` — the harness may still assume the plugin fetches
+   the manifest itself.
+2. **Validate the port at runtime.** It compiles and reads well, but no running
+   app has exercised `delta_identity()` yet. That remains the open claim.
+3. **Stop `build-versions.sh` re-introducing the lock drift** that broke `main`;
+   it rewrites the example's version in place.
 
 ---
 
