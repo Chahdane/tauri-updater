@@ -1,0 +1,92 @@
+//! The Tauri seam: registration, and the install handoff over `Update`.
+//!
+//! Everything Tauri-specific in this crate is here. The flow in [`crate::flow`]
+//! has no Tauri dependency, so this file is deliberately thin — if it grows,
+//! logic has probably leaked out of the layer that can be tested without an app.
+
+use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
+use tauri::{Manager, Runtime};
+use tauri_plugin_updater::Update;
+use tauri_updater_delta_core::VerifiedArtifact;
+
+use crate::flow::InstallHandoff;
+use crate::{Error, Result};
+
+/// Hands a verified artifact to the official updater's own install step.
+///
+/// This is the entire wrap-don't-replace design in one call: the bytes are
+/// bit-identical to what `Update::download` would have produced, so
+/// `Update::install` runs exactly as it always does — same installer logic, same
+/// platform handling, nothing forked.
+///
+/// It takes a [`VerifiedArtifact`] because `install` itself verifies nothing.
+/// See `docs/DECISIONS.md` #10.
+pub struct TauriInstall<'a> {
+    update: &'a Update,
+}
+
+impl<'a> TauriInstall<'a> {
+    /// Wrap an `Update` obtained from `tauri-plugin-updater`.
+    pub fn new(update: &'a Update) -> Self {
+        Self { update }
+    }
+}
+
+impl InstallHandoff for TauriInstall<'_> {
+    fn install(&self, artifact: &VerifiedArtifact) -> Result<()> {
+        self.update
+            .install(artifact.as_bytes())
+            .map_err(|e| Error::Install(e.to_string()))
+    }
+}
+
+/// Configuration for the plugin.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Where the delta-aware manifest is published.
+    ///
+    /// This is a superset of Tauri's own updater manifest, so it can be the same
+    /// URL the official updater is already pointed at.
+    pub manifest_url: String,
+}
+
+/// Builds the plugin.
+#[derive(Debug, Default)]
+pub struct Builder {
+    manifest_url: Option<String>,
+}
+
+impl Builder {
+    /// Start configuring the plugin.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the manifest URL. Required.
+    pub fn manifest_url(mut self, url: impl Into<String>) -> Self {
+        self.manifest_url = Some(url.into());
+        self
+    }
+
+    /// Build the plugin.
+    ///
+    /// # Errors
+    ///
+    /// If no manifest URL was set. Failing at registration is deliberate: a
+    /// plugin that silently does nothing because it was misconfigured is worse
+    /// than an app that refuses to start.
+    pub fn build<R: Runtime>(self) -> std::result::Result<TauriPlugin<R>, Error> {
+        let manifest_url = self.manifest_url.ok_or_else(|| {
+            Error::Manifest("a manifest URL is required: call Builder::manifest_url".to_owned())
+        })?;
+
+        Ok(PluginBuilder::new("updater-delta")
+            .setup(move |app, _api| {
+                app.manage(Config {
+                    manifest_url: manifest_url.clone(),
+                });
+                Ok(())
+            })
+            .build())
+    }
+}

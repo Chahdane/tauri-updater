@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `TauriInstall` — hands a verified artifact to `tauri_plugin_updater::Update`,
+  and the plugin registration/`Builder`. All Tauri-specific code lives in one
+  thin module; the flow beneath it has no Tauri dependency.
 - `tauri-plugin-updater-delta` — the client flow: fetch manifest, select a patch,
   download it, reconstruct, verify, hand off. Both boundaries are traits
   (`Fetch`, `InstallHandoff`), so the whole path is tested offline with no Tauri
