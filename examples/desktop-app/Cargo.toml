@@ -1,0 +1,27 @@
+[package]
+name = "delta-updater-example"
+description = "Minimal Tauri app used to prove a real updater accepts a delta-rebuilt artifact."
+publish = false
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+tauri-plugin-updater-delta = { path = "../../crates/plugin" }
+tauri-updater-delta-core.workspace = true
+serde_json = "1"
+
+[features]
+default = []
+# Test-only control surface. OFF by default and never enabled by any default
+# path — see src/control.rs and the verification in the e2e harness, which
+# builds without it and asserts the endpoint is absent from the binary.
+e2e-control = []
