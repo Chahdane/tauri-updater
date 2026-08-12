@@ -74,10 +74,12 @@ pub enum UpdateSource {
         reason: Option<Error>,
     },
 
-    /// The manifest publishes nothing for this platform.
-    Unavailable,
-
     /// The release is already installed. Not an error, and nothing to do.
+    ///
+    /// There is deliberately no `Unavailable` variant. "Nothing published for
+    /// this platform" cannot arise here: an identity only exists because Tauri's
+    /// `get_urls` already found a target for it, so a platform with no build
+    /// never produces an `Update` to plan from in the first place.
     UpToDate,
 
     /// The release must not be installed at all.
@@ -926,12 +928,13 @@ mod tests {
     }
 
     #[test]
-    fn reports_unavailable_for_a_platform_with_no_build() {
+    fn a_platform_with_no_delta_entry_still_reaches_the_full_path() {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        // Tauri would not have produced an Update at all here, but the flow
-        // must still be well-defined if it does.
+        // Tauri would not have produced an Update at all here — get_urls would
+        // have failed first — but the flow must still be well-defined if it
+        // somehow does, and "well-defined" means the authenticated full path.
         let identity = UpdateIdentity::new(
             "1.0.0",
             &f.manifest.version,
@@ -986,7 +989,7 @@ mod tests {
             "implausible saving: {percent}%"
         );
         assert!(
-            UpdateSource::Unavailable.downloaded_percent().is_none(),
+            UpdateSource::UpToDate.downloaded_percent().is_none(),
             "only a delta has a saving to report"
         );
     }
