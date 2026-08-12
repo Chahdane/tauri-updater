@@ -1,0 +1,26 @@
+[package]
+name = "tauri-updater-delta-release"
+description = "Release-time tooling: generate patches, sign installers and write the update manifest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "delta-release"
+path = "src/main.rs"
+
+[dependencies]
+tauri-updater-delta-core.workspace = true
+base64.workspace = true
+clap.workspace = true
+minisign.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tauri-updater-delta-fixtures.workspace = true
+minisign-verify.workspace = true
+tempfile.workspace = true
