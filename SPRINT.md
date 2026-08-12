@@ -37,6 +37,21 @@ Result: cleared at the algorithm level. Six tests. The remaining gap — a
 *running* Tauri app accepting an update served this way — is the example app
 below, and is deliberately tracked as a separate claim.
 
+### Verification is the sole gate — enforced by the type system
+
+Tauri does not verify what it is handed (DECISIONS #10), so this plugin's check
+is the only one. A sole gate with no backstop must not depend on call sites
+remembering it.
+
+- [x] `VerifiedArtifact` — private field, no public constructor, so
+      `verify_artifact` is the only way in the language to obtain one
+- [x] Token owns the verified *bytes*, not a path, closing the window where a
+      file could be swapped between check and handoff
+- [x] `compile_fail` doctests proving forgery does not build, mutation-tested so
+      they are not vacuously green
+- [ ] Handoff signature takes `&VerifiedArtifact`, so unverified bytes cannot be
+      expressed at the call site
+
 ### Plugin crate
 
 - [ ] `tauri-plugin-updater-delta` crate wrapping `tauri-plugin-updater`
