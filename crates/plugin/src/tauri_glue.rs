@@ -7,10 +7,50 @@
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{Manager, Runtime};
 use tauri_plugin_updater::Update;
-use tauri_updater_delta_core::VerifiedArtifact;
+use tauri_updater_delta_core::{UpdateIdentity, VerifiedArtifact};
 
 use crate::flow::InstallHandoff;
 use crate::{Error, Result};
+
+/// Derives the authoritative release identity from a checked `Update`.
+///
+/// An extension trait rather than a `From` impl because both types are foreign
+/// to this crate.
+pub trait UpdateExt {
+    /// The single description of the release this update refers to.
+    fn delta_identity(&self) -> UpdateIdentity;
+}
+
+/// This is the only place the delta flow learns what it is installing, and it is
+/// the whole of the fix recorded in `docs/DECISIONS.md` #13. Every field comes
+/// from the one HTTP response `Updater::check()` already made:
+///
+/// | Identity field | Source on `Update` | Why not derive it ourselves |
+/// | --- | --- | --- |
+/// | `current_version` | `current_version` | Same value Tauri's semver gate used |
+/// | `version` | `version` | The `checked_target` |
+/// | `target` | `target` | Tauri's own `{os}-{arch}` string |
+/// | `download_url` | `download_url` | Tauri already ran its platform search |
+/// | `signature` | `signature` | Selected by that same search |
+/// | `raw_json` | `raw_json` | The document itself, verbatim |
+///
+/// `download_url` and `signature` matter most. Tauri searches
+/// `{os}-{arch}-{installer}` before `{os}-{arch}` and does not report which key
+/// won, so reproducing that search here would create a second selection
+/// algorithm free to drift from the real one. Consuming its *result* cannot
+/// drift.
+impl UpdateExt for Update {
+    fn delta_identity(&self) -> UpdateIdentity {
+        UpdateIdentity::new(
+            &self.current_version,
+            &self.version,
+            &self.target,
+            self.download_url.as_str(),
+            &self.signature,
+            self.raw_json.to_string(),
+        )
+    }
+}
 
 /// Hands a verified artifact to the official updater's own install step.
 ///
