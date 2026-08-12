@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/delta-core", "crates/delta-release", "crates/fixtures"]
+members = ["crates/delta-core", "crates/delta-release", "crates/fixtures", "crates/plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,6 +25,7 @@ tempfile = "3"
 # Internal
 tauri-updater-delta-core = { path = "crates/delta-core" }
 tauri-updater-delta-fixtures = { path = "crates/fixtures" }
+tauri-updater-delta-release = { path = "crates/delta-release" }
 
 [profile.release]
 lto = true

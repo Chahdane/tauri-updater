@@ -49,17 +49,22 @@ remembering it.
       file could be swapped between check and handoff
 - [x] `compile_fail` doctests proving forgery does not build, mutation-tested so
       they are not vacuously green
-- [ ] Handoff signature takes `&VerifiedArtifact`, so unverified bytes cannot be
+- [x] Handoff signature takes `&VerifiedArtifact`, so unverified bytes cannot be
       expressed at the call site
 
-### Plugin crate
+### Plugin crate — client flow done, Tauri glue next
 
-- [ ] `tauri-plugin-updater-delta` crate wrapping `tauri-plugin-updater`
-- [ ] Manifest fetch from a configured URL
-- [ ] Patch selection for the installed version and current platform
-- [ ] Patch download, with the manifest's digest checked before applying
-- [ ] Reconstruct via `try_reconstruct`, then hand off
-- [ ] Full-download fallback wired into every failure path
+- [x] `tauri-plugin-updater-delta` crate with the full client flow
+- [x] Manifest fetch from a configured URL
+- [x] Patch selection for the installed version and current platform
+- [x] Patch download, with the manifest's digest checked before applying
+- [x] Reconstruct via `try_reconstruct`, then verify, then hand off
+- [x] Full-download fallback wired into every failure path
+- [x] `HttpFetch` — blocking HTTP over reqwest, the stack `tauri-plugin-updater`
+      itself uses
+- [ ] `InstallHandoff` implementation over `tauri_plugin_updater::Update`
+- [ ] Plugin registration (`tauri::plugin::Builder`) and configuration
+- [ ] Linux CI: webkit2gtk apt dependencies, once `tauri` enters the build
 
 ### Base artifact
 
