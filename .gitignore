@@ -7,6 +7,8 @@
 node_modules/
 dist/
 dist-js/
+# ...but the example app's frontend is source, not build output.
+!examples/desktop-app/dist/
 *.tsbuildinfo
 
 # Tauri example apps
