@@ -31,7 +31,10 @@ mod tauri_glue;
 
 pub use flow::{run_update, Context, InstallHandoff, Outcome};
 pub use http::HttpFetch;
-pub use tauri_glue::{Builder, Config, TauriInstall};
+pub use tauri_glue::{Builder, Config, TauriInstall, UpdateExt};
+
+#[doc(no_inline)]
+pub use tauri_updater_delta_core::{Refusal, UpdateIdentity};
 
 /// Convenience alias for results produced by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -54,10 +57,22 @@ pub enum Error {
 
     /// Signature verification failed.
     ///
-    /// Never recoverable by falling back: a manifest whose signature does not
-    /// check out cannot be trusted to describe a safe full download either.
+    /// Never recoverable by falling back. The release document is not signed,
+    /// so this does not prove the document is forged — but the full-download
+    /// path is described by that same document and checked against a signature
+    /// from it, so retrying there grants another attempt rather than a safer
+    /// one. See `docs/DECISIONS.md` #11.
     #[error("{0}")]
     Signature(String),
+
+    /// The update was refused: a downgrade, a replay, or an identity mismatch.
+    ///
+    /// Distinct from every other variant, which describe something going wrong
+    /// with *obtaining* a release. This one says the release we are being
+    /// pointed at is not one to install at all, so there is no retry and no
+    /// fallback that would help.
+    #[error("update refused: {0}")]
+    Refused(tauri_updater_delta_core::Refusal),
 
     /// The installer rejected the artifact.
     #[error("install failed: {0}")]
