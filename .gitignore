@@ -47,3 +47,8 @@ desktop.ini
 !.vscode/extensions.json
 *.swp
 *~
+
+# Example app build output
+examples/desktop-app/icons/android/
+examples/desktop-app/icons/ios/
+examples/desktop-app/app-icon.png
