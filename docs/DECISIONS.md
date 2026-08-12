@@ -151,11 +151,40 @@ was authentic, which says nothing about what it produced.
   same file twice yields different strings. Both layers are therefore written
   from a single signing operation per run, and `Manifest::validate` rejects a
   document where they disagree.
-- **Not yet validated against a real Tauri release.** Signatures are produced by
-  the `minisign` crate in prehashed mode and verified in tests by
-  `minisign-verify`, the same crate Tauri's updater uses, with the same base64
-  envelope. That is strong evidence but not proof of end-to-end compatibility.
-  Phase 3 must confirm it against an actual Tauri updater.
+**Validated against Tauri's actual verifier** (2026-08-12, the first task of
+Phase 3, before any client flow was built on top of it).
+
+`crates/delta-release/tests/tauri_signature_compat.rs` reproduces
+`tauri-plugin-updater` 2.10.1's `verify_signature` and `base64_to_string`
+**verbatim** — copied, not paraphrased — and runs them against signatures
+`delta-release` actually produces. Paraphrasing would have hidden a real
+difference: Tauri calls `PublicKey::decode` on the whole base64-decoded key
+file, not `from_base64` on the key line, and a check written from memory would
+plausibly get that wrong and still pass.
+
+Findings:
+
+- Tauri accepts the signature in **both** manifest layers.
+- The signature is **prehashed** (`ED`, bytes `0x45 0x44`), asserted two
+  independent ways: directly on the wire format, and by verifying with
+  `allow_legacy = false`, which rejects any non-prehashed signature outright —
+  so success there can only mean the prehashed branch ran. This matters because
+  Tauri passes `allow_legacy = true`, meaning a merely-green verification would
+  not have told us which code path executed.
+- In `minisign-verify`, `verify` branches on `signature.is_prehashed` *before*
+  `allow_legacy` is consulted, so prehashed signatures are accepted regardless.
+- Tauri rejects a signature over different bytes, and one from another key.
+- **An artifact rebuilt from a delta satisfies the same signature a full
+  download would have been checked against** — which is the entire point of
+  signing the target installer.
+
+Version alignment: Tauri pins `minisign-verify = "0.2"` and so does this
+workspace, so a shared build unifies on one implementation.
+
+**Still not proven:** that a *running* Tauri application accepts an update
+served this way. The gate above covers the algorithm; the example app is the
+final confirmation and remains Phase 3 work. These are deliberately kept as
+separate claims.
 
 ---
 
