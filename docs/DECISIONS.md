@@ -400,8 +400,150 @@ so it tests whatever is declared. It caught this drift on the branch rather than
 after release, which is the whole reason the job exists.
 
 ---
+## 13. One release, described once
 
-## 13. Delta is correctness-only on macOS until the tar layer is addressed
+**Decided:** 2026-08-12 · **Status:** active · **Supersedes the flow in #5**
+
+Found by an independent adversarial audit, then reproduced against this
+repository and against `tauri-plugin-updater` 2.10.1.
+
+### The defect
+
+The example fetched the release manifest **twice**: once inside
+`Updater::check()`, and again inside `run_update`, which took a manifest URL.
+Nothing compared the two responses. They were two independently obtained
+descriptions of what the update *is*, and they controlled different things:
+
+| Question | Answered by |
+| --- | --- |
+| Is there an update at all? | Tauri's fetch, via `release.version > current_version` |
+| Which version do we patch toward? | **Our fetch** |
+| Which URL is the full fallback? | **Our fetch** |
+| Which signature is checked? | **Our fetch** |
+| Which bytes get installed? | Whatever we hand `Update::install` |
+
+So an attacker who could rewrite the manifest response — no signing key
+required — could answer Tauri's request with `version: 9.9.9` so the semver gate
+passed, and ours with a genuinely signed *older* release. Verification succeeds,
+because an old release's signature is valid and always will be. The user is
+silently downgraded to a known-vulnerable version.
+
+Signature verification cannot catch this. Minisign signatures carry no version
+and never expire, so "these bytes were signed by us" is true of every artifact
+we have ever shipped.
+
+### The fix, and why it needed no new protocol
+
+`Update` already retains the whole document it fetched, verbatim, on
+`raw_json` (`updater.rs:492`, `:552`), along with the version, target, URL and
+signature it selected from it. Since our manifest is a superset of Tauri's (#5),
+**our delta layer is already inside the response Tauri fetched.**
+
+So the second fetch was not just dangerous, it was redundant. `UpdateIdentity`
+carries those fields forward, `run_update` takes one and has no URL parameter at
+all, and the delta layer is parsed out of `raw_json`. One document, one release:
+
+```text
+checked_target == delta_target == verified_target == installed_target
+```
+
+The first three equalities are structural — they are views of one parse, and
+`Manifest::validate` already enforces internal consistency. The fourth is closed
+by `VerifiedArtifact` owning the bytes it authenticated (#10).
+
+### The two seams that remain, and are checked
+
+One document can still be read two ways:
+
+- **Our parse vs Tauri's.** `manifest.version` must equal
+  `identity.version()`.
+- **Our platform entry vs Tauri's selection.** Tauri searches
+  `{os}-{arch}-{installer}` before `{os}-{arch}` (`updater.rs:1420`) and does not
+  report which key won. Reproducing that search here would create a second
+  selection algorithm free to drift from the real one, so instead the delta entry
+  we look up must carry the signature Tauri selected.
+
+Both refuse rather than fall back, for the reason in #11.
+
+### Rejected alternatives
+
+- **Sign the manifest with a second key.** New key management, and it breaks the
+  superset property that makes delta-unaware clients work. Solves nothing that
+  using the already-fetched document does not.
+- **Fetch twice and compare.** Still two round trips, still a window between
+  them, and a server can simply serve a consistent malicious pair. Does not
+  address downgrade at all.
+- **Bind the delta metadata into the signed artifact.** Impossible: the metadata
+  must be readable *before* the artifact is obtained.
+- **Keep our fetch authoritative and treat `Update` as advisory.** Discards
+  Tauri's semver gate and its platform selection — the wrong direction of trust.
+
+### The cost
+
+The delta path is now reachable only *through* Tauri's check. There is no
+standalone "check for delta updates" entry point, and for v0.1 that is
+deliberate: such an API would independently decide which release to install, and
+would need its own threat model and version policy before it could be safe.
+
+**Revisit when:** upstream stops retaining `raw_json`, or exposes which platform
+key `get_urls` selected — the latter would let the signature cross-check become
+a direct key comparison.
+
+---
+
+## 14. Version policy is ours, not Tauri's to lend
+
+**Decided:** 2026-08-12 · **Status:** active
+
+`plan_update` looked patches up by raw string (`patches.get(from_version)`) and
+never compared the installed version to the target. The only version policy
+anywhere was upstream's `release.version > self.current_version` — inside a call
+this crate did not make.
+
+That was survivable only while every caller went through Tauri's check first,
+and #13 shows that even then it constrained the wrong document. So the policy
+lives here now, explicit and applying to every caller:
+
+| Case | Outcome |
+| --- | --- |
+| `current < target` | Proceed |
+| `current == target` | `UpToDate` — not an error |
+| `current > target` | **Refuse** (`Refusal::Downgrade`) |
+| Either version unparseable | **Refuse** (`Refusal::UncomparableVersion`) |
+| Prereleases | Semver ordering — `1.0.0-beta < 1.0.0` |
+| Several versions behind | Proceed; schema 1 patches straight to the latest |
+
+### Refusal is not fallback
+
+`UpdateSource::Refused` is deliberately a distinct variant rather than a
+fallback, and `plan_update` stays infallible. A delta failure says a transfer
+went wrong; a refusal says the release we are being *pointed at* is wrong, and
+the full-download path is pointed at a release by the same document. Letting a
+refusal decay into a full download would run the downgrade attack down the other
+branch.
+
+An unparseable version refuses for the same reason rather than falling back:
+without an ordering the policy cannot be applied at all, and proceeding without
+it reopens exactly the hole it closes.
+
+### One deliberate divergence from the specification
+
+SemVer §10 says build metadata MUST be ignored when determining precedence. The
+`semver` crate does not implement that in `Ord` — it orders by build metadata,
+so `1.0.0+build.2 > 1.0.0+build.1`. Verified, not assumed.
+
+We match the crate rather than the specification, because
+`tauri-plugin-updater` gates updates with `>` on this same crate. Implementing
+the spec here would let the two disagree about whether a release is newer, which
+is a policy seam of precisely the kind #13 exists to remove. Pinned by a test
+that names the surprise, so upstream changing its ordering reopens the decision
+instead of silently drifting.
+
+We also strip a leading `v` before parsing, because upstream's `parse_version`
+does (`updater.rs:1443`); not doing so would refuse releases Tauri accepts.
+
+---
+## 15. Delta is correctness-only on macOS until the tar layer is addressed
 
 **Decided:** 2026-08-12 · **Status:** active, tracked as Phase 4/5 work
 
@@ -455,7 +597,7 @@ overpromise on two platforms out of three.
 
 ---
 
-## 14. rsign2 and the `minisign` crate disagree about empty passwords
+## 16. rsign2 and the `minisign` crate disagree about empty passwords
 
 **Decided:** 2026-08-12 · **Status:** active
 
@@ -494,3 +636,37 @@ unnoticed.
 point the test fails and this entry explains why it was ever there. The
 longer-term fix is to sign with rsign2 directly, guaranteeing key compatibility
 with whatever Tauri's CLI produces.
+
+---
+
+## 17. `feat/e2e-real-app` was merged into `main` out of order
+
+**Decided:** 2026-08-12 · **Status:** active · **Records a process mistake**
+
+PR #12 (`feat/e2e-real-app`) was merged into `main` while PR #13 (Gate A,
+`fix/update-identity`) was still open. It was meant to be a backup push only —
+the branch was pushed so eight commits of unfinished Phase 4 work were not
+living on one laptop, and the `pull/new/<branch>` link GitHub prints on push was
+followed by mistake.
+
+Two consequences, both recorded here rather than quietly absorbed:
+
+- **`main` contains Phase 4 example-app code ahead of the roadmap.** The example
+  app, the two-version build script and the E2E harness scripts are in `main`
+  while `docs/ROADMAP.md` and `README.md` still describe them as unstarted. That
+  is a documentation mismatch, not a code problem, and reconciling it is
+  explicitly part of the Gate D truthfulness audit.
+- **The example forced the Gate A API port early.** `examples/desktop-app` is a
+  workspace member, so merging Gate A would not compile until the example moved
+  to `UpdateExt::delta_identity`. That port was already planned as the first
+  task of the E2E resume; it simply happened sooner, and is included in the Gate
+  A PR.
+
+Not reverted. Reverting a merge would trade working code for tidier history, and
+the E2E work in it is real and wanted. Recorded so that a later reader does not
+try to reconcile the roadmap against `main` and conclude the roadmap is lying.
+
+**Revisit when:** Gate D reconciles the status tables. This entry can then be
+marked historical.
+
+---

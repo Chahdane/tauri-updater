@@ -120,7 +120,7 @@ deterministically — is designed but not built. Until it lands, enable this on
 Linux and treat macOS as correct-but-not-yet-worthwhile. Windows uses compressed
 containers too, so expect it to look more like macOS than Linux until measured.
 
-Reasoning and the route out are in [docs/DECISIONS.md](docs/DECISIONS.md) #13.
+Reasoning and the route out are in [docs/DECISIONS.md](docs/DECISIONS.md) #15.
 A single averaged "delta updates for Tauri" number would overpromise on two
 platforms out of three, so this table exists instead.
 
