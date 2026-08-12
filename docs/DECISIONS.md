@@ -347,3 +347,32 @@ would still pass.
 
 Not a change being made. Recorded so a later refactor cannot quietly reopen the
 question by moving the ground the argument stands on.
+
+---
+
+## 12. MSRV moves to 1.88 when `tauri` enters the workspace
+
+**Decided:** 2026-08-12 · **Status:** active · **Supersedes the floor in #4**
+
+Adding `tauri` raised the minimum from 1.85 to **1.88**. CI caught it: the `msrv`
+job went red on the branch that introduced the dependency, while all three test
+jobs stayed green.
+
+| Crate | Requires |
+| --- | --- |
+| `darling` 0.23.0 (and `_core`, `_macro`) | rustc 1.88.0 |
+| `icu_collections`, `icu_locale_core` 2.2.0 | rustc 1.86 |
+
+Verified rather than assumed: `cargo +1.85 check` fails naming those packages;
+`cargo +1.88.0 check --workspace --all-targets --all-features --locked` passes.
+
+Worth recording as a *design* note rather than a version bump: this is the price
+of the wrap-don't-replace decision. Depending on `tauri` means inheriting its
+whole dependency tree's floor, and that floor will keep moving. The engine
+crates would still build on 1.85 — only the plugin needs 1.88 — so if a low MSRV
+ever matters more than a single workspace-wide number, the split already exists
+along the right seam.
+
+**How this stays honest:** the `msrv` job reads `rust-version` from `Cargo.toml`,
+so it tests whatever is declared. It caught this drift on the branch rather than
+after release, which is the whole reason the job exists.
