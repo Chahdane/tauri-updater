@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `tauri-plugin-updater-delta` — the client flow: fetch manifest, select a patch,
+  download it, reconstruct, verify, hand off. Both boundaries are traits
+  (`Fetch`, `InstallHandoff`), so the whole path is tested offline with no Tauri
+  runtime. `InstallHandoff::install` takes a `VerifiedArtifact`, so an unverified
+  install cannot be expressed.
 - `VerifiedArtifact` — a token obtainable only through successful minisign
   verification, so the install handoff cannot be reached with unverified bytes.
   It owns the verified bytes rather than a path, closing the window in which a
