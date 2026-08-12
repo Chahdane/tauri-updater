@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/delta-core"]
+members = ["crates/delta-core", "crates/delta-release", "crates/fixtures"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,17 @@ repository = "https://github.com/Chahdane/tauri-updater"
 blake3 = "1"
 thiserror = "2"
 zstd = "0.13"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+minisign = "0.7"
+minisign-verify = "0.2"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+# Internal
+tauri-updater-delta-core = { path = "crates/delta-core" }
+tauri-updater-delta-fixtures = { path = "crates/fixtures" }
 
 [profile.release]
 lto = true

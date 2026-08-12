@@ -13,7 +13,7 @@ artifact to delta well.
 
 ---
 
-## Phase 1 — The engine
+## Phase 1 — The engine ✅
 
 Prove that a patch can rebuild an artifact exactly, on this machine, offline.
 
@@ -27,7 +27,10 @@ Prove that a patch can rebuild an artifact exactly, on this machine, offline.
 *Exit criteria:* round-trip test green in CI; patch measurably smaller than a full
 artifact; corrupt and mismatched inputs fail loudly rather than silently.
 
-## Phase 2 — Release tooling and CI
+*Delivered:* 6,815,744 byte artifact → 393,782 byte patch (5.78%), reproduced
+byte-identically on Linux, macOS and Windows and asserted in CI.
+
+## Phase 2 — Release tooling and CI ✅
 
 Make patches producible by a real release pipeline.
 
@@ -38,6 +41,11 @@ Make patches producible by a real release pipeline.
 
 *Exit criteria:* a tagged release produces patches and a valid manifest without
 manual steps.
+
+*Delivered:* `delta-release` (patch + digests + signature + manifest),
+the Tauri-superset manifest, a dry-runnable `release.yml`, and an end-to-end test
+where a client reaches a verified artifact from the generated manifest alone.
+Wiring the workflow to real bundler output waits for the Phase 3 example app.
 
 ## Phase 3 — Client happy path
 
