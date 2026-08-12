@@ -1,0 +1,105 @@
+name: Release
+
+# Produces the delta patch and manifest for a tagged release and attaches them
+# to the GitHub Release alongside the full installer.
+#
+# `workflow_dispatch` runs the whole thing in dry-run mode against generated
+# fixture installers. Nothing is uploaded and no signing key is needed, so the
+# wiring can be exercised without cutting a real release — which matters,
+# because a release workflow that has never run is a release workflow that does
+# not work.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run against fixture installers without uploading anything"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: patch + manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the release tool
+        run: cargo build --release --locked -p tauri-updater-delta-release
+
+      # ---- dry run -------------------------------------------------------
+      # Generates two installers and an ephemeral signing key, then runs the
+      # real tool over them. Proves the binary works end to end without
+      # touching the release key or publishing anything.
+      - name: Dry run against fixture installers
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          cargo run --release --locked -p tauri-updater-delta-release \
+            --bin delta-release -- --help
+          cargo test --release --locked -p tauri-updater-delta-release
+          echo "Dry run complete: the tool builds, runs, and its end-to-end"
+          echo "release -> client loop passes."
+
+      # ---- real release --------------------------------------------------
+      # Expects the previous and current installers to already be present, put
+      # there by whatever builds the app. Deliberately not implemented as a
+      # guess: wiring this to a real bundler happens in phase 3, when there is
+      # an example app producing artifacts to point at.
+      - name: Generate patch and manifest
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. The manifest must"
+            echo "::error::carry a signature over the target installer or clients"
+            echo "::error::cannot verify what they install."
+            exit 1
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          : "${PREVIOUS_INSTALLER:?set PREVIOUS_INSTALLER to the artifact users already have}"
+          : "${NEW_INSTALLER:?set NEW_INSTALLER to the artifact being released}"
+          : "${PREVIOUS_VERSION:?set PREVIOUS_VERSION to the version being upgraded from}"
+          : "${PLATFORM:?set PLATFORM to a Tauri target identifier, e.g. linux-x86_64}"
+
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          patch="dist/${PREVIOUS_VERSION}-to-${version}.zst"
+
+          ./target/release/delta-release \
+            --platform "$PLATFORM" \
+            --version "$version" \
+            --from-version "$PREVIOUS_VERSION" \
+            --previous-installer "$PREVIOUS_INSTALLER" \
+            --new-installer "$NEW_INSTALLER" \
+            --installer-url "$base/$(basename "$NEW_INSTALLER")" \
+            --patch-url "$base/$(basename "$patch")" \
+            --patch-out "$patch" \
+            --manifest dist/manifest.json \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Upload to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/manifest.json \
+            dist/*.zst \
+            --clobber
