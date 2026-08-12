@@ -302,51 +302,73 @@ left to rot alongside a second implementation.
 
 ## 11. Everything falls back except a signature failure
 
-**Decided:** 2026-08-12 · **Status:** active
+**Decided:** 2026-08-12 · **Status:** active · **Reasoning corrected 2026-08-12**
 
 The delta path falls back to a full download on every failure — corrupt patch,
 truncated patch, transport error, wrong base version, unknown backend, digest
 mismatch, out of disk. **One case does not: a signature failure aborts.**
 
-The precise rule is not "delta failures fall back". It is:
+The policy stands. The original argument for it did not, and the correction
+matters more than the conclusion, so both are recorded.
 
-> Fall back on any failure that does not call the *manifest's authenticity* into
-> question. A signature failure is the sole case where the manifest itself is
-> under suspicion, so no fallback path exists.
+### What the original reasoning got wrong
 
-Everything else is a statement about one artifact or one transfer, and says
-nothing about whether the release document is genuine. A signature failure says
-the opposite.
+This decision used to say:
 
-### Why there is nothing to fall back to
+> if that signature does not check out, the document is untrustworthy in its
+> entirety
 
-This follows directly from decision #5, the manifest-as-superset. The
-full-download URL and the delta information live in **one document**, covered by
-**one signature over the target installer**. So if that signature does not check
-out, the document is untrustworthy in its entirety — including the
-`platforms.<target>.url` a fallback would fetch from.
+That claim cannot be supported, because it describes a mechanism that does not
+exist. **The manifest is not signed.** There is no signature over the document,
+so a failed *artifact* signature cannot invalidate it — there was never a claim
+about the document to disprove. The document was unauthenticated before the
+failure and is exactly as unauthenticated after it.
 
-Falling back would download an artifact chosen by a document we have just decided
-we cannot trust, and would then verify it against a signature from that same
-document. It preserves the risk while presenting itself as the safe option, which
-is worse than failing loudly: the user believes a safety mechanism engaged when
-it did not.
+The error was conflating two properties that a single minisign check does not
+combine:
+
+| | What it means | What our signature actually gives us |
+| --- | --- | --- |
+| **Artifact authenticity** | These *bytes* were signed by the expected key | **Yes** |
+| **Manifest authenticity** | This *description* — version, URL, sizes, digests — came from the release process | **No** |
+
+A signature over the installer covers the installer. It covers no manifest
+field, so it authenticates no manifest field.
+
+### The corrected argument for the same policy
+
+A signature failure means the relationship between the artifact bytes, the
+supplied signature and the trusted public key does not hold. That is evidence
+something in the chain that produced this release is wrong. It does not tell us
+*what* is wrong, and — this is the part that decides the policy — it gives us no
+way to localise the fault.
+
+Falling back would fetch a second artifact chosen by the same unauthenticated
+document and check it against a signature from that same document. If the
+document is being manipulated, that is a second attempt at the same attack down
+a different branch; if the release tooling is broken, it is a second draw from
+the same broken process. Neither is safer than the first attempt, and both
+present themselves as a safety mechanism having engaged.
+
+Note what this argument does **not** rely on: it never claims the document has
+been proven false. It only claims that a failure of unknown origin does not
+license a retry through the same unverified channel. That holds whether or not
+the manifest is authenticated, which is why the policy survives the correction.
 
 ### The load-bearing condition
 
-**This reasoning depends on the full-artifact URL and hash sharing one signed
-document with the delta information.** That is true of schema 1 and is a
-consequence of #5.
+**This reasoning depends on the full-artifact URL and the delta information
+arriving in one document, from one fetch.** That is true of schema 1 as a
+consequence of #5, and is now enforced structurally by #13 rather than left to
+convention.
 
-If a future change ever splits them — a Tauri-native manifest plus a separate
-delta sidecar, signed independently — **this asymmetry must be re-examined**. In
-that world a delta-side signature failure would say nothing about the
-Tauri-native document, and falling back could be both safe and correct. The
-conclusion would change even though the code would still compile and every test
-would still pass.
+If a future change ever splits them — a Tauri-native manifest plus a separately
+signed delta sidecar — **this asymmetry must be re-examined**. In that world a
+delta-side failure would say nothing about the Tauri-native document, and
+falling back could be both safe and correct.
 
-Not a change being made. Recorded so a later refactor cannot quietly reopen the
-question by moving the ground the argument stands on.
+Recorded so a later refactor cannot quietly reopen the question by moving the
+ground the argument stands on.
 
 ---
 
@@ -376,3 +398,149 @@ along the right seam.
 **How this stays honest:** the `msrv` job reads `rust-version` from `Cargo.toml`,
 so it tests whatever is declared. It caught this drift on the branch rather than
 after release, which is the whole reason the job exists.
+
+---
+
+## 13. One release, described once
+
+**Decided:** 2026-08-12 · **Status:** active · **Supersedes the flow in #5**
+
+Found by an independent adversarial audit, then reproduced against this
+repository and against `tauri-plugin-updater` 2.10.1.
+
+### The defect
+
+The example fetched the release manifest **twice**: once inside
+`Updater::check()`, and again inside `run_update`, which took a manifest URL.
+Nothing compared the two responses. They were two independently obtained
+descriptions of what the update *is*, and they controlled different things:
+
+| Question | Answered by |
+| --- | --- |
+| Is there an update at all? | Tauri's fetch, via `release.version > current_version` |
+| Which version do we patch toward? | **Our fetch** |
+| Which URL is the full fallback? | **Our fetch** |
+| Which signature is checked? | **Our fetch** |
+| Which bytes get installed? | Whatever we hand `Update::install` |
+
+So an attacker who could rewrite the manifest response — no signing key
+required — could answer Tauri's request with `version: 9.9.9` so the semver gate
+passed, and ours with a genuinely signed *older* release. Verification succeeds,
+because an old release's signature is valid and always will be. The user is
+silently downgraded to a known-vulnerable version.
+
+Signature verification cannot catch this. Minisign signatures carry no version
+and never expire, so "these bytes were signed by us" is true of every artifact
+we have ever shipped.
+
+### The fix, and why it needed no new protocol
+
+`Update` already retains the whole document it fetched, verbatim, on
+`raw_json` (`updater.rs:492`, `:552`), along with the version, target, URL and
+signature it selected from it. Since our manifest is a superset of Tauri's (#5),
+**our delta layer is already inside the response Tauri fetched.**
+
+So the second fetch was not just dangerous, it was redundant. `UpdateIdentity`
+carries those fields forward, `run_update` takes one and has no URL parameter at
+all, and the delta layer is parsed out of `raw_json`. One document, one release:
+
+```text
+checked_target == delta_target == verified_target == installed_target
+```
+
+The first three equalities are structural — they are views of one parse, and
+`Manifest::validate` already enforces internal consistency. The fourth is closed
+by `VerifiedArtifact` owning the bytes it authenticated (#10).
+
+### The two seams that remain, and are checked
+
+One document can still be read two ways:
+
+- **Our parse vs Tauri's.** `manifest.version` must equal
+  `identity.version()`.
+- **Our platform entry vs Tauri's selection.** Tauri searches
+  `{os}-{arch}-{installer}` before `{os}-{arch}` (`updater.rs:1420`) and does not
+  report which key won. Reproducing that search here would create a second
+  selection algorithm free to drift from the real one, so instead the delta entry
+  we look up must carry the signature Tauri selected.
+
+Both refuse rather than fall back, for the reason in #11.
+
+### Rejected alternatives
+
+- **Sign the manifest with a second key.** New key management, and it breaks the
+  superset property that makes delta-unaware clients work. Solves nothing that
+  using the already-fetched document does not.
+- **Fetch twice and compare.** Still two round trips, still a window between
+  them, and a server can simply serve a consistent malicious pair. Does not
+  address downgrade at all.
+- **Bind the delta metadata into the signed artifact.** Impossible: the metadata
+  must be readable *before* the artifact is obtained.
+- **Keep our fetch authoritative and treat `Update` as advisory.** Discards
+  Tauri's semver gate and its platform selection — the wrong direction of trust.
+
+### The cost
+
+The delta path is now reachable only *through* Tauri's check. There is no
+standalone "check for delta updates" entry point, and for v0.1 that is
+deliberate: such an API would independently decide which release to install, and
+would need its own threat model and version policy before it could be safe.
+
+**Revisit when:** upstream stops retaining `raw_json`, or exposes which platform
+key `get_urls` selected — the latter would let the signature cross-check become
+a direct key comparison.
+
+---
+
+## 14. Version policy is ours, not Tauri's to lend
+
+**Decided:** 2026-08-12 · **Status:** active
+
+`plan_update` looked patches up by raw string (`patches.get(from_version)`) and
+never compared the installed version to the target. The only version policy
+anywhere was upstream's `release.version > self.current_version` — inside a call
+this crate did not make.
+
+That was survivable only while every caller went through Tauri's check first,
+and #13 shows that even then it constrained the wrong document. So the policy
+lives here now, explicit and applying to every caller:
+
+| Case | Outcome |
+| --- | --- |
+| `current < target` | Proceed |
+| `current == target` | `UpToDate` — not an error |
+| `current > target` | **Refuse** (`Refusal::Downgrade`) |
+| Either version unparseable | **Refuse** (`Refusal::UncomparableVersion`) |
+| Prereleases | Semver ordering — `1.0.0-beta < 1.0.0` |
+| Several versions behind | Proceed; schema 1 patches straight to the latest |
+
+### Refusal is not fallback
+
+`UpdateSource::Refused` is deliberately a distinct variant rather than a
+fallback, and `plan_update` stays infallible. A delta failure says a transfer
+went wrong; a refusal says the release we are being *pointed at* is wrong, and
+the full-download path is pointed at a release by the same document. Letting a
+refusal decay into a full download would run the downgrade attack down the other
+branch.
+
+An unparseable version refuses for the same reason rather than falling back:
+without an ordering the policy cannot be applied at all, and proceeding without
+it reopens exactly the hole it closes.
+
+### One deliberate divergence from the specification
+
+SemVer §10 says build metadata MUST be ignored when determining precedence. The
+`semver` crate does not implement that in `Ord` — it orders by build metadata,
+so `1.0.0+build.2 > 1.0.0+build.1`. Verified, not assumed.
+
+We match the crate rather than the specification, because
+`tauri-plugin-updater` gates updates with `>` on this same crate. Implementing
+the spec here would let the two disagree about whether a release is newer, which
+is a policy seam of precisely the kind #13 exists to remove. Pinned by a test
+that names the surprise, so upstream changing its ordering reopens the decision
+instead of silently drifting.
+
+We also strip a leading `v` before parsing, because upstream's `parse_version`
+does (`updater.rs:1443`); not doing so would refuse releases Tauri accepts.
+
+---
