@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Delta Updater Example</title>
+<style>
+  body { font: 14px/1.6 -apple-system, system-ui, sans-serif; padding: 2rem; }
+  code { background: #eee; padding: .1rem .35rem; border-radius: 3px; }
+  button { font: inherit; padding: .4rem .9rem; }
+  #outcome { margin-top: 1rem; white-space: pre-wrap; }
+</style>
+<h1>Delta Updater Example</h1>
+<p>Running version <code id="version">…</code></p>
+<button id="check">Check for updates</button>
+<p id="outcome">No update attempted.</p>
+<script type="module">
+  const { invoke } = window.__TAURI__.core;
+  const { getVersion } = window.__TAURI__.app;
+
+  getVersion().then(v => document.getElementById('version').textContent = v);
+
+  document.getElementById('check').addEventListener('click', async () => {
+    const out = document.getElementById('outcome');
+    out.textContent = 'Checking…';
+    try {
+      out.textContent = await invoke('check_for_updates');
+    } catch (e) {
+      out.textContent = 'Failed: ' + e;
+    }
+  });
+</script>
