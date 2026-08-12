@@ -100,6 +100,30 @@ These bytes are reproduced identically on Linux, macOS and Windows — asserted 
 CI rather than compared by eye, since `zstd-sys` compiles a vendored C library
 and MSVC is the likeliest place a divergence would hide.
 
+### Ratios differ enormously by platform — read this before adopting
+
+| Platform | Artifact | Measured | Status |
+| --- | --- | ---: | --- |
+| **Linux** | `.AppImage` | **5.78%** | Works as intended |
+| **macOS** | `.app.tar.gz` | **95.14%** | Correct, but saves almost nothing yet |
+| **Windows** | NSIS `.exe` / `.msi` | not measured | Unknown |
+
+macOS is measured on a real bundle built by `cargo tauri build`, not a fixture,
+and the result is honest: **a delta currently saves about 5% of a macOS
+download.** The artifact is gzip-compressed, and gzip is a streaming format, so
+changing a few bytes of the main binary shifts every compressed byte after it.
+The two artifacts share almost nothing *as presented*, even though the
+uncompressed tars are nearly identical.
+
+The fix — delta the uncompressed tar and reproduce the gzip layer
+deterministically — is designed but not built. Until it lands, enable this on
+Linux and treat macOS as correct-but-not-yet-worthwhile. Windows uses compressed
+containers too, so expect it to look more like macOS than Linux until measured.
+
+Reasoning and the route out are in [docs/DECISIONS.md](docs/DECISIONS.md) #15.
+A single averaged "delta updates for Tauri" number would overpromise on two
+platforms out of three, so this table exists instead.
+
 ## Installation
 
 Not published to crates.io or npm yet. Once it is, this section will carry the
