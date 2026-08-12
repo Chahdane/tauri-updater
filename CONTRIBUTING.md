@@ -53,6 +53,46 @@ committed to directly.
 - Open a PR into `main` and explain *why* in the description. Non-obvious
   decisions belong there, not in code comments.
 
+## Merging, and the one conflict that needs care
+
+`main` is protected: every status check must be green before a merge. That is a
+repo setting rather than a rule to remember, because the rule was forgotten once
+and cost a day — see `docs/DECISIONS.md` #17.
+
+**Never resolve a `docs/DECISIONS.md` conflict by taking one side wholesale.**
+This includes GitHub's "Update branch" button, which does exactly that.
+
+Decisions are numbered, and the numbers are referenced from code comments
+(`docs/DECISIONS.md #13`) and from other decisions. Two branches that each add a
+"#13" produce a conflict whose *natural* resolution — keep one side — silently
+repoints every cross-reference at unrelated content. Nothing fails: it compiles,
+the tests pass, and the docs now lie.
+
+This happened. A web merge dropped two decisions while four code comments went on
+citing them by number.
+
+So when a merge touches `DECISIONS.md`:
+
+1. Keep **both** sides. A decision that was worth recording does not stop being
+   worth recording because someone else numbered one first.
+2. Renumber the newer set, preferring to move whichever has **fewer inbound
+   references** — check with `grep -rn 'DECISIONS[^ ]* #N' crates/ docs/ README.md`.
+3. Walk **every** cross-reference against its new target before pushing:
+
+   ```sh
+   for n in $(grep -oE '^## [0-9]+' docs/DECISIONS.md | grep -oE '[0-9]+'); do
+     printf '#%-3s %s\n' "$n" "$(grep -m1 "^## $n\." docs/DECISIONS.md)"
+     grep -rn "DECISIONS[^ ]* #$n\b" crates/ docs/ README.md 2>/dev/null | sed 's/^/      /'
+   done
+   ```
+
+   Read the output. A reference pointing at a plausible-but-wrong decision is the
+   failure mode; it will not announce itself.
+
+Documentation correctness is part of the security model here, not cosmetics — a
+comment citing the wrong rationale is worse than no comment, because it is
+trusted.
+
 ## Code standards
 
 - Idiomatic Rust with clear module boundaries. No dead code, no speculative
