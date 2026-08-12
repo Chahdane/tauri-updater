@@ -9,7 +9,7 @@
 # POST-CODEX HARDENING AUDIT
 
 **Started:** 2026-08-12
-**Status:** Gate A investigation complete, awaiting design approval
+**Status:** Gate A complete, awaiting review. Gates B–D not started.
 
 An independent adversarial audit (Codex, given the repository cold and told to
 challenge the architecture rather than agree with it) found the prototype
@@ -39,12 +39,52 @@ is not a reason to implement that fix.
 | 13 | Plugin DX — design only | Deferred to Phase 5 proposal | — |
 | 15 | macOS 95% vs tar 6.6% | Preserve as observation, do not overclaim | D |
 
-## Gate A — trust architecture
+## Gate A — trust architecture ✅
 
-- [ ] 1. Update identity: single authoritative response
-- [ ] 2. Correct DECISIONS #11 reasoning without changing the fail-closed policy
-- [ ] 3. `checked == delta == verified == installed` invariant, structurally testable
-- [ ] 4. Downgrade / replay / version policy, with tests
+- [x] 1. Update identity: single authoritative response — `UpdateIdentity`
+      carries Tauri's `Update`, and `run_update` has no manifest URL left to
+      fetch
+- [x] 2. DECISIONS #11 reasoning corrected; the fail-closed policy is unchanged
+- [x] 3. `checked == delta == verified == installed` — structural for the first
+      three (one parse of one document), closed by `VerifiedArtifact` for the
+      fourth
+- [x] 4. Downgrade / replay / version policy in `identity.rs`, applying to every
+      caller rather than to whoever consulted Tauri's gate
+
+Also fixed in Gate A: the platform-selection divergence found during
+verification. Tauri searches `{os}-{arch}-{installer}` before `{os}-{arch}` and
+does not report which key won, so the delta entry is now bound to the signature
+Tauri selected rather than to a key recomputed here.
+
+### Gate A regression tests
+
+All ten requested cases are covered, plus the platform-selection binding:
+
+| Case | Test | Where |
+| --- | --- | --- |
+| 1. checked version != delta target | `refuses_when_the_checked_version_is_not_the_delta_target`, `a_version_tauri_never_checked_installs_nothing` | core, plugin |
+| 2. selected signature != delta signature | `refuses_when_the_delta_signature_is_not_the_one_tauri_selected` | core |
+| 3. selected URL authoritative | `the_full_path_always_uses_the_url_tauri_selected` | core |
+| 4. current > target | `refuses_a_downgrade`, `a_downgrade_never_becomes_a_full_download` | core |
+| 5. replay of an old signed artifact | `replaying_an_old_genuinely_signed_release_installs_nothing` + `the_replayed_artifact_really_does_verify` | plugin |
+| 6. malformed version | `refuses_an_uncomparable_version`, `refuses_an_uncomparable_target_version` | core |
+| 7. prerelease ordering | `prereleases_order_by_semver` | core |
+| 8. multiple versions behind | `a_target_several_versions_ahead_still_uses_its_patch` | core |
+| 9. missing delta, legitimate target | `falls_back_when_the_installed_version_has_no_patch` | core |
+| 10. no second manifest fetch | `never_fetches_the_manifest`, `the_manifest_is_never_fetched`, `the_flow_never_requests_the_manifest` | core, plugin, real HTTP |
+| platform selection | `stays_bound_to_the_target_tauri_selected` | core |
+
+### Mutation evidence
+
+Each guard was disabled in turn, the intended tests confirmed red for the
+intended reason, then restored. No mutations committed.
+
+| Guard disabled | Tests killed | Sample failure |
+| --- | --- | --- |
+| version identity | 3 | `expected a refusal, got Delta { … }` |
+| signature identity | 2 | — |
+| downgrade refusal | 8 | `a replayed older release must be refused, got Ok(InstalledFromFullDownload)` |
+| uncomparable-version refusal | 2 | — |
 
 ## Gate B — transport and resource safety
 
