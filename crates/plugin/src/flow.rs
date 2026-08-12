@@ -49,8 +49,6 @@ pub enum Outcome {
     },
     /// Installed after downloading the whole artifact.
     InstalledFromFullDownload,
-    /// Nothing published for this platform.
-    Unavailable,
     /// The release is already installed.
     UpToDate,
 }
@@ -88,8 +86,6 @@ pub fn run_update(
     let source = plan_update(identity, ctx.base, ctx.work_dir, fetch);
 
     match source {
-        UpdateSource::Unavailable => Ok(Outcome::Unavailable),
-
         UpdateSource::UpToDate => Ok(Outcome::UpToDate),
 
         // Never a fallback. The full-download path is described by the same
@@ -324,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unlisted_platform_installs_nothing() {
+    fn a_target_with_no_published_artifact_installs_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeServer(HashMap::new());
         let handoff = RecordingHandoff::default();
