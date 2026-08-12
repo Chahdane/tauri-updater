@@ -249,3 +249,51 @@ The safety property — a bad patch can never break an install — is otherwise
 enforced only by every caller remembering to catch every error. Making the
 function infallible moves that from convention into the type system: there is no
 error value that can escape the delta path and abort an update.
+
+---
+
+## 10. The plugin must verify the signature itself — Tauri will not
+
+**Decided:** 2026-08-12 · **Status:** active · **Corrects an earlier assumption**
+
+The original design said the reconstructed artifact "still has to satisfy Tauri's
+minisign verification". Reading `tauri-plugin-updater` 2.10.1 while building the
+handoff showed that is false, and it matters enough to record rather than quietly
+fix.
+
+`verify_signature` is called from **exactly one place** in the whole crate:
+
+```rust
+// src/updater.rs:712, inside Update::download()
+verify_signature(&buffer, &self.signature, &self.config.pubkey)?;
+```
+
+The handoff seam goes nowhere near it:
+
+```rust
+// src/updater.rs:718
+pub fn install(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
+    self.install_inner(bytes.as_ref())   // no verification
+}
+```
+
+`download_and_install` is just `download()` then `install()`, so verification
+belongs to the download step. The delta path exists precisely to avoid that
+download — so **nothing verifies the signature unless this plugin does**.
+
+The design survives; the reasoning had a hole. The plugin performs the check
+itself before every handoff, using Tauri's verification reproduced verbatim and
+pinned by `crates/delta-release/tests/tauri_signature_compat.rs`.
+
+This promotes that compatibility gate from reassuring to load-bearing. It is no
+longer "evidence we interoperate" — it is the only thing standing between a
+reconstructed artifact and the installer. Any change to it needs the same rigour
+as a change to the verification itself.
+
+**Had this gone unnoticed**, the delta path would have become a way to install
+artifacts with no signature check at all — the exact outcome the wrap-don't-
+replace design exists to prevent, arrived at while believing the opposite.
+
+**Revisit when:** upstream moves verification into `install`, or exposes a
+verifying handoff. Then this becomes redundant and should be deleted rather than
+left to rot alongside a second implementation.
