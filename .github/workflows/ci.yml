@@ -71,6 +71,35 @@ jobs:
         # --nocapture so the measured patch ratio lands in the CI log.
         run: cargo test --workspace --all-features --locked -- --nocapture
 
+      # The two assertions below are load-bearing, and a green job is not proof
+      # they ran: a build-dependency change is exactly how a test starts being
+      # skipped without anything going red. These steps fail if the assertion
+      # did not execute, so the job's colour carries the claim.
+      - name: Confirm the cross-platform determinism assertion actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-updater-delta-core --test appimage_roundtrip --locked \
+                  -- --exact patch_bytes_are_identical_on_every_platform --nocapture)
+          echo "$out"
+          grep -q "test patch_bytes_are_identical_on_every_platform ... ok" <<< "$out" \
+            || { echo "::error::determinism assertion did not run"; exit 1; }
+          grep -q "1 passed; 0 failed; 0 ignored" <<< "$out" \
+            || { echo "::error::determinism assertion was filtered or ignored"; exit 1; }
+          # The patch bytes themselves, on this platform. Identical on all three.
+          grep -q "blake3 6892d72ab49da606bbeb98c04c8110aa145038492fbf849568590b99d8d5b546" <<< "$out" \
+            || { echo "::error::patch bytes differ on this platform"; exit 1; }
+
+      - name: Confirm the forgery doctests actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-updater-delta-core --doc --locked)
+          echo "$out"
+          count=$(grep -c "compile fail ... ok" <<< "$out" || true)
+          [ "$count" -eq 2 ] \
+            || { echo "::error::expected 2 compile_fail doctests, saw $count"; exit 1; }
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
