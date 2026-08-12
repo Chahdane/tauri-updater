@@ -2,7 +2,75 @@
 
 **Phase:** 3 of 8 ([roadmap](docs/ROADMAP.md))
 **Started:** 2026-08-12
-**Status:** In progress
+**Status:** Paused for hardening — see below
+
+---
+
+# POST-CODEX HARDENING AUDIT
+
+**Started:** 2026-08-12
+**Status:** Gate A investigation complete, awaiting design approval
+
+An independent adversarial audit (Codex, given the repository cold and told to
+challenge the architecture rather than agree with it) found the prototype
+architecture sound but surfaced several gaps. Real-app E2E work is paused on the
+preserved `feat/e2e-real-app` branch until the HIGH findings are resolved.
+
+Every finding is verified against this repository and against upstream
+`tauri-plugin-updater` source before anything is changed. Codex proposing a fix
+is not a reason to implement that fix.
+
+## Verification status
+
+| # | Finding | Status | Gate |
+| --- | --- | --- | --- |
+| 1 | Double-fetch / update identity seam | **CONFIRMED** | A |
+| 2 | Signature-failure reasoning overclaims | **CONFIRMED** (wording only; policy stands) | A |
+| 3 | One coherent update identity | Design proposed | A |
+| 4 | Downgrade / replay / version policy | **CONFIRMED** | A |
+| 5 | HTTP transport hardening | **CONFIRMED** (7 of 8 sub-claims) | B |
+| 6 | Resource exhaustion caps | **CONFIRMED** | B |
+| 7 | Atomic file handling | **PARTIALLY CONFIRMED** | B |
+| 8 | Concurrent update protection | **CONFIRMED** | B |
+| 9 | `delta-release --version` collision | **CONFIRMED** — worse than reported | C |
+| 10 | Release workflow assumptions | **CONFIRMED** | C |
+| 11 | Tauri compatibility range | **CONFIRMED** | C |
+| 12 | Documentation contradictions | **CONFIRMED** (A–E) | D |
+| 13 | Plugin DX — design only | Deferred to Phase 5 proposal | — |
+| 15 | macOS 95% vs tar 6.6% | Preserve as observation, do not overclaim | D |
+
+## Gate A — trust architecture
+
+- [ ] 1. Update identity: single authoritative response
+- [ ] 2. Correct DECISIONS #11 reasoning without changing the fail-closed policy
+- [ ] 3. `checked == delta == verified == installed` invariant, structurally testable
+- [ ] 4. Downgrade / replay / version policy, with tests
+
+## Gate B — transport and resource safety
+
+- [ ] 5. HTTPS policy, redirect policy, timeouts, response-size limits
+- [ ] 6. Local safety cap independent of manifest-declared size
+- [ ] 7. Atomic output via unique temp path then promote
+- [ ] 8. Per-transaction workspaces replacing fixed filenames
+
+## Gate C — concrete defects
+
+- [ ] 9. Rename the CLI's `--version` to `--target-version`, test the real binary
+- [ ] 10. Release workflow: make external assumptions explicit or supply them
+- [ ] 11. Honest Tauri compatibility range
+
+## Gate D — truthfulness
+
+- [ ] 12. Documentation audit against current code
+- [ ] 16. `research/` evidence structure and findings ledger, no fabricated data
+
+## Preserved work
+
+`feat/e2e-real-app` (local only, never pushed) carries the example desktop app,
+the two-version build script, the E2E harness scripts and the Codex audit
+transcript. Not to be reset or deleted. It stacks on `main` at 34a79db.
+
+---
 
 ## Goal
 
