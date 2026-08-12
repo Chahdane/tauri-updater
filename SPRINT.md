@@ -1,123 +1,94 @@
-# Sprint 2 — Release tooling and the manifest
+# Sprint 3 — The Tauri plugin
 
-**Phase:** 2 of 8 ([roadmap](docs/ROADMAP.md))
+**Phase:** 3 of 8 ([roadmap](docs/ROADMAP.md))
 **Started:** 2026-08-12
-**Status:** Complete — awaiting review
+**Status:** In progress
 
 ## Goal
 
-Make patches producible by a real release pipeline, and close the loop: a
-manifest generated from two installers must be enough for a client to rebuild
-the new installer from a patch, verify it against both a hash and a signature,
-and fall back to a full download whenever anything is wrong.
-
-Still no Tauri dependency. Everything here is file-in/file-out and runs on macOS.
+First end-to-end delta update in a real Tauri app, on Linux/AppImage: the plugin
+wraps `tauri-plugin-updater`, fetches the manifest, picks a patch, applies it,
+verifies it, and hands the finished artifact to Tauri's own install step.
 
 ## Definition of done
 
-- [x] Green matrix — fmt + clippy + tests on Linux, macOS, Windows
-- [x] End-to-end manifest → apply → verify loop passes, with fallback asserted
-      for corrupt, truncated and wrong-base patches
-- [x] `cargo fmt --check` and `cargo clippy -D warnings` clean
-- [x] SPRINT / CHANGELOG / docs updated in the same PR
-- [x] Phase 1's window-log gap closed using the manifest's declared size
+- [ ] Green matrix — fmt + clippy + tests on Linux, macOS, Windows
+- [ ] An example app updates itself from a patch
+- [ ] Every failure path demonstrably falls back to a full download
+- [ ] SPRINT / CHANGELOG / docs updated in the same PR
 
 ## Tasks
 
-### Shared fixtures
+### Signature compatibility — done, and done first
 
-- [x] Move the AppImage fixture generator into its own unpublished crate so both
-      `delta-core` and the release tool test against the identical artifacts
+This gated everything else: if Tauri rejected our signatures, the manifest format
+and the whole handoff design would have needed rework, and finding that out after
+building a client on top would have been expensive.
 
-### Manifest
+- [x] Reproduce `tauri-plugin-updater` 2.10.1's `verify_signature` verbatim and
+      run it against real `delta-release` output
+- [x] Confirm the signature is **prehashed**, proven two independent ways rather
+      than inferred from a green test
+- [x] Confirm Tauri rejects wrong bytes and wrong keys
+- [x] Confirm a **delta-rebuilt** artifact satisfies the same signature
+- [x] Record the result and the remaining gap in `docs/DECISIONS.md` #6
 
-- [x] Superset of Tauri's static updater JSON — `version`, `pub_date`,
-      `platforms -> { url, signature }` — so the full-download fallback *is* the
-      official updater's manifest and the two cannot diverge
-- [x] Delta layer: `{ platform, from_version } -> { target_version, patch_url,
-      patch hash, target installer hash + size, backend_id, signature }`
-- [x] Hash fields named by algorithm, plus an explicit `hash_algo` — no silent
-      BLAKE3-vs-SHA256 mismatch
-- [x] Reject a manifest whose delta signature disagrees with its Tauri-layer
-      signature, since both describe the same artifact
-- [x] v1 is patch-from-any-previous-to-latest only; multi-hop chains are future
-      work
+Result: cleared at the algorithm level. Six tests. The remaining gap — a
+*running* Tauri app accepting an update served this way — is the example app
+below, and is deliberately tracked as a separate claim.
 
-### Signing
+### Plugin crate
 
-- [x] Minisign signature over the **target installer**, using the scheme Tauri's
-      updater verifies, so the delta handoff and the fallback validate against
-      the same signature
-- [x] Verify in tests with `minisign-verify` — the same crate Tauri uses — rather
-      than round-tripping through our own signer
+- [ ] `tauri-plugin-updater-delta` crate wrapping `tauri-plugin-updater`
+- [ ] Manifest fetch from a configured URL
+- [ ] Patch selection for the installed version and current platform
+- [ ] Patch download, with the manifest's digest checked before applying
+- [ ] Reconstruct via `try_reconstruct`, then hand off
+- [ ] Full-download fallback wired into every failure path
 
-### Release tool
+### Base artifact
 
-- [x] `delta-release` binary: previous installer + new installer → patch, hashes,
-      signature, and a written/updated `manifest.json`
-- [x] Updating an existing manifest adds a patch path without discarding others
-- [x] Tests over the tool's logic, not just its plumbing
+- [ ] Cache the installer after a successful update, so the next update has a base
+- [ ] Behave correctly when no base is available — plain full download, no error
 
-### Engine
+### Install handoff
 
-- [x] Bound zstd's window and output allocation using the target installer size
-      the manifest now carries — closes the Phase 1 gap
-- [x] `try_reconstruct` that cannot return an error: the delta path either
-      produces a verified artifact or reports that a full download is required
+- [ ] AppImage adapter: hand the verified artifact to Tauri's install step
+- [ ] Keep the seam narrow enough that Windows and macOS adapters slot in later
 
-### Publish workflow
+### Example app
 
-- [x] `release.yml` — runs the tool on a tagged release, uploads patch + full
-      installer + manifest
-- [x] Dry-runnable, since no real tagged release can be cut yet
+- [ ] Minimal Tauri app using both plugins
+- [ ] Serve a manifest and artifacts locally
+- [ ] **Prove a real Tauri updater accepts a delta-rebuilt artifact end to end** —
+      closes the remaining gap in DECISIONS #6
+- [ ] Real-world patch ratio numbers for the README
 
 ### Docs
 
-- [x] DECISIONS: signature-over-target-installer and the constraint it imposes
-- [x] DECISIONS: manifest redundancy between the Tauri and delta layers
-- [x] ARCHITECTURE: manifest format and the release-time flow
-- [x] ROADMAP / CHANGELOG / README
+- [ ] README install and configuration, replacing the aspirational example
+- [ ] ARCHITECTURE: the client flow as built
+- [ ] DECISIONS: base-artifact caching strategy
 
 ## In progress
 
-Nothing — sprint 2 work is complete and awaiting review on `feat/release-tooling`,
-stacked on `fix/msrv`.
+Plugin crate scaffold — now that it has real behaviour to hold, per DECISIONS #2.
 
 ## Blocked
 
 Nothing.
 
-## Outcome
-
-57 tests, all green, on Linux, macOS and Windows.
-
-Three traps in the `minisign` crate, each found by a test rather than in
-production:
-
-- `password: None` means *prompt on the terminal*, so a release job would die
-  with `Device not configured` or hang forever waiting for input. `None` is now
-  translated to an empty password.
-- `SecretKeyBox::from_string` accepts any string and only fails later, so the
-  "try raw, fall back to base64" approach for Tauri-encoded keys never reached
-  the fallback. Key text is now decided by content.
-- `KeyPair::generate_unencrypted_keypair()` leaves the secret key checksum
-  zeroed, and `write_checksum` is private, so its output cannot be loaded again.
-  Tests generate with an empty password instead.
-
-The Phase 1 window-log gap is closed rather than deferred — the manifest carries
-the target size, so the fix was a few lines and shipping a known allocation
-vector through another phase bought nothing.
-
 ## Notes
 
-- `gh` is still not installed on the dev machine, so PRs are opened by hand.
-  Reading CI *status* works anonymously now the repo is public; reading CI *logs*
-  needs `gh auth login`, which is why cross-platform determinism is asserted in
-  the test suite rather than compared across logs by eye.
-- Phase 1 exit numbers, for reference: 6,815,744 byte artifact → 393,782 byte
-  patch, reproduced byte-identically on Linux, macOS and Windows.
+- `gh` is still not installed, so PRs are opened by hand. Reading CI *status*
+  works anonymously now the repo is public; reading CI *logs* needs
+  `gh auth login`.
+- Two PRs are open and awaiting review: `fix/msrv`, and `feat/release-tooling`
+  stacked on it. This sprint's branch stacks on those in turn.
+- Phase 2 exit state: 63 tests green across Linux, macOS and Windows.
 
 ## Next sprint
 
-Phase 3 — the Tauri plugin itself: manifest fetch, patch download, base-artifact
-caching, and the AppImage install handoff.
+Phase 4 — robustness and security: forcing every failure path in tests, resume
+and retry for interrupted downloads, disk-space checks, and fuzzing the apply
+path against malformed patches.
