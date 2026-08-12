@@ -41,6 +41,7 @@ mod error;
 pub mod hash;
 pub mod manifest;
 mod reconstruct;
+pub mod signature;
 
 pub use backend::PatchBackend;
 pub use client::{plan_update, Fetch, UpdateSource};
@@ -48,3 +49,4 @@ pub use error::{Error, Result};
 pub use hash::FileHash;
 pub use manifest::Manifest;
 pub use reconstruct::{try_reconstruct, Reconstruction, TargetSpec};
+pub use signature::{verify_artifact, verify_artifact_file, VerifiedArtifact};
