@@ -231,7 +231,11 @@ mod tests {
             panic!("a key needing a password must not open without one");
         };
         let message = err.to_string();
-        for expected in ["rsign2", "empty password", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"] {
+        for expected in [
+            "rsign2",
+            "empty password",
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+        ] {
             assert!(
                 message.contains(expected),
                 "the error must mention {expected:?} or a user will not know what to do: {message}"
