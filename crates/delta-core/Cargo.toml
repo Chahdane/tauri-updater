@@ -9,12 +9,15 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
+minisign-verify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
+minisign.workspace = true
 tauri-updater-delta-fixtures.workspace = true
 tempfile.workspace = true
