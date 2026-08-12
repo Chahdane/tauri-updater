@@ -106,9 +106,15 @@ intended reason, then restored. No mutations committed.
 
 ## Preserved work
 
-`feat/e2e-real-app` (local only, never pushed) carries the example desktop app,
-the two-version build script, the E2E harness scripts and the Codex audit
-transcript. Not to be reset or deleted. It stacks on `main` at 34a79db.
+`feat/e2e-real-app` carries the example desktop app, the two-version build
+script, the E2E harness scripts and the Codex audit transcript. Pushed to origin
+as a backup on 2026-08-12; not to be reset, deleted or merged. It stacks on
+`main` at 34a79db.
+
+Note that its `examples/desktop-app/src/update.rs` still calls the old
+two-fetch `run_update(manifest_url, …)` API and will not compile against this
+branch. Porting it to `UpdateExt::delta_identity` is the first task when real-app
+E2E resumes, and is itself a useful check that the new API is usable.
 
 ---
 
