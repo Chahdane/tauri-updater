@@ -61,6 +61,12 @@ conf = pathlib.Path(app_dir, "tauri.conf.json")
 cfg = json.loads(conf.read_text())
 cfg["version"] = version
 cfg["plugins"]["updater"]["pubkey"] = pathlib.Path(pub_path).read_text().strip()
+# Tauri refuses non-HTTPS updater endpoints at config load. The harness serves
+# over plain HTTP on loopback, so this flag is required — and it is set HERE,
+# never in the committed config, so the example app stays secure by default.
+# Same principle as the control surface and the signing key: a test-only
+# relaxation must not be reachable in a normal build.
+cfg["plugins"]["updater"]["dangerousInsecureTransportProtocol"] = True
 conf.write_text(json.dumps(cfg, indent=2) + "\n")
 
 cargo = pathlib.Path(app_dir, "Cargo.toml")
