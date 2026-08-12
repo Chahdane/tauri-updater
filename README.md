@@ -46,8 +46,9 @@ this plugin:        check → download patch → apply → verify ───→ i
 ```
 
 Because the artifact handed to the installer is bit-identical to the one the
-release process published, Tauri's own signature verification and installer
-logic run unchanged. Nothing about how the app installs itself is modified —
+release process published, Tauri's own installer logic runs unchanged, and the
+same signature validates it. Nothing about how the app installs itself is
+modified —
 which is what avoids the locked-executable and self-overwrite problems that make
 in-place binary patching so painful on Windows and macOS.
 
@@ -57,9 +58,14 @@ Two consequences worth stating plainly:
   missing patch, corrupt download, hash mismatch, unknown backend, out of disk —
   falls back to the full download the official updater would have done anyway.
   The delta path is an optimisation, never a dependency.
-- **The delta path does not weaken signature checking.** The reconstructed
-  artifact still has to satisfy Tauri's minisign verification. The hash check
-  this plugin performs is an additional correctness gate, not a replacement.
+- **The signature is still checked — by this plugin, explicitly.** Tauri
+  verifies signatures inside `Update::download()`, which the delta path bypasses
+  by definition: not downloading the full artifact is the entire point. The
+  handoff seam, `Update::install()`, performs *no* verification. So this plugin
+  runs the check itself before handing anything to the installer, using code
+  copied verbatim from `tauri-plugin-updater` and pinned by a test. Same
+  signature, same algorithm, same key — performed by us rather than by them,
+  because there is no code path in which Tauri would do it for us.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
