@@ -26,7 +26,7 @@ use minisign::KeyPair;
 use support::server::{read, Route, TestServer};
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::{Error, HttpFetch, HttpFetchBuilder};
-use tauri_updater_delta_core::{FileHash, UpdateIdentity, VerifiedArtifact};
+use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
 
@@ -182,6 +182,7 @@ fn run(
             pubkey: &w.pubkey,
             base,
             work_dir: work,
+            limits: Limits::default(),
         },
         &fetch,
         handoff,
