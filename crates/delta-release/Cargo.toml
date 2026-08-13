@@ -24,3 +24,7 @@ thiserror.workspace = true
 tauri-updater-delta-fixtures.workspace = true
 minisign-verify.workspace = true
 tempfile.workspace = true
+# Building real .app.tar.gz fixtures the way tauri-bundler does, so the
+# tar-layer tests exercise artifacts of the shape they will meet.
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
+tar = "0.4"
