@@ -31,7 +31,8 @@ Kept deliberately conservative. "Tested" and "proven in a real app" are differen
 claims, and the table below keeps them apart. A real macOS app now performs both
 a full and a tar-layer update through the official installer; that is integration
 evidence on one platform, not production readiness, and the open v0.1 security
-blockers in [SPRINT.md](SPRINT.md) are untouched by it.
+blockers in [docs/DECISIONS.md](docs/DECISIONS.md) and the
+[findings ledger](research/FINDINGS.md) are untouched by it.
 
 | Claim | Status |
 | --- | --- |
@@ -67,10 +68,9 @@ Measurements and the claims they do or do not support are tracked in
 [research/FINDINGS.md](research/FINDINGS.md), classified so that a plausible
 observation cannot become a stated fact by repetition.
 
-The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
-[SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
+The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan and
 [docs/DECISIONS.md](docs/DECISIONS.md) records the non-obvious calls and why they
-were made.
+were made. Measured results live in [research/](research/).
 
 ## How it works
 
