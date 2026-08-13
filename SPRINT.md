@@ -235,6 +235,54 @@ own proof.
 
 ---
 
+# REAL-APP E2E — PARTIAL RESULT
+
+**Run:** 2026-08-13 · macOS 26.5.2 arm64 · record
+`research/experiments/2026-08-13-macos-real-app-e2e.json`
+
+## Proven
+
+A real running Tauri app performed a real `Updater::check()`, derived
+`UpdateIdentity` from that `Update`, verified the artifact, produced a
+`VerifiedArtifact`, reached the real `Update::install()`, and left the installed
+main binary **byte-identical to the expected 1.0.1 binary**. No fake handoff.
+
+## Not proven — and this is the blocker
+
+The flow selected **Full, not Delta**. No patch was downloaded or reconstructed
+in a real app.
+
+**Root cause (new finding):** `Update.target` is `updater_os()` alone —
+`"darwin"` — not `"{os}-{arch}"`. The arch is appended only inside `get_urls`
+for its local search and never reaches the field (`updater.rs:403`). Gate A binds
+delta lookup to `identity.target()`, so `patch_for("darwin", "1.0.0")` found
+nothing. Confirmed at runtime, not only from source.
+
+This contradicts an assumption recorded in DECISIONS #13 and documented on
+`UpdateIdentity::target()`. **Not fixed in this branch** — it is an architectural
+correction and needs its own review.
+
+## Two harness bugs fixed to get this far
+
+- `port=$(start_server ...)` deadlocked: command substitution waits on a pipe the
+  backgrounded server holds open forever. **The harness could never run**, which
+  is much of why this claim stayed open.
+- `build-versions.sh` left `Cargo.lock` at the temporary build version — the same
+  defect that once turned `main` red on four jobs.
+
+## Scenario results, honestly
+
+| Scenario | Result | Meaningful? |
+| --- | --- | --- |
+| happy path | installed correct bytes | **Only as a full-download proof** |
+| corrupt / truncated / missing patch, wrong base | installed correct bytes | **Vacuous** — the delta path was never attempted in any scenario |
+| tampered full artifact, tampered both | refused, nothing installed | **Meaningful** — real signature verification blocked bad bytes |
+
+The fallback scenarios cannot be counted: they pass trivially when the patch is
+never consumed. They must be re-run once the target-key defect is fixed.
+
+---
+
 ## Goal
 
 Close the one claim still open: **a running Tauri app accepts a served update.**
