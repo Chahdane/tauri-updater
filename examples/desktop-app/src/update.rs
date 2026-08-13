@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_updater_delta::flow::{run_update, Context, Outcome};
-use tauri_plugin_updater_delta::{HttpFetch, TauriInstall, UpdateExt};
+use tauri_plugin_updater_delta::{HttpFetch, Limits, TauriInstall, UpdateExt};
 
 /// Where the manifest lives.
 ///
@@ -90,6 +90,7 @@ pub fn run<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
             pubkey: &pubkey,
             base: base.as_deref(),
             work_dir: &work_dir,
+            limits: Limits::default(),
         },
         &fetch,
         // The real seam. Everything before this produced a VerifiedArtifact;

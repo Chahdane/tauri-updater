@@ -28,6 +28,23 @@ pub enum Route {
     ///
     /// Models the interrupted download that a plain 404 does not.
     Truncated(Vec<u8>),
+    /// Answer with a 302 to `to`. Used to build redirect chains and loops.
+    Redirect(String),
+    /// Send headers and then nothing at all, holding the connection open.
+    ///
+    /// The failure no status code expresses: a server that accepts, promises a
+    /// body, and never sends it. Only a request-wide timeout catches this.
+    Stall,
+    /// Declare a `Content-Length` of `declared` but send only a token body.
+    ///
+    /// The cheap attack: make the client allocate or accept on the strength of
+    /// a number the attacker chose.
+    OversizedDeclared(u64),
+    /// Chunked transfer with no end, so no `Content-Length` bounds it.
+    ///
+    /// The same attack with the declared length removed, which is why a
+    /// `Content-Length` check alone is not enough.
+    EndlessChunked,
 }
 
 type Routes = Arc<Mutex<HashMap<String, Route>>>;
@@ -143,6 +160,46 @@ fn handle(mut stream: TcpStream, routes: &Routes) -> std::io::Result<()> {
                 body.len()
             )?;
             stream.write_all(&body[..body.len() / 2])?;
+        }
+        Some(Route::Redirect(to)) => {
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )?;
+        }
+        Some(Route::Stall) => {
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n"
+            )?;
+            stream.flush()?;
+            // Long enough that any sane request timeout fires first. The thread
+            // is detached, so this costs the test nothing.
+            thread::sleep(std::time::Duration::from_secs(120));
+        }
+        Some(Route::OversizedDeclared(declared)) => {
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n"
+            )?;
+            stream.write_all(b"just a token body")?;
+        }
+        Some(Route::EndlessChunked) => {
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+            )?;
+            let chunk = vec![b'A'; 64 * 1024];
+            // Until the client gives up and drops the connection, at which point
+            // the write fails and this returns.
+            loop {
+                if write!(stream, "{:x}\r\n", chunk.len()).is_err() {
+                    break;
+                }
+                if stream.write_all(&chunk).is_err() || write!(stream, "\r\n").is_err() {
+                    break;
+                }
+            }
         }
         None => {
             write!(
