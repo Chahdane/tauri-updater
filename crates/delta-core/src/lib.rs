@@ -45,6 +45,7 @@ pub mod limits;
 pub mod manifest;
 pub mod recompress;
 mod reconstruct;
+pub mod release_identity;
 pub mod signature;
 
 pub use backend::PatchBackend;
@@ -55,4 +56,5 @@ pub use identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 pub use limits::{Limits, DEFAULT_MAX_TARGET_BYTES};
 pub use manifest::{Manifest, TarLayer, TarPatch, TarSupport};
 pub use reconstruct::{try_reconstruct, Reconstruction, TargetSpec};
-pub use signature::{verify_artifact, verify_artifact_file, VerifiedArtifact};
+pub use release_identity::{IdentityError, ReleaseBinding, ReleaseIdentity};
+pub use signature::{advisory_binding, verify_artifact, verify_artifact_file, VerifiedArtifact};
