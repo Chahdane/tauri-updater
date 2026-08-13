@@ -1,0 +1,14 @@
+expected v1.0.1 main binary: 6d299c03876815f2b437b729599171336b855815ea21f22592ff79ac334ab13e
+
+-- happy path --
+  PASS delta-install                          ok installed-from-delta downloaded=3884546 full=4070756
+-- fallback: installed bytes must still be the release --
+  PASS corrupt-patch                          ok installed-from-full-download
+  PASS truncated-patch                        ok installed-from-full-download
+  PASS missing-patch                          ok installed-from-full-download
+  PASS wrong-base                             ok installed-from-full-download
+-- refusal: nothing may be installed --
+  PASS tampered-full-download                 error update failed: signature verification failed: The sign
+  PASS tampered-both                          error update failed: signature verification failed: The sign
+
+passed 7, failed 0
