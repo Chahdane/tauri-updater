@@ -43,6 +43,7 @@ pub mod hash;
 pub mod identity;
 pub mod limits;
 pub mod manifest;
+pub mod recompress;
 mod reconstruct;
 pub mod signature;
 

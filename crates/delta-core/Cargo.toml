@@ -11,6 +11,10 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 blake3.workspace = true
+# zlib-rs backend, not flate2's miniz_oxide default: the two produce
+# different DEFLATE output, and only zlib-rs reproduces the artifact Tauri's
+# bundler published. See src/recompress.rs.
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 minisign-verify.workspace = true
 semver.workspace = true
 tempfile.workspace = true
@@ -21,5 +25,7 @@ zstd.workspace = true
 
 [dev-dependencies]
 minisign.workspace = true
+# The reference writer the recompression tests compare against.
+tar = "0.4"
 tauri-updater-delta-fixtures.workspace = true
 tempfile.workspace = true

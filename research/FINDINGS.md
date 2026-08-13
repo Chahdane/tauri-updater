@@ -187,18 +187,29 @@ the time, which is precisely why `experiments/` now exists.
 Same caveats, same missing provenance. The two numbers differ by more than an
 order of magnitude and are *related* experiments, not a controlled pair.
 
-### F13 — Compression representation is what explains F11 vs F12 · **HYPOTHESIS**
+### F13 — Compression representation is what explains F11 vs F12 · **DEMONSTRATED, for one controlled pair** · *was HYPOTHESIS*
 
-The obvious reading: patching a compressed stream destroys the locality a delta
+The reading was: patching a compressed stream destroys the locality a delta
 depends on, and patching the uncompressed tar layer restores it.
 
-Well-motivated and untested here. Confirming it needs a controlled experiment:
-identical inputs, one variable, provenance recorded, both representations
-measured in the same run. Until that exists this is a hypothesis, and the
-distance between F13 and F11/F12 is exactly the distance between an explanation
-and a measurement.
+This entry asked for a controlled experiment — *identical inputs, one variable,
+provenance recorded, both representations measured in the same run* — and
+`2026-08-13-macos-controlled-tar-layer` is that experiment. The **same** macOS
+artifact pair, patched two ways:
 
-**Research TODO.** Not scheduled; not required for correctness.
+| Representation | Patch | As % of the 4,070,756-byte compressed target |
+| --- | ---: | ---: |
+| `.app.tar.gz` (compressed) | 3,884,546 | **95.43%** |
+| tar (uncompressed, inside it) | 625,269 | **15.36%** |
+
+83.9% fewer patch bytes, with the representation as the only variable. The
+reconstructed tar was byte-identical to the official one.
+
+**Upgraded, not rewritten.** The hypothesis is now demonstrated *for this pair*
+— one platform, one bundle format, one string-only source change. F14's build-
+noise confounder is untouched, and nothing here generalises the magnitude to
+other pairs. What is settled is the *direction and the mechanism*, which is what
+F13 actually claimed.
 
 ### F14 — Build reproducibility is a confounder · **HYPOTHESIS**
 
@@ -212,6 +223,56 @@ twice and diff.
 ### F15 — Per-platform, version-distance and change-category effects on ratio · **UNPROVEN**
 
 Plausible and unmeasured. Listed so they are not quietly assumed.
+
+### F22 — A shipped plugin can rebuild the exact published `.app.tar.gz` in-process · **DEMONSTRATED**
+
+Experiment `2026-08-13-macos-entry-aware-recompression`.
+
+The tar layer is worthless unless the client can put the gzip layer back
+byte-for-byte, because the minisign signature covers the compressed artifact and
+`Update::install` consumes it (F3, DECISIONS #6). Replaying `tar::Builder`'s
+write topology into `flate2`'s `GzEncoder` does exactly that, on **two**
+independent official artifacts from the controlled build:
+
+| Artifact | Rebuilt | Official | |
+| --- | ---: | ---: | --- |
+| v1.0.1 | 4,070,756 | 4,070,756 | identical |
+| v1.0.0 | 4,070,693 | 4,070,693 | identical |
+
+and the minisign signature issued over the original v1.0.1 artifact verifies
+against the rebuild.
+
+Reproducible from this repository alone:
+`cargo test -p tauri-updater-delta-core --test macos_recompression`, against the
+official artifact committed as a fixture.
+
+**Two elements are observed rather than contracted.** The 8192-byte payload
+chunks are `std::io::copy`'s internal buffer size, and the recipe requires
+flate2's **zlib-rs** backend — its default `miniz_oxide` produces 3,936,113 bytes
+for every topology and can never match. Neither is a guarantee anyone offers,
+which is why the recipe carries a version identifier and why its output is
+always gated by the published digest.
+
+### F23 — The earlier negative recompression result was true of its recipe, not of the problem · **DEMONSTRATED** · *supersedes a conclusion, not a measurement*
+
+`2026-08-13-macos-inprocess-recompression-probe` concluded that a shipped plugin
+could not do this, and is **retained unchanged**. Every number in it reproduces
+exactly: one-shot compression of the exact tar still yields 4,070,510 bytes
+differing at byte 47.
+
+Its measurements were right. Its inference — that four backends agreeing
+implicated the *write pattern* — was also right. The error was in what it
+compared the write pattern against: it tested one-shot and uniform chunking,
+and `tauri-bundler` does neither. It streams `tar::Builder` **into** the encoder,
+so the write boundaries are the tar's own entry structure. Uniform 8192-byte
+chunking of the same tar produces 4,070,674 bytes and also fails.
+
+The probe stated the mechanism as a HYPOTHESIS and named exactly why it could not
+settle it: *"tauri-bundler is not vendored here and was not read."* Reading it
+settled it. That is the same pattern as F18, arriving for the seventh time, and
+it is the reason this record is worth keeping rather than deleting: the gap
+between "four implementations disagree with the official" and "therefore it
+cannot be done in-process" is one unread source file wide.
 
 ---
 
