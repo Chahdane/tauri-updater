@@ -142,6 +142,20 @@ trap cleanup EXIT INT TERM
 rm -rf "$SCRATCH"; mkdir -p "$SCRATCH/app" "$CACHE"
 cp -R "$OUT/v1.0.0/$APP_NAME" "$SCRATCH/app/"
 
+# The copy is still pristine here, so this is where "we started from the build
+# we think we did" can be checked exactly.
+check "starting installation is the 1.0.0 build" "$H_100" "$(installed_hash)"
+
+# `codesign --force --deep --sign -` REWRITES the main binary: an ad-hoc
+# signature is embedded in the Mach-O, so its hash changes. That is why the
+# baseline below is captured after signing rather than compared against the
+# build output — and why the post-install checks read the hash *before* the
+# next launch signs it. Getting this wrong makes a real pass look like a
+# failure, which is how this line first failed.
+codesign --force --deep --sign - "$APP" >/dev/null 2>&1
+xattr -cr "$APP" 2>/dev/null
+H_100_SIGNED="$(installed_hash)"
+
 start_server
 
 # Point the two published manifests at the port that was actually bound. Only
@@ -174,7 +188,11 @@ echo
 echo "== transition 1: 1.0.0 -> 1.0.1, cache EMPTY =="
 launch "manifest-1.0.1.served.json"
 check "running version" "1.0.0" "$(ask version)"
-check "installed binary is 1.0.0" "$H_100" "$(installed_hash)"
+check "installed binary is the signed 1.0.0" "$H_100_SIGNED" "$(installed_hash)"
+# Non-vacuity: if the installation already were 1.0.1 or 1.0.2, every
+# "installed binary is now …" check downstream would pass without an install.
+not_contains "starting binary is not 1.0.1" "$H_101" "$(installed_hash)"
+not_contains "starting binary is not 1.0.2" "$H_102" "$(installed_hash)"
 check "cache starts empty" "active=none pending=none bytes=0" "$(ask cache)"
 
 T1_START=$(python3 -c 'import time;print(time.time())')
@@ -239,13 +257,61 @@ contains "PENDING cleared" "pending=none" "$CACHE2B"
 stop_app
 echo
 
+# ---- degradation, against the real cache on disk -------------------------
+#
+# The fallback matrix is covered exhaustively by
+# crates/plugin/tests/tar_delta_flow.rs, which can assert that the tar path was
+# *attempted* before it fell back — evidence this harness cannot produce, since
+# the app reports an outcome rather than a plan. What only a real run can show
+# is that a damaged cache degrades a **real Tauri install** rather than breaking
+# it, so that is what this section does.
+
+echo "== degradation: 1.0.1 -> 1.0.2 with a corrupted cache blob =="
+rm -rf "$SCRATCH/app" "$CACHE"; mkdir -p "$SCRATCH/app" "$CACHE"
+cp -R "$OUT/v1.0.1/$APP_NAME" "$SCRATCH/app/"
+
+# Re-seed the cache the only way the product allows: perform a real update. The
+# state cannot be hand-written, because staging requires a VerifiedArtifact.
+launch "manifest-1.0.2.served.json"
+check "running version" "1.0.1" "$(ask version)"
+stop_app
+rm -rf "$SCRATCH/app"; mkdir -p "$SCRATCH/app"
+cp -R "$OUT/v1.0.0/$APP_NAME" "$SCRATCH/app/"
+launch "manifest-1.0.1.served.json"
+contains "seeded via a full download" "installed-from-full-download" "$(ask trigger)"
+stop_app
+launch "manifest-1.0.2.served.json"
+contains "1.0.1 is ACTIVE" "active=1.0.1@" "$(ask cache)"
+stop_app
+
+# Same length, different bytes: only the digest can catch it.
+BLOB="$(ls "$CACHE"/blobs/*.tar.gz | head -1)"
+python3 - "$BLOB" <<'PY'
+import sys
+p = sys.argv[1]
+b = bytearray(open(p, "rb").read())
+b[len(b) // 2] ^= 0xFF
+open(p, "wb").write(bytes(b))
+PY
+echo "     (corrupted $(basename "$BLOB"))"
+
+: > "$SCRATCH/requests.log"
+launch "manifest-1.0.2.served.json"
+OUTCOME3="$(ask trigger)"
+contains "a corrupt cache degrades to FULL" "installed-from-full-download" "$OUTCOME3"
+not_contains "and not to a tar delta" "installed-from-tar-delta" "$OUTCOME3"
+contains "the full artifact was downloaded" "/v1.0.2/DeltaUpdaterExample.app.tar.gz" "$(cat "$SCRATCH/requests.log")"
+stop_app
+check "and 1.0.2 still installed correctly" "$H_102" "$(installed_hash)"
+echo
+
 # ---- measurements --------------------------------------------------------
 
 python3 - "$REPORT" "$OUT" "$SCRATCH" "$CACHE" "$H_100" "$H_101" "$H_102" \
-         "$OUTCOME1" "$OUTCOME2" "$T1_START" "$T1_END" "$T2_START" "$T2_END" <<'PY'
+         "$OUTCOME1" "$OUTCOME2" "$T1_START" "$T1_END" "$T2_START" "$T2_END" "$OUTCOME3" <<'PY'
 import json, os, subprocess, sys
 (report, out, scratch, cache, h100, h101, h102,
- outcome1, outcome2, t1s, t1e, t2s, t2e) = sys.argv[1:14]
+ outcome1, outcome2, t1s, t1e, t2s, t2e, outcome3) = sys.argv[1:15]
 
 def du(path):
     total = 0
@@ -272,6 +338,7 @@ json.dump({
         "outcome": outcome2,
         "seconds": round(float(t2e) - float(t2s), 3),
     },
+    "degradation_corrupt_cache_blob": {"outcome": outcome3},
     "cache_bytes_on_disk": du(cache),
     "build": versions,
 }, open(report, "w"), indent=2)
