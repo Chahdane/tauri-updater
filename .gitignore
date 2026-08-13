@@ -57,3 +57,5 @@ examples/desktop-app/app-icon.png
 
 # Local AI/session artifacts
 /CODEX.jsonl
+# A local mirror of this repository, kept as a backup. Not source.
+/tauri-updater-backup.git/
