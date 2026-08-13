@@ -30,6 +30,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
+use crate::limits::Limits;
 use crate::manifest::Manifest;
 use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 
@@ -54,6 +55,13 @@ pub enum UpdateSource {
     Delta {
         /// The rebuilt artifact.
         artifact: PathBuf,
+        /// Owns the per-update workspace the artifact lives in.
+        ///
+        /// Held rather than ignored: dropping it removes the directory, so the
+        /// artifact stays readable exactly as long as this value is alive and
+        /// no longer. Named with a leading underscore because nothing reads it —
+        /// its whole contribution is its lifetime.
+        _workspace: tempfile::TempDir,
         /// Signature to validate it against, from the manifest.
         signature: String,
         /// Bytes actually downloaded.
@@ -124,6 +132,7 @@ pub fn plan_update(
     base: Option<&Path>,
     work_dir: &Path,
     fetch: &dyn Fetch,
+    limits: Limits,
 ) -> UpdateSource {
     // The document Tauri fetched, parsed here rather than fetched again. A
     // malformed delta layer disqualifies the delta path only; the full download
@@ -172,9 +181,31 @@ pub fn plan_update(
         return fallback(None);
     };
 
-    match attempt_delta(entry, patch, base, work_dir, fetch) {
+    // Refuse an absurd declared size before a byte is downloaded. The manifest
+    // is unauthenticated, so its idea of "how big is the target" is a request,
+    // not a fact. See crate::limits.
+    if let Err(reason) = limits.check_target_size(entry.target_installer_size) {
+        return fallback(Some(reason));
+    }
+
+    // One workspace per update, so two concurrent runs cannot consume or
+    // overwrite each other's files. Cheaper and simpler than locking, and it
+    // covers the realistic exposure — see docs/DECISIONS.md #18.
+    if let Err(e) = std::fs::create_dir_all(work_dir) {
+        return fallback(Some(Error::io("create", work_dir, e)));
+    }
+    let workspace = match tempfile::Builder::new()
+        .prefix("update-")
+        .tempdir_in(work_dir)
+    {
+        Ok(dir) => dir,
+        Err(e) => return fallback(Some(Error::io("create", work_dir, e))),
+    };
+
+    match attempt_delta(entry, patch, base, workspace.path(), fetch) {
         Ok(artifact) => UpdateSource::Delta {
             artifact,
+            _workspace: workspace,
             // The identity's signature, not the entry's. They were just proven
             // equal, so this is the same value — taking it from the identity
             // keeps the authoritative source obvious at the point of use.
@@ -400,6 +431,11 @@ mod tests {
         }
     }
 
+    /// Generous by default; the size-cap tests set their own.
+    fn limits() -> Limits {
+        Limits::default()
+    }
+
     fn refusal(source: UpdateSource) -> Refusal {
         match source {
             UpdateSource::Refused { reason } => reason,
@@ -419,6 +455,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let UpdateSource::Delta {
@@ -426,6 +463,7 @@ mod tests {
             signature,
             downloaded,
             would_have_downloaded,
+            ..
         } = source
         else {
             panic!("expected a delta, got {source:?}");
@@ -452,6 +490,7 @@ mod tests {
             None,
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let UpdateSource::Full { url, reason, .. } = source else {
@@ -476,6 +515,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         let UpdateSource::Full {
             url,
@@ -515,6 +555,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(
             matches!(source, UpdateSource::Delta { .. }),
@@ -548,6 +589,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ));
         assert!(
             matches!(
@@ -581,6 +623,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ));
         assert!(
             matches!(
@@ -628,6 +671,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         // It must not have used the generic delta entry.
@@ -665,6 +709,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ) else {
             panic!("expected a full download");
         };
@@ -687,6 +732,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ));
         assert!(
             matches!(&reason, Refusal::Downgrade { current, target }
@@ -707,6 +753,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(
             !matches!(
@@ -727,6 +774,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(matches!(source, UpdateSource::UpToDate), "got {source:?}");
     }
@@ -743,6 +791,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ));
         assert!(
             matches!(
@@ -775,6 +824,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ));
         assert!(
             matches!(
@@ -803,6 +853,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let requested = f.server.requested.borrow();
@@ -824,6 +875,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(
             f.server.requested.borrow().is_empty(),
@@ -844,6 +896,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let UpdateSource::Full { reason, .. } = source else {
@@ -866,6 +919,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let UpdateSource::Full { reason, .. } = source else {
@@ -889,6 +943,7 @@ mod tests {
             Some(&wrong),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(matches!(
             source,
@@ -920,6 +975,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         ) else {
             panic!("expected a full download");
         };
@@ -948,6 +1004,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
         assert!(
             matches!(source, UpdateSource::Full { .. }),
@@ -956,16 +1013,145 @@ mod tests {
     }
 
     #[test]
-    fn does_not_leave_the_patch_behind() {
+    fn the_workspace_is_gone_once_the_update_is_done() {
+        // Stronger than the old "the patch file is not there" check, which the
+        // per-update workspace made vacuous by moving the patch into a
+        // subdirectory the assertion never looked in.
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
         let work = dir.path().join("work");
 
-        let _ = plan_update(&f.identity("1.0.0"), Some(&f.base), &work, &f.server);
+        {
+            let source = plan_update(
+                &f.identity("1.0.0"),
+                Some(&f.base),
+                &work,
+                &f.server,
+                limits(),
+            );
+            assert!(matches!(source, UpdateSource::Delta { .. }));
+            let leftovers: Vec<_> = std::fs::read_dir(&work)
+                .expect("work dir")
+                .filter_map(|e| e.ok())
+                .collect();
+            assert_eq!(leftovers.len(), 1, "one workspace while the update is live");
+        }
 
+        // The source has been dropped, so the workspace goes with it.
+        let leftovers: Vec<_> = std::fs::read_dir(&work)
+            .expect("work dir")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
         assert!(
-            !work.join("update.patch").exists(),
-            "a patch is dead weight once applied and should not be kept"
+            leftovers.is_empty(),
+            "the workspace must not outlive the update: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn an_absurd_declared_target_size_is_refused_before_anything_is_downloaded() {
+        // The §6 attack. The manifest asks us to reconstruct half a terabyte;
+        // no digest or signature check helps, because the resources are spent
+        // long before either runs. Only a ceiling the server does not control
+        // stops it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        f.manifest
+            .delta
+            .as_mut()
+            .unwrap()
+            .platforms
+            .get_mut(PLATFORM)
+            .unwrap()
+            .target_installer_size = 500 * 1024 * 1024 * 1024;
+
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        );
+
+        let UpdateSource::Full { reason, .. } = source else {
+            panic!("expected the delta to be refused, got {source:?}");
+        };
+        assert!(
+            matches!(reason, Some(Error::DeclaredSizeTooLarge { .. })),
+            "expected the local ceiling to refuse it, got {reason:?}"
+        );
+        assert!(
+            f.server.requested.borrow().is_empty(),
+            "the patch must not be downloaded before the size is judged"
+        );
+    }
+
+    #[test]
+    fn the_local_ceiling_is_not_the_manifests_to_raise() {
+        // The invariant in one assertion: a *declared* size within the manifest
+        // but beyond the host's ceiling loses. Server-controlled limits are the
+        // thing this defends against, so the host's number has to win.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+        let declared = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].target_installer_size;
+
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            Limits {
+                max_target_bytes: declared - 1,
+            },
+        );
+        assert!(matches!(
+            source,
+            UpdateSource::Full {
+                reason: Some(Error::DeclaredSizeTooLarge { .. }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn two_concurrent_updates_do_not_consume_each_others_files() {
+        // Both runs share a work_dir, as two windows of one app or two instances
+        // would. With fixed filenames the second run overwrites the first's
+        // artifact between its digest check and its read, and the first fails
+        // its signature check — a benign double-click turning into the one
+        // failure the design refuses to recover from (DECISIONS #11).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+        let work = dir.path().join("shared-work");
+
+        let first = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &work,
+            &f.server,
+            limits(),
+        );
+        let second = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &work,
+            &f.server,
+            limits(),
+        );
+
+        let (UpdateSource::Delta { artifact: a, .. }, UpdateSource::Delta { artifact: b, .. }) =
+            (&first, &second)
+        else {
+            panic!("both runs should reach a delta: {first:?} / {second:?}");
+        };
+
+        assert_ne!(a, b, "each update must get its own artifact path");
+        let expected = FileHash::of_file(&f.released).expect("hash released");
+        assert_eq!(FileHash::of_file(a).expect("hash a"), expected);
+        assert_eq!(
+            FileHash::of_file(b).expect("hash b"),
+            expected,
+            "the second run must not have disturbed the first"
         );
     }
 
@@ -979,6 +1165,7 @@ mod tests {
             Some(&f.base),
             &dir.path().join("work"),
             &f.server,
+            limits(),
         );
 
         let percent = source

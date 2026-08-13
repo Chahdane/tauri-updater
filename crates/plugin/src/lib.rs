@@ -30,11 +30,14 @@ mod http;
 mod tauri_glue;
 
 pub use flow::{run_update, Context, InstallHandoff, Outcome};
-pub use http::HttpFetch;
+pub use http::{
+    HttpFetch, HttpFetchBuilder, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_REDIRECTS,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_REQUEST_TIMEOUT,
+};
 pub use tauri_glue::{Builder, Config, TauriInstall, UpdateExt};
 
 #[doc(no_inline)]
-pub use tauri_updater_delta_core::{Refusal, UpdateIdentity};
+pub use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity};
 
 /// Convenience alias for results produced by this crate.
 pub type Result<T> = std::result::Result<T, Error>;

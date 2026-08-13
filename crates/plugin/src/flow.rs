@@ -24,7 +24,7 @@
 use std::path::Path;
 
 use tauri_updater_delta_core::client::{plan_update, Fetch, UpdateSource};
-use tauri_updater_delta_core::{verify_artifact, UpdateIdentity, VerifiedArtifact};
+use tauri_updater_delta_core::{verify_artifact, Limits, UpdateIdentity, VerifiedArtifact};
 
 use crate::{Error, Result};
 
@@ -64,8 +64,11 @@ pub struct Context<'a> {
     pub pubkey: &'a str,
     /// Previously cached installer, if any.
     pub base: Option<&'a Path>,
-    /// Scratch directory for the patch and the rebuilt artifact.
+    /// Scratch directory. Each update gets its own subdirectory inside it, so
+    /// concurrent runs cannot consume one another's files.
     pub work_dir: &'a Path,
+    /// Local ceilings on what a manifest may ask this host to do.
+    pub limits: Limits,
 }
 
 /// Take the cheapest safe path to the release `identity` names, and install it.
@@ -83,7 +86,7 @@ pub fn run_update(
     std::fs::create_dir_all(ctx.work_dir)
         .map_err(|e| Error::Io(format!("creating {}: {e}", ctx.work_dir.display())))?;
 
-    let source = plan_update(identity, ctx.base, ctx.work_dir, fetch);
+    let source = plan_update(identity, ctx.base, ctx.work_dir, fetch, ctx.limits);
 
     match source {
         UpdateSource::UpToDate => Ok(Outcome::UpToDate),
@@ -98,6 +101,7 @@ pub fn run_update(
             signature,
             downloaded,
             would_have_downloaded,
+            _workspace,
         } => {
             let bytes = std::fs::read(&artifact)
                 .map_err(|e| Error::Io(format!("reading the rebuilt artifact: {e}")))?;
@@ -108,7 +112,8 @@ pub fn run_update(
             match verify_artifact(bytes, &signature, ctx.pubkey) {
                 Ok(verified) => {
                     handoff.install(&verified)?;
-                    let _ = std::fs::remove_file(&artifact);
+                    // No explicit cleanup: dropping _workspace removes the whole
+                    // per-update directory, artifact included.
                     Ok(Outcome::InstalledFromDelta {
                         downloaded,
                         saved_against: would_have_downloaded,
@@ -125,7 +130,6 @@ pub fn run_update(
                     // check it against a signature from that same document,
                     // which grants a second attempt rather than a safer one.
                     // See docs/DECISIONS.md #11.
-                    let _ = std::fs::remove_file(&artifact);
                     Err(Error::Signature(
                         "the rebuilt artifact did not match the manifest's signature".to_owned(),
                     ))
@@ -219,6 +223,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
+                limits: Limits::default(),
             },
             &server,
             &handoff,
@@ -256,6 +261,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
+                limits: Limits::default(),
             },
             &server,
             &handoff,
@@ -286,6 +292,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
+                limits: Limits::default(),
             },
             &server,
             &handoff,
@@ -312,6 +319,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
+                limits: Limits::default(),
             },
             &server,
             &handoff,
@@ -342,6 +350,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 work_dir: dir.path(),
+                limits: Limits::default(),
             },
             &server,
             &handoff,
