@@ -73,6 +73,7 @@ fn publish(dir: &Path, pair: &KeyPair) -> Published {
         patch_out: &patch,
         notes: Some("Phase 2 end-to-end"),
         pub_date: Some("2026-08-12T10:00:00Z"),
+        tar_layer: None,
     };
 
     let (manifest, _) =
@@ -404,6 +405,7 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
             patch_out: &first_patch,
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         None,
@@ -425,6 +427,7 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
             patch_out: &second_patch,
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         Some(manifest),
@@ -460,6 +463,7 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
             patch_out: &dir.path().join("a.zst"),
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         None,
@@ -480,6 +484,7 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
             patch_out: &dir.path().join("b.zst"),
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         Some(old_manifest),
@@ -513,6 +518,7 @@ fn refuses_to_patch_a_version_to_itself() {
             patch_out: &dir.path().join("a.zst"),
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &signing_key(&pair),
         None,

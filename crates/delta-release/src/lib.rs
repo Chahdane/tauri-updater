@@ -17,6 +17,8 @@
 
 pub mod signing;
 
+pub mod tar_layer;
+
 use std::path::Path;
 
 use tauri_updater_delta_core::backend::{PatchBackend, ZstdBackend};
@@ -78,6 +80,31 @@ pub struct ReleaseRequest<'a> {
     pub notes: Option<&'a str>,
     /// Optional RFC 3339 publication timestamp.
     pub pub_date: Option<&'a str>,
+
+    /// Also publish a tar-layer patch, when the artifacts support one.
+    ///
+    /// `None` reproduces the pre-tar-layer behaviour exactly.
+    pub tar_layer: Option<TarLayerOptions<'a>>,
+}
+
+/// Where a tar-layer patch should be written and served from.
+#[derive(Debug, Clone)]
+pub struct TarLayerOptions<'a> {
+    /// Where the tar patch will be downloadable.
+    pub patch_url: &'a str,
+    /// Where to write the generated tar patch.
+    pub patch_out: &'a Path,
+    /// Scratch directory. Defaults to `.delta-tar-work` beside `patch_out`.
+    pub work_dir: Option<&'a Path>,
+    /// Largest tar this run will expand.
+    pub max_tar_bytes: u64,
+    /// Fail the release if a tar layer cannot be produced.
+    ///
+    /// Off by default, because "these artifacts are not tarballs" is an
+    /// ordinary answer for most platforms. On, it turns a silent absence into
+    /// a build failure — which is what a project that has decided to depend on
+    /// the tar layer wants, since a missing layer is invisible in the manifest.
+    pub required: bool,
 }
 
 /// What a release run produced, beyond the manifest itself.
@@ -87,6 +114,13 @@ pub struct PatchSummary {
     pub patch_size: u64,
     /// Size of the target installer in bytes.
     pub installer_size: u64,
+    /// Size of the tar-layer patch, if one was published.
+    pub tar_patch_size: Option<u64>,
+    /// Why no tar layer was published, when one was asked for.
+    ///
+    /// Carried rather than logged so a caller can decide whether it matters.
+    /// Every reason is ordinary unless [`TarLayerOptions::required`] is set.
+    pub tar_layer_skipped: Option<String>,
 }
 
 impl PatchSummary {
@@ -209,6 +243,31 @@ pub fn build_release(
     entry.signature = signature;
     entry.patches.insert(req.from_version.to_owned(), patch);
 
+    // The tar layer is strictly additive: if anything about it fails, the entry
+    // above is already complete and the release publishes without it.
+    let mut tar_patch_size = None;
+    let mut tar_layer_skipped = None;
+    if let Some(options) = &req.tar_layer {
+        match build_tar_layer(req, options, entry.tar_layer.take()) {
+            Ok((layer, size)) => {
+                tar_patch_size = Some(size);
+                entry.tar_layer = Some(layer);
+            }
+            Err(reason) => {
+                let reason = reason.to_string();
+                if options.required {
+                    return Err(Error::Request(format!(
+                        "a tar layer was required and could not be produced: {reason}"
+                    )));
+                }
+                // Leave the entry with no tar layer at all rather than a stale
+                // one: a layer describing the previous release would tell every
+                // client to reconstruct the wrong tar.
+                tar_layer_skipped = Some(reason);
+            }
+        }
+    }
+
     manifest.validate()?;
 
     Ok((
@@ -216,8 +275,43 @@ pub fn build_release(
         PatchSummary {
             patch_size,
             installer_size,
+            tar_patch_size,
+            tar_layer_skipped,
         },
     ))
+}
+
+/// Generate the tar layer for one upgrade path, or say why not.
+fn build_tar_layer(
+    req: &ReleaseRequest<'_>,
+    options: &TarLayerOptions<'_>,
+    existing: Option<tauri_updater_delta_core::TarLayer>,
+) -> Result<(tauri_updater_delta_core::TarLayer, u64)> {
+    if !tar_layer::looks_like_app_tar_gz(req.new_installer)
+        || !tar_layer::looks_like_app_tar_gz(req.previous_installer)
+    {
+        return Err(Error::Request(
+            "the artifacts are not gzipped tarballs".to_owned(),
+        ));
+    }
+
+    let default_work = tar_layer::default_work_dir(options.patch_out);
+    let work_dir = options.work_dir.unwrap_or(&default_work);
+
+    let (layer, summary) = tar_layer::generate(
+        &tar_layer::TarLayerRequest {
+            from_version: req.from_version,
+            previous_installer: req.previous_installer,
+            new_installer: req.new_installer,
+            patch_url: options.patch_url,
+            patch_out: options.patch_out,
+            work_dir,
+            max_tar_bytes: options.max_tar_bytes,
+        },
+        existing,
+    )?;
+    let _ = std::fs::remove_dir(work_dir);
+    Ok((layer, summary.patch_size))
 }
 
 fn file_size(path: &Path) -> Result<u64> {

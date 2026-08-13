@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{
-    build_release, load_manifest, write_manifest, ReleaseRequest, Result,
+    build_release, load_manifest, write_manifest, ReleaseRequest, Result, TarLayerOptions,
 };
 
 /// Environment variable Tauri uses for the signing key, reused here so a project
@@ -80,6 +80,30 @@ struct Args {
     #[arg(long)]
     private_key: Option<String>,
 
+    /// Also generate a tar-layer patch, written here.
+    ///
+    /// Only meaningful for gzipped tarball artifacts such as macOS
+    /// `.app.tar.gz`. The direct patch is generated either way, so a release
+    /// that cannot produce a tar layer still publishes normally.
+    #[arg(long, requires = "tar_patch_url")]
+    tar_patch_out: Option<PathBuf>,
+
+    /// Public URL the tar-layer patch will be served from.
+    #[arg(long, requires = "tar_patch_out")]
+    tar_patch_url: Option<String>,
+
+    /// Fail the release if a tar-layer patch cannot be produced.
+    ///
+    /// A missing tar layer is invisible in the manifest — the release looks
+    /// fine and every client silently does the expensive thing — so a project
+    /// that has decided to depend on it wants this on.
+    #[arg(long, requires = "tar_patch_out")]
+    require_tar_layer: bool,
+
+    /// Largest tar the tar-layer generator will expand, in bytes.
+    #[arg(long, default_value_t = 8 * 1024 * 1024 * 1024)]
+    max_tar_bytes: u64,
+
     /// Do everything except write the manifest — generate the patch, sign, and
     /// print what would be published.
     #[arg(long)]
@@ -100,6 +124,17 @@ fn run() -> Result<()> {
     let args = Args::parse();
     let key = load_key(args.private_key.as_deref())?;
 
+    let tar_layer = match (&args.tar_patch_out, &args.tar_patch_url) {
+        (Some(out), Some(url)) => Some(TarLayerOptions {
+            patch_url: url,
+            patch_out: out,
+            work_dir: None,
+            max_tar_bytes: args.max_tar_bytes,
+            required: args.require_tar_layer,
+        }),
+        _ => None,
+    };
+
     let request = ReleaseRequest {
         platform: &args.platform,
         version: &args.target_version,
@@ -111,6 +146,7 @@ fn run() -> Result<()> {
         patch_out: &args.patch_out,
         notes: args.notes.as_deref(),
         pub_date: args.pub_date.as_deref(),
+        tar_layer,
     };
 
     let existing = load_manifest(&args.manifest)?;
@@ -126,6 +162,31 @@ fn run() -> Result<()> {
         summary.ratio_percent(),
     );
     println!("patch written to {}", args.patch_out.display());
+
+    match (&summary.tar_patch_size, &summary.tar_layer_skipped) {
+        (Some(size), _) => {
+            let percent = if summary.installer_size == 0 {
+                0.0
+            } else {
+                *size as f64 / summary.installer_size as f64 * 100.0
+            };
+            println!(
+                "tar-layer patch {size} bytes ({percent:.2}% of a full download), \
+                 round-tripped to the exact published artifact"
+            );
+            if let Some(path) = &args.tar_patch_out {
+                println!("tar-layer patch written to {}", path.display());
+            }
+        }
+        // Loud on stderr rather than quiet on stdout: a missing tar layer looks
+        // exactly like a successful release in every other respect.
+        (None, Some(reason)) => {
+            eprintln!("warning: no tar layer published: {reason}");
+            eprintln!("warning: clients will use the direct patch, which for a compressed");
+            eprintln!("warning: artifact saves very little. Pass --require-tar-layer to fail.");
+        }
+        (None, None) => {}
+    }
 
     if args.dry_run {
         println!("--dry-run: manifest not written. It would have been:\n");

@@ -113,6 +113,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             patch_out: &patch,
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         None,
