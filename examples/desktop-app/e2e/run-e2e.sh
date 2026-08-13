@@ -35,8 +35,18 @@ if [ "$EXPECTED_NEW" = "$EXPECTED_OLD" ]; then
   exit 1
 fi
 
-start_server() { # $1 = doc root; echoes port
-  python3 - "$1" <<'PY' &
+# Starts the artifact server. Sets SERVER_PID and writes the chosen port to
+# "$1/.port"; the caller reads it from there.
+#
+# Deliberately NOT `port=$(start_server ...)`. Command substitution reads the
+# function's stdout until every writer closes it, and a backgrounded child
+# inherits that pipe — so the substitution blocks forever waiting on a server
+# that by design never exits. That is not hypothetical: it is why this harness
+# hung on its first real run, and why the end-to-end claim stayed open this long.
+# The server's output goes to a file and nothing here writes to stdout.
+start_server() { # $1 = doc root
+  rm -f "$1/.port"
+  python3 - "$1" >"$1/server.log" 2>&1 <<'PY' &
 import http.server, socketserver, os, sys
 os.chdir(sys.argv[1])
 class H(http.server.SimpleHTTPRequestHandler):
@@ -47,7 +57,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), H) as httpd:
 PY
   SERVER_PID=$!
   for _ in $(seq 1 40); do [ -s "$1/.port" ] && break; sleep 0.25; done
-  cat "$1/.port"
+  [ -s "$1/.port" ] || { echo "FATAL: artifact server never bound a port" >&2; return 1; }
 }
 
 # Run one scenario. $1 name, $2 mutation (a shell snippet over $ROOT), $3 expected
@@ -69,7 +79,9 @@ scenario() {
   codesign --force --deep --sign - "$ROOT/$APP_NAME" >/dev/null 2>&1
   xattr -cr "$ROOT/$APP_NAME" 2>/dev/null
 
-  local port; port="$(start_server "$ROOT")"
+  local port
+  start_server "$ROOT" || { FAIL=$((FAIL+1)); return; }
+  port="$(cat "$ROOT/.port")"
   python3 - "$ROOT/manifest.json" "$port" <<'PY'
 import json, sys
 p, port = sys.argv[1], sys.argv[2]
