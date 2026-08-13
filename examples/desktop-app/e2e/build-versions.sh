@@ -98,7 +98,7 @@ echo "==> publishing with delta-release"
 cargo build -q --release -p tauri-updater-delta-release --manifest-path "$ROOT/Cargo.toml"
 "$ROOT/target/release/delta-release" \
   --platform "$PLATFORM" \
-  --version 1.0.1 --from-version 1.0.0 \
+  --target-version 1.0.1 --from-version 1.0.0 \
   --previous-installer "$OUT/v1.0.0/DeltaUpdaterExample.app.tar.gz" \
   --new-installer      "$OUT/v1.0.1/DeltaUpdaterExample.app.tar.gz" \
   --installer-url "http://127.0.0.1:0/DeltaUpdaterExample.app.tar.gz" \
