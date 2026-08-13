@@ -27,10 +27,20 @@ research/
 └── logs/                raw output referenced by those records
 ```
 
-`experiments/` and `logs/` are empty. That is the correct state: no benchmark has
-been run under controlled conditions yet, so there is nothing to put in them.
-They exist so the first real run has an obvious place to go, and so their
-emptiness is a visible fact rather than an absence nobody notices.
+## Superseding a record
+
+Records are **append-only**. A run that contradicts an earlier one gets its own
+record; the earlier one is never edited, never deleted, and never annotated
+after the fact. The new record's `notes` says what it supersedes and why, and
+[FINDINGS.md](FINDINGS.md) carries the reconciliation.
+
+This is not politeness towards old data. A superseded record usually documents
+*which specific thing was tested*, and that is exactly what a later reader needs
+in order to tell a wrong measurement from a right measurement of the wrong thing.
+`2026-08-13-macos-inprocess-recompression-probe` is the worked example: every
+number in it still reproduces, and its conclusion was still wrong, because the
+recipe it tested was not the one the bundler uses. Deleting it would have
+destroyed the evidence for how the mistake happened. See F22 and F23.
 
 ## How to add an experiment
 
