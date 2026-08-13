@@ -34,7 +34,6 @@
   },
   "plugins": {
     "updater": {
-      "dangerousInsecureTransportProtocol": true,
       "endpoints": [
         "http://127.0.0.1:0/manifest.json"
       ],
