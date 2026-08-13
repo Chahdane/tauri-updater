@@ -43,6 +43,32 @@ fn base_artifact() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Build the HTTP client for this build's transport policy.
+///
+/// The default is HTTPS-only, and in a release build a plain-HTTP URL is
+/// refused outright (`docs/DECISIONS.md` #19). The end-to-end harness serves
+/// over loopback HTTP, and `cargo tauri build` is a release build, so the
+/// harness needs the opt-in.
+///
+/// It is granted **only under `e2e-control`**, which is off by default and never
+/// enabled by any default path. A normal build of this example cannot reach the
+/// insecure branch — it is not a disabled flag, it is absent code. Same
+/// discipline as the control surface itself: a test-only relaxation that can
+/// ship is a vulnerability added deliberately and then forgotten.
+fn http_client() -> Result<HttpFetch, String> {
+    #[cfg(feature = "e2e-control")]
+    {
+        HttpFetch::builder()
+            .dangerous_insecure_transport_protocol(true)
+            .build()
+            .map_err(|e| format!("http client: {e}"))
+    }
+    #[cfg(not(feature = "e2e-control"))]
+    {
+        HttpFetch::new().map_err(|e| format!("http client: {e}"))
+    }
+}
+
 /// Run one update, returning a short description of what happened.
 pub fn run<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     // The public key comes from tauri.conf.json — the same value the official
@@ -79,7 +105,7 @@ pub fn run<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
 
     // Out of the async context now, so the blocking flow is safe to run.
     let work_dir = std::env::temp_dir().join("delta-updater-example-work");
-    let fetch = HttpFetch::new().map_err(|e| format!("http client: {e}"))?;
+    let fetch = http_client()?;
     let base = base_artifact();
 
     let outcome = run_update(
