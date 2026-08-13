@@ -1013,6 +1013,7 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -3947,9 +3948,12 @@ name = "tauri-plugin-updater-delta"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "minisign",
  "reqwest 0.12.28",
  "semver",
+ "serde_json",
+ "tar",
  "tauri",
  "tauri-plugin-updater",
  "tauri-updater-delta-core",
@@ -4016,11 +4020,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "flate2",
  "minisign",
  "minisign-verify",
  "semver",
  "serde",
  "serde_json",
+ "tar",
  "tauri-updater-delta-fixtures",
  "tempfile",
  "thiserror 2.0.20",
@@ -4037,9 +4043,11 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
+ "flate2",
  "minisign",
  "minisign-verify",
  "serde_json",
+ "tar",
  "tauri-updater-delta-core",
  "tauri-updater-delta-fixtures",
  "tempfile",
@@ -5494,6 +5502,12 @@ dependencies = [
  "indexmap 2.14.0",
  "memchr",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"

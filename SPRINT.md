@@ -1,0 +1,550 @@
+# Sprint 5 — The cache-backed tar layer
+
+**Phase:** 3 of 8, final gate ([roadmap](docs/ROADMAP.md))
+**Started:** 2026-08-12
+**Status:** Tar-layer prototype demonstrated end to end on macOS. Audit #2 blockers still open.
+
+---
+
+# POST-CODEX HARDENING AUDIT
+
+**Started:** 2026-08-12
+**Status:** Gates A, B, C and D complete. Real-app E2E remains the open claim.
+
+An independent adversarial audit (Codex, given the repository cold and told to
+challenge the architecture rather than agree with it) found the prototype
+architecture sound but surfaced several gaps. Real-app E2E work is paused on the
+preserved `feat/e2e-real-app` branch until the HIGH findings are resolved.
+
+Every finding is verified against this repository and against upstream
+`tauri-plugin-updater` source before anything is changed. Codex proposing a fix
+is not a reason to implement that fix.
+
+## Verification status
+
+| # | Finding | Status | Gate |
+| --- | --- | --- | --- |
+| 1 | Double-fetch / update identity seam | **CONFIRMED** | A |
+| 2 | Signature-failure reasoning overclaims | **CONFIRMED** (wording only; policy stands) | A |
+| 3 | One coherent update identity | Design proposed | A |
+| 4 | Downgrade / replay / version policy | **CONFIRMED** | A |
+| 5 | HTTP transport hardening | **CONFIRMED** (all 8 sub-claims) | B |
+| 6 | Resource exhaustion caps | **CONFIRMED** | B |
+| 7 | Atomic file handling | **PARTIALLY CONFIRMED** | B |
+| 8 | Concurrent update protection | **CONFIRMED** | B |
+| 9 | `delta-release --version` collision | **CONFIRMED** — worse than reported | C |
+| 10 | Release workflow assumptions | **CONFIRMED** | C |
+| 11 | Tauri compatibility range | **CONFIRMED** | C |
+| 12 | Documentation contradictions | **CONFIRMED** (A–E) | D |
+| 13 | Plugin DX — design only | Deferred to Phase 5 proposal | — |
+| 15 | macOS 95% vs tar 6.6% | Preserve as observation, do not overclaim | D |
+
+## Gate A — trust architecture ✅
+
+- [x] 1. Update identity: single authoritative response — `UpdateIdentity`
+      carries Tauri's `Update`, and `run_update` has no manifest URL left to
+      fetch
+- [x] 2. DECISIONS #11 reasoning corrected; the fail-closed policy is unchanged
+- [x] 3. `checked == delta == verified == installed` — structural for the first
+      three (one parse of one document), closed by `VerifiedArtifact` for the
+      fourth
+- [x] 4. Downgrade / replay / version policy in `identity.rs`, applying to every
+      caller rather than to whoever consulted Tauri's gate
+
+Also fixed in Gate A: the platform-selection divergence found during
+verification. Tauri searches `{os}-{arch}-{installer}` before `{os}-{arch}` and
+does not report which key won, so the delta entry is now bound to the signature
+Tauri selected rather than to a key recomputed here.
+
+### Gate A regression tests
+
+All ten requested cases are covered, plus the platform-selection binding:
+
+| Case | Test | Where |
+| --- | --- | --- |
+| 1. checked version != delta target | `refuses_when_the_checked_version_is_not_the_delta_target`, `a_version_tauri_never_checked_installs_nothing` | core, plugin |
+| 2. selected signature != delta signature | `refuses_when_the_delta_signature_is_not_the_one_tauri_selected` | core |
+| 3. selected URL authoritative | `the_full_path_always_uses_the_url_tauri_selected` | core |
+| 4. current > target | `refuses_a_downgrade`, `a_downgrade_never_becomes_a_full_download` | core |
+| 5. replay of an old signed artifact | `replaying_an_old_genuinely_signed_release_installs_nothing` + `the_replayed_artifact_really_does_verify` | plugin |
+| 6. malformed version | `refuses_an_uncomparable_version`, `refuses_an_uncomparable_target_version` | core |
+| 7. prerelease ordering | `prereleases_order_by_semver` | core |
+| 8. multiple versions behind | `a_target_several_versions_ahead_still_uses_its_patch` | core |
+| 9. missing delta, legitimate target | `falls_back_when_the_installed_version_has_no_patch` | core |
+| 10. no second manifest fetch | `never_fetches_the_manifest`, `the_manifest_is_never_fetched`, `the_flow_never_requests_the_manifest` | core, plugin, real HTTP |
+| platform selection | `stays_bound_to_the_target_tauri_selected` | core |
+
+### Mutation evidence
+
+Each guard was disabled in turn, the intended tests confirmed red for the
+intended reason, then restored. No mutations committed.
+
+| Guard disabled | Tests killed | Sample failure |
+| --- | --- | --- |
+| version identity | 3 | `expected a refusal, got Delta { … }` |
+| signature identity | 2 | — |
+| downgrade refusal | 8 | `a replayed older release must be refused, got Ok(InstalledFromFullDownload)` |
+| uncomparable-version refusal | 2 | — |
+
+## Gate B — transport and resource safety ✅
+
+- [x] 5. HTTPS (mirroring upstream's flag and profile rule), bounded redirects
+      with no HTTPS→HTTP downgrade, a whole-request deadline, and a response
+      ceiling enforced both from `Content-Length` and by counting bytes
+- [x] 6. `Limits::max_target_bytes` — a ceiling the server does not control
+- [x] 7. Reconstruction builds into `.part` and renames after the digest gate;
+      downloads do the same
+- [x] 8. One `tempfile` workspace per update, replacing the fixed filenames
+
+Chosen mechanisms and the arguments for them are in `docs/DECISIONS.md` #18
+(workspace over lock) and #19 (transport policy mirrors Tauri's).
+
+### Mutation evidence
+
+Each guard disabled in turn, intended test confirmed red for the intended
+reason, restored. No mutations committed.
+
+| Guard disabled | Killed | Notes |
+| --- | --- | --- |
+| HTTPS refusal | 1 | `release strictness must refuse http` |
+| Redirect budget | 1 | |
+| Request deadline | 1 | stall test ran 30 s instead of timing out |
+| `Content-Length` pre-check | 1 | |
+| Streaming byte counter | 1 | endless body ran to the deadline |
+| `.part` promotion | 1 | destroys the cached artifact |
+| Local target-size cap | **4** | |
+| Per-update workspace | 2 | |
+
+Three of these did not fail on the first attempt, and the tests were what needed
+fixing:
+
+- The HTTPS refusal only ran in release builds, where the suite never runs. The
+  rule was split into a pure `scheme_verdict(url, insecure, strict)` so the
+  release arm is asserted in any profile.
+- The redirect test used a self-loop, which *hangs* rather than fails when the
+  budget is removed — and a test that hangs under mutation is not evidence. It
+  is now a finite chain longer than the budget.
+- The partial-file test asserted only "nothing left behind", which is equally
+  true of writing to the destination and deleting it on error. It now asserts
+  the property `.part` actually buys: a failed download must not destroy the
+  artifact already at that path.
+
+## Gate C — concrete defects ✅
+
+- [x] 9. `--version` → `--target-version`, with `tests/cli.rs` running the real
+      executable in debug. Six tests, all of which fail if the collision returns.
+- [x] 10. The tag path derives everything it needs — builds the AppImage, finds
+      the previous release, downloads its artifact, generates and checks the
+      manifest before upload. Remaining manual prerequisites are listed in the
+      workflow header. The rehearsal now runs the CLI tests and the
+      release-to-client loop instead of `--help`.
+- [x] 11. `tauri-plugin-updater` narrowed to `>=2.10.1, <2.11.0`, enforced by
+      `tests/upstream_compat.rs` reading the resolved version out of `Cargo.lock`.
+
+### Mutation evidence
+
+| Guard disabled | Killed |
+| --- | --- |
+| CLI argument collision reintroduced | **6** |
+| Version requirement widened to `"2"` | 1 |
+| Verified-version list made stale | 1 |
+
+## Gate D — truthfulness ✅
+
+- [x] 12. Documentation audit. Seven contradictions found by re-reading each
+      document against the source, plus one real defect (`Builder::manifest_url`
+      is required but never read since #13 removed the fetch that consumed it).
+- [x] 16. `research/` with a 33-field schema, a findings ledger, and empty
+      `experiments/` and `logs/` directories. No historical data was
+      reconstructed: the two macOS ratios are recorded as STRONG OBSERVATION
+      with their missing provenance stated, and the compression explanation for
+      them stays a HYPOTHESIS.
+- [x] 25. Conservative claim language. README now carries a supported /
+      partially supported / unproven table, with a real running Tauri app
+      installing a delta update listed as **unproven**.
+
+### Research ledger, by classification
+
+| Class | Count | Notes |
+| --- | --- | --- |
+| DEMONSTRATED | 8 | Reproducible in this repository |
+| STRONG OBSERVATION | 4 | Includes both macOS ratios, provenance missing |
+| HYPOTHESIS | 2 | Compression-representation explanation; build-noise floor |
+| ENGINEERING DECISION | 2 | |
+| UNPROVEN | 3 | Includes the real-app install |
+
+## Preserved work — now in `main`
+
+`feat/e2e-real-app` carried the example desktop app, the two-version build
+script, the E2E harness scripts and the Codex audit transcript. It was **merged
+into `main` as PR #12 out of order**, before Gate A; see `docs/DECISIONS.md` #17.
+Not reverted.
+
+Three consequences, all handled in the Gate A PR:
+
+- **The example was ported** to `UpdateExt::delta_identity`. It is a workspace
+  member, so Gate A could not compile until it moved.
+- **`main` was red on all five CI jobs** when #12 landed. A stale `Cargo.lock`
+  (example `Cargo.toml` at 1.0.0, lock recording 1.0.1) failed every `--locked`
+  job — four of the five — and `crates/delta-release/src/signing.rs` failed
+  `cargo fmt --check`. Both fixed here.
+- **A GitHub "Update branch" merge on the PR dropped Gate A's DECISIONS #13 and
+  #14**, leaving four code comments pointing at the wrong sections. Resolved by
+  keeping both sets and renumbering: Gate A holds #13/#14, the macOS and rsign2
+  entries moved to #15/#16.
+
+### First tasks when real-app E2E resumes
+
+1. **Review `examples/desktop-app/e2e/*.sh`.** Deliberately untouched. They were
+   written against the two-fetch flow, and `DELTA_E2E_MANIFEST_URL` now feeds
+   only Tauri's `endpoints()` — the harness may still assume the plugin fetches
+   the manifest itself.
+2. **Validate the port at runtime.** It compiles and reads well, but no running
+   app has exercised `delta_identity()` yet. That remains the open claim.
+3. **Stop `build-versions.sh` re-introducing the lock drift** that broke `main`;
+   it rewrites the example's version in place.
+
+---
+
+# CODEX AUDIT #2 — OPEN v0.1 BLOCKERS
+
+**Recorded:** 2026-08-13 · **Status:** ALL OPEN · **Not addressed by the E2E**
+
+A second independent audit confirmed Gates A–D improved the project and found
+these remaining v0.1 security and reliability blockers. They are recorded here
+**before** the real-app E2E work so that a successful E2E cannot later be
+mistaken for having resolved any of them.
+
+Codex explicitly concluded these do not invalidate a controlled macOS
+happy-path E2E experiment. They are not being fixed in `feat/real-app-e2e`.
+
+| # | Blocker | Why it is not an E2E concern |
+| --- | --- | --- |
+| B1 | **Unsigned-manifest relabel replay.** A genuinely signed *old* artifact can be described by unauthenticated metadata as a newer release. | The E2E serves an honest manifest it generated itself. |
+| B2 | **`UpdateIdentity::new` is public**, so a caller can bypass the intended `delta_identity()` construction path. | The E2E uses the intended path exclusively — that is part of what it proves. |
+| B3 | **`UpdateIdentity` and `TauriInstall` are not structurally bound to the same `Update`.** Nothing in the types prevents deriving identity from one and installing through another. | The E2E passes one `Update` to both, which is the correct usage, not a proof the wrong usage is prevented. |
+| B4 | **Full-download fallback still uses shared workspace paths** and can race concurrently. | The E2E runs one update at a time. Fallback scenarios passing here does **not** resolve this. |
+| B5 | **First tagged release can omit `manifest.json`.** | The E2E does not use the release workflow. |
+| B6 | **The committed example config enables `dangerousInsecureTransportProtocol`.** | Intentionally enabled for the localhost harness; see the E2E report. Not evidence that production config is safe. |
+| B7 | **Release tooling does not round-trip its generated patch before publication.** | The E2E round-trips by construction, which is a property of this run, not of the tooling. |
+| B8 | **Documentation and research wording corrections from Audit #2.** | Tracked separately. |
+
+**None of these may be closed by E2E evidence.** Each needs its own fix and its
+own proof.
+
+
+---
+
+# REAL-APP E2E — DEMONSTRATED ON MACOS
+
+**Runs:** 2026-08-13 · macOS 26.5.2 arm64
+
+| Run | Record | Result |
+| --- | --- | --- |
+| 1 | `2026-08-13-macos-real-app-e2e` | **Partial** — real install succeeded, but selected Full |
+| 2 | `2026-08-13-macos-real-app-e2e-delta` | **Delta demonstrated** |
+
+Both retained. The first is preserved as evidence of the integration mismatch it
+exposed, not superseded.
+
+## What run 1 found
+
+`Update.target` is `updater_os()` alone — `"darwin"`, not `"{os}-{arch}"`. Gate A
+keyed delta lookup on it, so nothing matched and every update quietly took the
+full path. Four gates of green tests missed it: a delta updater that never deltas
+is indistinguishable from a working updater unless something asserts *which path
+ran*. Corrected in `docs/DECISIONS.md` #22 by recovering the platform key from
+the url and signature Tauri selected.
+
+## What run 2 demonstrates
+
+```
+installed-from-delta downloaded=3884546 full=4070756
+
+old        6890b2e5…7801e5
+expected   6d299c03…4ab13e
+installed  6d299c03…4ab13e   ✓
+```
+
+Real `Updater::check()` → real `Update` → `delta_identity()` → **Delta** → patch
+download → reconstruction → digest and signature verification →
+`VerifiedArtifact` → real `Update::install` → installed binary byte-identical to
+the expected release. No fake handoff.
+
+Reconstruction is evidenced, not inferred: `installed-from-delta` is
+constructible only from `UpdateSource::Delta`, which requires the digest gate to
+have passed.
+
+## Harness bugs fixed to get here
+
+- `port=$(start_server ...)` deadlocked on the command-substitution pipe — the
+  harness could never run.
+- `build-versions.sh` left `Cargo.lock` at the temporary version. The restore
+  added for it then failed to fire, because a second `trap ... EXIT` later in the
+  file silently replaced it; bash keeps one EXIT trap.
+- The runner asserted installed bytes but not which path ran, which is precisely
+  why run 1 reported seven passes while never attempting a delta.
+
+## Scope
+
+macOS, one architecture, one bundle format, one version pair, loopback plain HTTP
+enabled through `e2e-control`, ad-hoc code signing. Integration proof only.
+**No Audit #2 blocker is closed.** Windows, Linux, rollback resistance,
+cross-platform E2E and production readiness all remain unproven.
+
+---
+
+# CACHE-BACKED TAR-LAYER PROTOTYPE — STOPPED AT THE FEASIBILITY GATE
+
+**Date:** 2026-08-13 · **Status:** SUPERSEDED — see the next section
+**Retained** because its measurements all still reproduce and its conclusion did not.
+
+The prototype rests on the plugin being able to recompress an exact tar back into
+the byte-exact official `.app.tar.gz`, because the minisign signature covers the
+compressed artifact and `Update::install` consumes it. That step is not
+demonstrated, and the obvious recipe does not work.
+
+## Measured
+
+`research/experiments/2026-08-13-macos-inprocess-recompression-probe.json`
+
+| Backend | Candidate | Result |
+| --- | --- | --- |
+| flate2 1.1.9 + zlib-rs 0.6.7 | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + zlib-rs **0.6.3** (the version the controlled run identified) | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + system zlib | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + miniz_oxide 0.8.9 | 4,070,510 | differs at byte 47 |
+
+Official is 4,070,756. All four candidates are byte-identical **to each other**
+and 246 bytes short. The 10-byte gzip header matches exactly.
+
+## Why this is not a backend problem
+
+Four independent DEFLATE implementations agreeing with each other and all
+disagreeing with the official at one early offset is the signature of a different
+**write/flush pattern** into the encoder, not a different encoder. One-shot
+compression packs marginally better than a stream interrupted at boundaries.
+
+The controlled experiment reproduced the official bytes only by running the
+`cargo-tauri` binary over an extracted tree — which a shipped plugin cannot do.
+Its own scope section already listed "standalone raw-tar recompression stability"
+as **not established**; this probe converts that caveat into a measured negative.
+
+Likely mechanism — `tar::Builder` streaming into `GzEncoder` at entry boundaries
+— is a **HYPOTHESIS**. `tauri-bundler` is not vendored here (cargo-tauri is
+installed as a binary) so its write pattern was not read.
+
+## Not implemented, deliberately
+
+No cache, no schema change, no concurrency mechanism. Two further stop conditions
+were also due for a report before implementation (schema evolution and shared-state
+coordination); both are moot until recompression is settled.
+
+The bandwidth prize is real — 15.36% vs 95.43% on the controlled pair — so this
+is worth resolving, not abandoning.
+
+---
+
+## Goal
+
+Close the one claim still open: **a running Tauri app accepts a served update.**
+
+Everything to date proves the algorithm. Nothing proves that a real
+`Update`, obtained from a real `Updater::check()` inside a real app, installs a
+delta-rebuilt artifact. 103 tests use a fake handoff — by design, and that is
+exactly why none of them substitutes for this.
+
+## Why an app is unavoidable
+
+`tauri_plugin_updater::Update` has private fields (`run_on_main_thread`,
+`config`, `extract_path`, `app_name`, `installer_args`). No test can construct
+one. `Updater::check()` inside a running app is the only source, so the
+control-surface route is **forced, not chosen**.
+
+The counterweight: macOS `install_inner` is pure file manipulation — gzip, tar
+extract, rename the live bundle, move the new one in. No GUI surface, so once a
+real `Update` exists the install is mechanical and hash-assertable.
+
+## Definition of done
+
+- [ ] Two versions built by `cargo tauri build`, published through `delta-release`
+- [ ] Local plain-HTTP server, no cloud, no external dependencies
+- [ ] Post-install BLAKE3 of the **main binary** matches v_new, by name, by hash
+- [ ] Failure branches asserted by outcome, not by error
+- [ ] DECISIONS #13 recording the Gatekeeper path taken and what it proves
+- [ ] SPRINT / CHANGELOG / docs updated in the same PR
+
+## Tasks
+
+### 1. Example app — done
+
+- [x] `examples/desktop-app`, Tauri v2, plain HTML frontend, no npm build step
+- [x] Registers both plugins; real "check for updates" action in the UI
+- [x] The update path is the genuine integration: Tauri's own `check()` reads
+      the manifest (works because it is a *superset*, decision #5), yielding the
+      `Update` that installs; our flow substitutes only the download
+
+### 2. Control surface — done, and verified absent by default
+
+- [x] `#[cfg(feature = "e2e-control")]`, feature **not** in `default`
+- [x] Loopback HTTP only: `/trigger`, `/outcome`, `/version`
+- [x] Triggers the *same* function the UI button calls, so tested path and
+      shipped path are the same code
+- [x] **Verified by evidence, not inspection:** default build has no marker
+      string in the binary; the check is non-vacuous because the marker *is*
+      present when the feature is explicitly enabled
+
+No private key is committed either — the harness generates one per run. A
+test-only key in the repo is the same hazard class as a shipped test surface.
+
+### 3. Two published versions — in progress
+
+- [ ] `cargo tauri build` producing `.app` and `.app.tar.gz`
+- [ ] v_old and v_new differing in the **main binary**, not just metadata
+- [ ] Both published through `delta-release`, not hand-crafted
+
+### 4. Harness
+
+- [ ] Serve manifest + patch + `.app.tar.gz` over the existing `TestServer`
+- [ ] Assert v_old != v_new **at the main-binary layer** — different metadata
+      around an identical binary is the `appimage_pair` vacuous pass arriving
+      through a different door
+
+### 5. The install
+
+- [ ] Direct route: ad-hoc codesign, `xattr -cr`, run `Update::install` on the
+      live bundle
+- [ ] Assert the installed bundle's main binary hashes to v_new
+- [ ] If `PermissionDenied` or an authorization prompt blocks a headless run,
+      take the stripped-down fallback and record it — do not paper over it
+
+### 6. Failure branches
+
+- [ ] corrupt / truncated / wrong-base patch → fallback → installed bytes are
+      the released artifact
+- [ ] signature failure → no install, loud failure, per DECISIONS #11
+- [ ] corrupt full download → nothing installed
+
+## In progress
+
+Building the two app versions.
+
+## Blocked
+
+Nothing.
+
+## Notes
+
+- Claim status: **"a running Tauri app accepts a served update" is OPEN.** It
+  closes only if the direct install path succeeds. The stripped-down fallback
+  closes a weaker claim and leaves the full one open, recorded as such.
+- Base-artifact caching is not built; the harness supplies the previous
+  artifact directly. A shipping plugin would cache it after each update. That
+  gap is real and belongs to Phase 3 proper.
+
+## Next sprint
+
+Phase 4 — robustness: resumable downloads, disk-full, atomic writes, and an
+audit of every failure branch. Much of it already exists; the work is closing
+gaps rather than starting fresh.
+
+---
+
+# CACHE-BACKED TAR LAYER — DEMONSTRATED ON MACOS
+
+**Date:** 2026-08-13 · **Branch:** `feat/macos-tar-cache-prototype`
+**Record:** `research/experiments/2026-08-13-macos-cache-backed-tar-e2e`
+
+The previous section's stop condition is resolved. What it measured was correct;
+what it concluded was not, and the difference is one unread source file — see
+`docs/DECISIONS.md` #26 and findings F22/F23.
+
+## The gate: exact in-process recompression
+
+`tauri-bundler` does not compress a tar. It streams `tar::Builder` **into**
+`GzEncoder`, so the encoder sees writes whose boundaries are the tar's own entry
+structure. Replaying that topology reproduces the published artifact exactly.
+
+| Topology | v1.0.1 output | Official | |
+| --- | ---: | ---: | --- |
+| **entry-aware** | 4,070,756 | 4,070,756 | **identical** |
+| one-shot | 4,070,510 | 4,070,756 | differs at byte 47 |
+| uniform 8192 | 4,070,674 | 4,070,756 | differs at byte 47 |
+
+Confirmed on a second artifact (v1.0.0, 4,070,693 bytes, identical) and on both
+releases of the new three-version build, and the published minisign signature
+verifies against the rebuild. The one-shot number reproduces the earlier probe
+exactly, so that record is superseded rather than contradicted.
+
+`flate2`'s **zlib-rs** backend is required; its default `miniz_oxide` produces
+3,936,113 bytes for every topology and can never match. Enabling both backends
+still matches, so feature unification in a consumer's graph does not break it.
+
+## The three-version end-to-end
+
+One real installation, moved twice through the real `Update::install`:
+
+```
+REAL v1.0.0, cache EMPTY
+     → Full → exact verified v1.0.1 → PENDING → real install
+     → relaunch as 1.0.1 → ACTIVE 1.0.1
+     → TarDelta → exact v1.0.2 tar → exact official .app.tar.gz
+     → signature PASS → PENDING → real install
+     → relaunch as 1.0.2 → ACTIVE 1.0.2
+```
+
+| | Transition 1 | Transition 2 |
+| --- | --- | --- |
+| Cache before | EMPTY | ACTIVE(1.0.1) |
+| **Required outcome** | **Full** | **TarDelta** |
+| Observed | `installed-from-full-download` | `installed-from-tar-delta` |
+| Downloaded | 4,163,366 (whole artifact) | **633,594** |
+| Installed main binary | `573f3838…` = v1.0.1 ✓ | `7caff690…` = v1.0.2 ✓ |
+
+The three main binaries hash to `dd42cb31…`, `573f3838…`, `7caff690…` and are
+asserted pairwise distinct by both the build script and the runner, so no
+downstream assertion can pass vacuously.
+
+**Which path ran is asserted, not inferred.** Both transitions install the same
+published bytes, so a hash-only harness would pass twice while an updater
+silently downloaded everything — which is what the first real E2E did (#22). The
+server's request log additionally shows the tar patch fetched and neither the
+full artifact nor the direct patch, so the saving is observed at the wire.
+
+**The chain is provable.** `base_tar_blake3` of the 1.0.1→1.0.2 patch equals
+`target_tar_blake3` of the 1.0.0→1.0.1 release, so transition 2 patched the
+artifact transition 1 cached.
+
+## Bandwidth
+
+| Pair | Direct patch | Tar patch | Fewer patch bytes |
+| --- | ---: | ---: | ---: |
+| 1.0.0 → 1.0.1 | 3,963,466 (95.20%) | 626,006 (**15.04%**) | 84.21% |
+| 1.0.1 → 1.0.2 | 4,023,061 (96.55%) | 633,594 (**15.21%**) | 84.25% |
+
+Two independent pairs from a fresh build, reproducing the earlier controlled
+single-pair result (15.36% vs 95.43%).
+
+## Defects found and fixed on the way
+
+- **The state store treated "unreadable" as "absent".** `initialise` panicked on
+  a state file written by a future format — a plugin downgrade would have
+  crashed the updater — and `load` scanned downwards for the newest generation
+  it could *parse*, resurrecting state the compare-and-set had already replaced
+  and wedging the store permanently. Both fixed, both pinned by regressions. The
+  CAS mechanism itself was sound and is unchanged.
+- **`SPRINT.md` had been swallowed by a `sprint.md` gitignore rule**, because
+  git matches ignore patterns case-insensitively where `core.ignorecase` is set.
+  It then vanished in a history rewrite meant only to purge `CODEX.jsonl`.
+- **The example config was committed mid-harness-run**, capturing a temporary
+  version, a generated key and `dangerousInsecureTransportProtocol: true`.
+
+## Scope, exactly
+
+macOS only, one architecture, one bundle format, one three-version ladder,
+string-only source changes, plain-HTTP loopback via `e2e-control`, ad-hoc code
+signing. Integration and cache-state-machine evidence. **No Audit #2 blocker is
+closed** except B7, and only for the tar path: `delta-release` now round-trips
+its own tar patch before publishing, while the direct-patch generator still does
+not. Windows, Linux, rollback resistance and production readiness remain
+unproven.

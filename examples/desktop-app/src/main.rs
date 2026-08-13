@@ -47,9 +47,16 @@ fn main() {
                 .expect("the delta plugin needs a manifest URL"),
         );
 
-    #[cfg(feature = "e2e-control")]
+    // Reconciliation runs on every launch, feature or not: it is how the cache
+    // learns which version actually came back up, and that is the app's job
+    // rather than the harness's. See `update::reconcile_on_launch`.
     let builder = builder.setup(|app| {
+        let verdict = update::reconcile_on_launch(app.handle());
+        eprintln!("delta: cache reconciliation: {verdict}");
+
+        #[cfg(feature = "e2e-control")]
         control::spawn(app.handle().clone());
+
         Ok(())
     });
 

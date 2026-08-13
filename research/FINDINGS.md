@@ -187,18 +187,29 @@ the time, which is precisely why `experiments/` now exists.
 Same caveats, same missing provenance. The two numbers differ by more than an
 order of magnitude and are *related* experiments, not a controlled pair.
 
-### F13 — Compression representation is what explains F11 vs F12 · **HYPOTHESIS**
+### F13 — Compression representation is what explains F11 vs F12 · **DEMONSTRATED, for one controlled pair** · *was HYPOTHESIS*
 
-The obvious reading: patching a compressed stream destroys the locality a delta
+The reading was: patching a compressed stream destroys the locality a delta
 depends on, and patching the uncompressed tar layer restores it.
 
-Well-motivated and untested here. Confirming it needs a controlled experiment:
-identical inputs, one variable, provenance recorded, both representations
-measured in the same run. Until that exists this is a hypothesis, and the
-distance between F13 and F11/F12 is exactly the distance between an explanation
-and a measurement.
+This entry asked for a controlled experiment — *identical inputs, one variable,
+provenance recorded, both representations measured in the same run* — and
+`2026-08-13-macos-controlled-tar-layer` is that experiment. The **same** macOS
+artifact pair, patched two ways:
 
-**Research TODO.** Not scheduled; not required for correctness.
+| Representation | Patch | As % of the 4,070,756-byte compressed target |
+| --- | ---: | ---: |
+| `.app.tar.gz` (compressed) | 3,884,546 | **95.43%** |
+| tar (uncompressed, inside it) | 625,269 | **15.36%** |
+
+83.9% fewer patch bytes, with the representation as the only variable. The
+reconstructed tar was byte-identical to the official one.
+
+**Upgraded, not rewritten.** The hypothesis is now demonstrated *for this pair*
+— one platform, one bundle format, one string-only source change. F14's build-
+noise confounder is untouched, and nothing here generalises the magnitude to
+other pairs. What is settled is the *direction and the mechanism*, which is what
+F13 actually claimed.
 
 ### F14 — Build reproducibility is a confounder · **HYPOTHESIS**
 
@@ -212,6 +223,56 @@ twice and diff.
 ### F15 — Per-platform, version-distance and change-category effects on ratio · **UNPROVEN**
 
 Plausible and unmeasured. Listed so they are not quietly assumed.
+
+### F22 — A shipped plugin can rebuild the exact published `.app.tar.gz` in-process · **DEMONSTRATED**
+
+Experiment `2026-08-13-macos-entry-aware-recompression`.
+
+The tar layer is worthless unless the client can put the gzip layer back
+byte-for-byte, because the minisign signature covers the compressed artifact and
+`Update::install` consumes it (F3, DECISIONS #6). Replaying `tar::Builder`'s
+write topology into `flate2`'s `GzEncoder` does exactly that, on **two**
+independent official artifacts from the controlled build:
+
+| Artifact | Rebuilt | Official | |
+| --- | ---: | ---: | --- |
+| v1.0.1 | 4,070,756 | 4,070,756 | identical |
+| v1.0.0 | 4,070,693 | 4,070,693 | identical |
+
+and the minisign signature issued over the original v1.0.1 artifact verifies
+against the rebuild.
+
+Reproducible from this repository alone:
+`cargo test -p tauri-updater-delta-core --test macos_recompression`, against the
+official artifact committed as a fixture.
+
+**Two elements are observed rather than contracted.** The 8192-byte payload
+chunks are `std::io::copy`'s internal buffer size, and the recipe requires
+flate2's **zlib-rs** backend — its default `miniz_oxide` produces 3,936,113 bytes
+for every topology and can never match. Neither is a guarantee anyone offers,
+which is why the recipe carries a version identifier and why its output is
+always gated by the published digest.
+
+### F23 — The earlier negative recompression result was true of its recipe, not of the problem · **DEMONSTRATED** · *supersedes a conclusion, not a measurement*
+
+`2026-08-13-macos-inprocess-recompression-probe` concluded that a shipped plugin
+could not do this, and is **retained unchanged**. Every number in it reproduces
+exactly: one-shot compression of the exact tar still yields 4,070,510 bytes
+differing at byte 47.
+
+Its measurements were right. Its inference — that four backends agreeing
+implicated the *write pattern* — was also right. The error was in what it
+compared the write pattern against: it tested one-shot and uniform chunking,
+and `tauri-bundler` does neither. It streams `tar::Builder` **into** the encoder,
+so the write boundaries are the tar's own entry structure. Uniform 8192-byte
+chunking of the same tar produces 4,070,674 bytes and also fails.
+
+The probe stated the mechanism as a HYPOTHESIS and named exactly why it could not
+settle it: *"tauri-bundler is not vendored here and was not read."* Reading it
+settled it. That is the same pattern as F18, arriving for the seventh time, and
+it is the reason this record is worth keeping rather than deleting: the gap
+between "four implementations disagree with the official" and "therefore it
+cannot be done in-process" is one unread source file wide.
 
 ---
 
@@ -300,6 +361,71 @@ because F19 establishes the delta path actually runs.
 
 Does **not** address Audit #2 blocker B4: the full-fallback workspace race is
 untouched, and a single-threaded harness cannot speak to it.
+
+### F24 — The cache-backed tar path, in a real app, across two real transitions · **DEMONSTRATED ON MACOS FOR THE RECORDED CONTROLLED RUN**
+
+Experiment `2026-08-13-macos-cache-backed-tar-e2e`, macOS 26.5.2 arm64.
+
+Three versions built by `cargo tauri build`, main binaries asserted pairwise
+distinct. One installation moved through the real `Update::install` twice:
+
+| | Transition 1 | Transition 2 |
+| --- | --- | --- |
+| Cache before | EMPTY | ACTIVE(1.0.1) |
+| **Required** | **Full** | **TarDelta** |
+| Observed | `installed-from-full-download` | `installed-from-tar-delta` |
+| Downloaded | 4,163,366 | **633,594** |
+| Installed binary | `573f3838…` = v1.0.1 | `7caff690…` = v1.0.2 |
+
+**Which path ran is asserted, not inferred**, and so is what was *not* fetched:
+the server's request log shows the tar patch downloaded and neither the full
+artifact nor the direct patch. Both transitions install identical published
+bytes, so a hash-only harness would have passed twice on an updater that
+downloaded everything — which is precisely what happened in F19's first run.
+
+**The chain is provable rather than assumed.** `base_tar_blake3` of the
+1.0.1→1.0.2 patch equals `target_tar_blake3` of the 1.0.0→1.0.1 release, so the
+artifact transition 2 patched is the one transition 1 cached.
+
+Promotion is separately evidenced: after each install the cache held
+PENDING with ACTIVE unchanged, and only the *relaunch* — the app reporting its
+own version — promoted it.
+
+**Scope.** macOS, one architecture, one bundle format, one ladder, string-only
+source changes, loopback plain HTTP, ad-hoc signing. Integration evidence.
+Closes no Audit #2 blocker except B7, and that only for the tar path.
+
+### F25 — The tar layer's saving reproduces on independent pairs · **DEMONSTRATED, for three controlled macOS builds**
+
+| Pair | Direct patch | Tar patch | Fewer patch bytes |
+| --- | ---: | ---: | ---: |
+| 1.0.0 → 1.0.1 | 3,963,466 (95.20%) | 626,006 (**15.04%**) | 84.21% |
+| 1.0.1 → 1.0.2 | 4,023,061 (96.55%) | 633,594 (**15.21%**) | 84.25% |
+
+Two pairs from one fresh build, with full provenance, reproducing the earlier
+controlled single-pair result (F13: 15.36% vs 95.43%). The agreement across
+three independent pairs is what lifts F13's mechanism claim from "one pair" to
+"reproduced" — though still on one platform, one bundle format, and one class of
+source change (F15 remains unproven).
+
+### F26 — Release tooling that round-trips its own patch catches a failure nothing else can · **DEMONSTRATED**
+
+`delta-release` applies its own tar patch, recompresses, and requires
+byte-identity with the artifact it was given, before writing any metadata.
+
+The failure it catches is invisible otherwise: if the recompression recipe does
+not reproduce *this release's* artifact — a property of the bundler's dependency
+graph, not of the tool — every client would do the work and fall back, and the
+manifest would look entirely correct. `refuses_to_publish_when_recompression_would_not_reproduce_the_artifact`
+exercises it against a genuinely-compressed artifact the recipe cannot rebuild.
+
+Both releases of the three-version build round-tripped against artifacts
+`cargo tauri build` had just produced, which is independent of the committed
+fixture: it shows the recipe works on the current toolchain, not only on one
+artifact retained from an earlier run.
+
+Closes Audit #2 blocker **B7 for the tar path only**. The direct-patch generator
+still does not round-trip its output.
 
 ### F20 — The macOS `.app.tar.gz` ratio, measured with full provenance · **STRONG OBSERVATION**
 

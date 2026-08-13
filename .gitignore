@@ -22,6 +22,9 @@ examples/**/src-tauri/target/
 *.dmg
 *.msi
 *.app.tar.gz
+# ...except the controlled artifact the recompression recipe is checked
+# against. It is evidence, not build output; see its README.
+!crates/delta-core/tests/fixtures/**/*.app.tar.gz
 
 # Signing keys — never commit these
 *.key
@@ -57,3 +60,5 @@ examples/desktop-app/app-icon.png
 
 # Local AI/session artifacts
 /CODEX.jsonl
+# A local mirror of this repository, kept as a backup. Not source.
+/tauri-updater-backup.git/

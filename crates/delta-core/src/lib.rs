@@ -43,6 +43,7 @@ pub mod hash;
 pub mod identity;
 pub mod limits;
 pub mod manifest;
+pub mod recompress;
 mod reconstruct;
 pub mod signature;
 
@@ -52,6 +53,6 @@ pub use error::{Error, Result};
 pub use hash::FileHash;
 pub use identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 pub use limits::{Limits, DEFAULT_MAX_TARGET_BYTES};
-pub use manifest::Manifest;
+pub use manifest::{Manifest, TarLayer, TarPatch, TarSupport};
 pub use reconstruct::{try_reconstruct, Reconstruction, TargetSpec};
 pub use signature::{verify_artifact, verify_artifact_file, VerifiedArtifact};
