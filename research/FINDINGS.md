@@ -252,32 +252,54 @@ Observation, not a demonstrated methodology result: six is a tally from one
 project, with no comparison against how often the assumption would have been
 right. The pattern is worth naming and is not a measurement.
 
-### F19 — A real Tauri application installing a delta update · **PARTIALLY DEMONSTRATED ON MACOS — delta path NOT demonstrated**
+### F19 — A real Tauri application installing a delta update · **DEMONSTRATED ON MACOS FOR THE RECORDED CONTROLLED E2E CASE**
 
-Superseding the previous UNPROVEN entry, but only as far as the evidence goes.
+Experiment `2026-08-13-macos-real-app-e2e-delta`, macOS 26.5.2 arm64.
 
-**Demonstrated**, on macOS 26.5.2 arm64, experiment
-`2026-08-13-macos-real-app-e2e`: a real running Tauri app launched, performed a
-real `Updater::check()`, received 1.0.1 from the served superset manifest,
-derived `UpdateIdentity` from that same `Update` via `delta_identity()`, verified
-the downloaded artifact's signature, produced a `VerifiedArtifact`, reached the
-real `Update::install()`, and left the installed main binary **byte-identical to
-the expected 1.0.1 binary** (`ab689afd…` → `7b4069ca…`). No fake handoff was
-used at any point.
+A real running Tauri app performed a real `Updater::check()`, received 1.0.1 from
+the served superset manifest, derived `UpdateIdentity` from that same `Update`
+via `delta_identity()`, **selected the delta path**, downloaded the patch,
+reconstructed the target, verified digest and signature, produced a
+`VerifiedArtifact`, reached the real `Update::install()`, and left the installed
+main binary **byte-identical to the expected 1.0.1 binary**:
 
-**Not demonstrated:** the delta path itself. The flow selected **Full**, not
-Delta, so no patch was downloaded, reconstructed or installed in a real app.
+```
+old        6890b2e5724e5791fc0e081189eed5671685ffb06452715722c453ef0d7801e5
+expected   6d299c03876815f2b437b729599171336b855815ea21f22592ff79ac334ab13e
+installed  6d299c03876815f2b437b729599171336b855815ea21f22592ff79ac334ab13e
+```
 
-*Root cause, found by this experiment:* `Update.target` is `updater_os()` alone —
-`"darwin"` — not `"{os}-{arch}"`. The architecture is appended only inside
-`get_urls` for its local search and never reaches the field
-(`updater.rs:403`). Gate A binds delta lookup to `identity.target()`, so
-`patch_for("darwin", "1.0.0")` matched nothing and fell back with
-`reason: None`. Confirmed at runtime, not merely read from source.
+The runtime reported `installed-from-delta downloaded=3884546 full=4070756`.
+That string is constructible only from `UpdateSource::Delta`, which
+`attempt_delta` returns only after the patch downloaded, reconstruction ran, and
+the rebuilt bytes matched the manifest digest — so reconstruction is **evidenced**
+rather than inferred from the install succeeding. No fake handoff at any point.
 
-This is a genuine architectural incompatibility between our assumption and
-upstream's behaviour, and it is exactly what an integration proof is for. **No
-fix is included in this experiment's branch.**
+**Scope, exactly.** macOS only, one architecture, one bundle format, one version
+pair, plain-HTTP loopback, ad-hoc code signing. It demonstrates *integration*,
+not production readiness, and closes none of the Audit #2 blockers. Windows,
+Linux, rollback resistance and cross-platform E2E remain unproven.
+
+**Preceded by a failure that was worth having.** The first run
+(`2026-08-13-macos-real-app-e2e`, retained) reached real `Update::install` with
+the correct bytes but selected **Full**, because `Update.target` is
+`updater_os()` alone. Four gates of green tests had not caught it: a delta
+updater that never deltas behaves exactly like a working updater unless something
+asserts *which path ran*. See DECISIONS #22.
+
+### F21 — Delta failure falls back to a verified full download, in a real app · **DEMONSTRATED ON MACOS FOR THE RECORDED CASE**
+
+With the delta path genuinely attempted first, corrupt, truncated and missing
+patches and a wrong base artifact each fell back and still installed bytes
+byte-identical to the expected release. Tampered full artifacts were refused with
+signature failures and installed nothing.
+
+These same scenarios were **vacuous** in the first run — they passed while the
+delta path was never attempted, so they proved nothing. They count now only
+because F19 establishes the delta path actually runs.
+
+Does **not** address Audit #2 blocker B4: the full-fallback workspace race is
+untouched, and a single-threaded harness cannot speak to it.
 
 ### F20 — The macOS `.app.tar.gz` ratio, measured with full provenance · **STRONG OBSERVATION**
 
