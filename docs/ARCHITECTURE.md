@@ -202,7 +202,11 @@ malformed or hostile input.
   the target installer's exact size, so the window zstd may allocate is derived
   from a number the release committed to in advance rather than from the patch's
   own header. A patch claiming a huge window log is rejected during frame setup.
-  This closed the gap Phase 1 documented here.
+- **That declared size is itself bounded.** The manifest is unauthenticated, so
+  its size claim is a request rather than a fact — a document asking for 500 GB
+  would otherwise be obeyed because it asked. `Limits::max_target_bytes` is the
+  host's own ceiling, checked before any download, and it is the only one of the
+  two the update server cannot influence. See `docs/DECISIONS.md` #19.
 - **No new network surface.** The plugin fetches from the update server the app
   already configures, and sends no telemetry.
 
