@@ -197,6 +197,7 @@ pub fn build_release(
             target_installer_size: installer_size,
             signature: signature.clone(),
             patches: Default::default(),
+            tar_layer: None,
         });
 
     // Re-signing produces a different signature each run (minisign includes

@@ -469,6 +469,7 @@ mod tests {
                                 patch_size: patch_bytes.len() as u64,
                             },
                         )]),
+                        tar_layer: None,
                     },
                 )]),
             }),
