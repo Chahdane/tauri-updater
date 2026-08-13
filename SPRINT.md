@@ -235,51 +235,112 @@ own proof.
 
 ---
 
-# REAL-APP E2E — PARTIAL RESULT
+# REAL-APP E2E — DEMONSTRATED ON MACOS
 
-**Run:** 2026-08-13 · macOS 26.5.2 arm64 · record
-`research/experiments/2026-08-13-macos-real-app-e2e.json`
+**Runs:** 2026-08-13 · macOS 26.5.2 arm64
 
-## Proven
-
-A real running Tauri app performed a real `Updater::check()`, derived
-`UpdateIdentity` from that `Update`, verified the artifact, produced a
-`VerifiedArtifact`, reached the real `Update::install()`, and left the installed
-main binary **byte-identical to the expected 1.0.1 binary**. No fake handoff.
-
-## Not proven — and this is the blocker
-
-The flow selected **Full, not Delta**. No patch was downloaded or reconstructed
-in a real app.
-
-**Root cause (new finding):** `Update.target` is `updater_os()` alone —
-`"darwin"` — not `"{os}-{arch}"`. The arch is appended only inside `get_urls`
-for its local search and never reaches the field (`updater.rs:403`). Gate A binds
-delta lookup to `identity.target()`, so `patch_for("darwin", "1.0.0")` found
-nothing. Confirmed at runtime, not only from source.
-
-This contradicts an assumption recorded in DECISIONS #13 and documented on
-`UpdateIdentity::target()`. **Not fixed in this branch** — it is an architectural
-correction and needs its own review.
-
-## Two harness bugs fixed to get this far
-
-- `port=$(start_server ...)` deadlocked: command substitution waits on a pipe the
-  backgrounded server holds open forever. **The harness could never run**, which
-  is much of why this claim stayed open.
-- `build-versions.sh` left `Cargo.lock` at the temporary build version — the same
-  defect that once turned `main` red on four jobs.
-
-## Scenario results, honestly
-
-| Scenario | Result | Meaningful? |
+| Run | Record | Result |
 | --- | --- | --- |
-| happy path | installed correct bytes | **Only as a full-download proof** |
-| corrupt / truncated / missing patch, wrong base | installed correct bytes | **Vacuous** — the delta path was never attempted in any scenario |
-| tampered full artifact, tampered both | refused, nothing installed | **Meaningful** — real signature verification blocked bad bytes |
+| 1 | `2026-08-13-macos-real-app-e2e` | **Partial** — real install succeeded, but selected Full |
+| 2 | `2026-08-13-macos-real-app-e2e-delta` | **Delta demonstrated** |
 
-The fallback scenarios cannot be counted: they pass trivially when the patch is
-never consumed. They must be re-run once the target-key defect is fixed.
+Both retained. The first is preserved as evidence of the integration mismatch it
+exposed, not superseded.
+
+## What run 1 found
+
+`Update.target` is `updater_os()` alone — `"darwin"`, not `"{os}-{arch}"`. Gate A
+keyed delta lookup on it, so nothing matched and every update quietly took the
+full path. Four gates of green tests missed it: a delta updater that never deltas
+is indistinguishable from a working updater unless something asserts *which path
+ran*. Corrected in `docs/DECISIONS.md` #22 by recovering the platform key from
+the url and signature Tauri selected.
+
+## What run 2 demonstrates
+
+```
+installed-from-delta downloaded=3884546 full=4070756
+
+old        6890b2e5…7801e5
+expected   6d299c03…4ab13e
+installed  6d299c03…4ab13e   ✓
+```
+
+Real `Updater::check()` → real `Update` → `delta_identity()` → **Delta** → patch
+download → reconstruction → digest and signature verification →
+`VerifiedArtifact` → real `Update::install` → installed binary byte-identical to
+the expected release. No fake handoff.
+
+Reconstruction is evidenced, not inferred: `installed-from-delta` is
+constructible only from `UpdateSource::Delta`, which requires the digest gate to
+have passed.
+
+## Harness bugs fixed to get here
+
+- `port=$(start_server ...)` deadlocked on the command-substitution pipe — the
+  harness could never run.
+- `build-versions.sh` left `Cargo.lock` at the temporary version. The restore
+  added for it then failed to fire, because a second `trap ... EXIT` later in the
+  file silently replaced it; bash keeps one EXIT trap.
+- The runner asserted installed bytes but not which path ran, which is precisely
+  why run 1 reported seven passes while never attempting a delta.
+
+## Scope
+
+macOS, one architecture, one bundle format, one version pair, loopback plain HTTP
+enabled through `e2e-control`, ad-hoc code signing. Integration proof only.
+**No Audit #2 blocker is closed.** Windows, Linux, rollback resistance,
+cross-platform E2E and production readiness all remain unproven.
+
+---
+
+# CACHE-BACKED TAR-LAYER PROTOTYPE — STOPPED AT THE FEASIBILITY GATE
+
+**Date:** 2026-08-13 · **Status:** not implemented · **Stop condition triggered**
+
+The prototype rests on the plugin being able to recompress an exact tar back into
+the byte-exact official `.app.tar.gz`, because the minisign signature covers the
+compressed artifact and `Update::install` consumes it. That step is not
+demonstrated, and the obvious recipe does not work.
+
+## Measured
+
+`research/experiments/2026-08-13-macos-inprocess-recompression-probe.json`
+
+| Backend | Candidate | Result |
+| --- | --- | --- |
+| flate2 1.1.9 + zlib-rs 0.6.7 | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + zlib-rs **0.6.3** (the version the controlled run identified) | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + system zlib | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + miniz_oxide 0.8.9 | 4,070,510 | differs at byte 47 |
+
+Official is 4,070,756. All four candidates are byte-identical **to each other**
+and 246 bytes short. The 10-byte gzip header matches exactly.
+
+## Why this is not a backend problem
+
+Four independent DEFLATE implementations agreeing with each other and all
+disagreeing with the official at one early offset is the signature of a different
+**write/flush pattern** into the encoder, not a different encoder. One-shot
+compression packs marginally better than a stream interrupted at boundaries.
+
+The controlled experiment reproduced the official bytes only by running the
+`cargo-tauri` binary over an extracted tree — which a shipped plugin cannot do.
+Its own scope section already listed "standalone raw-tar recompression stability"
+as **not established**; this probe converts that caveat into a measured negative.
+
+Likely mechanism — `tar::Builder` streaming into `GzEncoder` at entry boundaries
+— is a **HYPOTHESIS**. `tauri-bundler` is not vendored here (cargo-tauri is
+installed as a binary) so its write pattern was not read.
+
+## Not implemented, deliberately
+
+No cache, no schema change, no concurrency mechanism. Two further stop conditions
+were also due for a report before implementation (schema evolution and shared-state
+coordination); both are moot until recompression is settled.
+
+The bandwidth prize is real — 15.36% vs 95.43% on the controlled pair — so this
+is worth resolving, not abandoning.
 
 ---
 

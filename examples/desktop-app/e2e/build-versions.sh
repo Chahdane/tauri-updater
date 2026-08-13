@@ -40,7 +40,10 @@ _restore_lock() {
     rm -f "$_LOCK_BACKUP"
   fi
 }
-trap _restore_lock EXIT INT TERM
+# No `trap _restore_lock EXIT` here. Bash keeps exactly one EXIT trap, so a
+# second `trap ... EXIT` later in the file silently replaces the first — which
+# is what happened when this restore was added independently of the config
+# cleanup below. The single handler calls both.
 
 OUT="${1:-/tmp/delta-e2e-build}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -65,8 +68,11 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$KEY_PASSWORD"
 
 # Restore the tracked config whatever happens, so a failed run cannot leave the
 # repository holding a generated public key.
-cleanup() { git -C "$ROOT" checkout -- "$APP_DIR/tauri.conf.json" "$APP_DIR/Cargo.toml" 2>/dev/null || true; }
-trap cleanup EXIT
+cleanup() {
+  git -C "$ROOT" checkout -- "$APP_DIR/tauri.conf.json" "$APP_DIR/Cargo.toml" 2>/dev/null || true
+  _restore_lock
+}
+trap cleanup EXIT INT TERM
 
 build_version() {
   local version="$1"
