@@ -1,0 +1,16 @@
+expected v1.0.1 main binary: 7b4069caf6381644a8658c055855645e63da6e3d7521c324db2ed897d7b381aa
+
+-- happy path --
+  PASS delta-install                          ok installed-from-full-download
+-- fallback: installed bytes must still be the release --
+  PASS corrupt-patch                          ok installed-from-full-download
+  PASS truncated-patch                        ok installed-from-full-download
+  PASS missing-patch                          ok installed-from-full-download
+  PASS wrong-base                             ok installed-from-full-download
+-- refusal: nothing may be installed --
+  PASS tampered-full-download                 error update failed: signature verification failed: The sign
+  PASS tampered-both                          error update failed: signature verification failed: The sign
+
+passed 7, failed 0
+DELTA_DIAG identity: target="darwin" current="1.0.0" version="1.0.1" base=Some("/private/tmp/delta-e2e-build/run/delta-install/base.tar.gz")
+DELTA_DIAG fallback reason: None

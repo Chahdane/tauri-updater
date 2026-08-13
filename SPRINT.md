@@ -206,6 +206,83 @@ Three consequences, all handled in the Gate A PR:
 
 ---
 
+# CODEX AUDIT #2 — OPEN v0.1 BLOCKERS
+
+**Recorded:** 2026-08-13 · **Status:** ALL OPEN · **Not addressed by the E2E**
+
+A second independent audit confirmed Gates A–D improved the project and found
+these remaining v0.1 security and reliability blockers. They are recorded here
+**before** the real-app E2E work so that a successful E2E cannot later be
+mistaken for having resolved any of them.
+
+Codex explicitly concluded these do not invalidate a controlled macOS
+happy-path E2E experiment. They are not being fixed in `feat/real-app-e2e`.
+
+| # | Blocker | Why it is not an E2E concern |
+| --- | --- | --- |
+| B1 | **Unsigned-manifest relabel replay.** A genuinely signed *old* artifact can be described by unauthenticated metadata as a newer release. | The E2E serves an honest manifest it generated itself. |
+| B2 | **`UpdateIdentity::new` is public**, so a caller can bypass the intended `delta_identity()` construction path. | The E2E uses the intended path exclusively — that is part of what it proves. |
+| B3 | **`UpdateIdentity` and `TauriInstall` are not structurally bound to the same `Update`.** Nothing in the types prevents deriving identity from one and installing through another. | The E2E passes one `Update` to both, which is the correct usage, not a proof the wrong usage is prevented. |
+| B4 | **Full-download fallback still uses shared workspace paths** and can race concurrently. | The E2E runs one update at a time. Fallback scenarios passing here does **not** resolve this. |
+| B5 | **First tagged release can omit `manifest.json`.** | The E2E does not use the release workflow. |
+| B6 | **The committed example config enables `dangerousInsecureTransportProtocol`.** | Intentionally enabled for the localhost harness; see the E2E report. Not evidence that production config is safe. |
+| B7 | **Release tooling does not round-trip its generated patch before publication.** | The E2E round-trips by construction, which is a property of this run, not of the tooling. |
+| B8 | **Documentation and research wording corrections from Audit #2.** | Tracked separately. |
+
+**None of these may be closed by E2E evidence.** Each needs its own fix and its
+own proof.
+
+
+---
+
+# REAL-APP E2E — PARTIAL RESULT
+
+**Run:** 2026-08-13 · macOS 26.5.2 arm64 · record
+`research/experiments/2026-08-13-macos-real-app-e2e.json`
+
+## Proven
+
+A real running Tauri app performed a real `Updater::check()`, derived
+`UpdateIdentity` from that `Update`, verified the artifact, produced a
+`VerifiedArtifact`, reached the real `Update::install()`, and left the installed
+main binary **byte-identical to the expected 1.0.1 binary**. No fake handoff.
+
+## Not proven — and this is the blocker
+
+The flow selected **Full, not Delta**. No patch was downloaded or reconstructed
+in a real app.
+
+**Root cause (new finding):** `Update.target` is `updater_os()` alone —
+`"darwin"` — not `"{os}-{arch}"`. The arch is appended only inside `get_urls`
+for its local search and never reaches the field (`updater.rs:403`). Gate A binds
+delta lookup to `identity.target()`, so `patch_for("darwin", "1.0.0")` found
+nothing. Confirmed at runtime, not only from source.
+
+This contradicts an assumption recorded in DECISIONS #13 and documented on
+`UpdateIdentity::target()`. **Not fixed in this branch** — it is an architectural
+correction and needs its own review.
+
+## Two harness bugs fixed to get this far
+
+- `port=$(start_server ...)` deadlocked: command substitution waits on a pipe the
+  backgrounded server holds open forever. **The harness could never run**, which
+  is much of why this claim stayed open.
+- `build-versions.sh` left `Cargo.lock` at the temporary build version — the same
+  defect that once turned `main` red on four jobs.
+
+## Scenario results, honestly
+
+| Scenario | Result | Meaningful? |
+| --- | --- | --- |
+| happy path | installed correct bytes | **Only as a full-download proof** |
+| corrupt / truncated / missing patch, wrong base | installed correct bytes | **Vacuous** — the delta path was never attempted in any scenario |
+| tampered full artifact, tampered both | refused, nothing installed | **Meaningful** — real signature verification blocked bad bytes |
+
+The fallback scenarios cannot be counted: they pass trivially when the patch is
+never consumed. They must be re-run once the target-key defect is fixed.
+
+---
+
 ## Goal
 
 Close the one claim still open: **a running Tauri app accepts a served update.**
