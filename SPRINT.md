@@ -9,7 +9,7 @@
 # POST-CODEX HARDENING AUDIT
 
 **Started:** 2026-08-12
-**Status:** Gates A, B and C complete. Gate D not started.
+**Status:** Gates A, B, C and D complete. Real-app E2E remains the open claim.
 
 An independent adversarial audit (Codex, given the repository cold and told to
 challenge the architecture rather than agree with it) found the prototype
@@ -149,10 +149,29 @@ fixing:
 | Version requirement widened to `"2"` | 1 |
 | Verified-version list made stale | 1 |
 
-## Gate D — truthfulness
+## Gate D — truthfulness ✅
 
-- [ ] 12. Documentation audit against current code
-- [ ] 16. `research/` evidence structure and findings ledger, no fabricated data
+- [x] 12. Documentation audit. Seven contradictions found by re-reading each
+      document against the source, plus one real defect (`Builder::manifest_url`
+      is required but never read since #13 removed the fetch that consumed it).
+- [x] 16. `research/` with a 33-field schema, a findings ledger, and empty
+      `experiments/` and `logs/` directories. No historical data was
+      reconstructed: the two macOS ratios are recorded as STRONG OBSERVATION
+      with their missing provenance stated, and the compression explanation for
+      them stays a HYPOTHESIS.
+- [x] 25. Conservative claim language. README now carries a supported /
+      partially supported / unproven table, with a real running Tauri app
+      installing a delta update listed as **unproven**.
+
+### Research ledger, by classification
+
+| Class | Count | Notes |
+| --- | --- | --- |
+| DEMONSTRATED | 8 | Reproducible in this repository |
+| STRONG OBSERVATION | 4 | Includes both macOS ratios, provenance missing |
+| HYPOTHESIS | 2 | Compression-representation explanation; build-noise floor |
+| ENGINEERING DECISION | 2 | |
+| UNPROVEN | 3 | Includes the real-app install |
 
 ## Preserved work — now in `main`
 
