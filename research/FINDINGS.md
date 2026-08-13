@@ -362,6 +362,71 @@ because F19 establishes the delta path actually runs.
 Does **not** address Audit #2 blocker B4: the full-fallback workspace race is
 untouched, and a single-threaded harness cannot speak to it.
 
+### F24 — The cache-backed tar path, in a real app, across two real transitions · **DEMONSTRATED ON MACOS FOR THE RECORDED CONTROLLED RUN**
+
+Experiment `2026-08-13-macos-cache-backed-tar-e2e`, macOS 26.5.2 arm64.
+
+Three versions built by `cargo tauri build`, main binaries asserted pairwise
+distinct. One installation moved through the real `Update::install` twice:
+
+| | Transition 1 | Transition 2 |
+| --- | --- | --- |
+| Cache before | EMPTY | ACTIVE(1.0.1) |
+| **Required** | **Full** | **TarDelta** |
+| Observed | `installed-from-full-download` | `installed-from-tar-delta` |
+| Downloaded | 4,163,366 | **633,594** |
+| Installed binary | `573f3838…` = v1.0.1 | `7caff690…` = v1.0.2 |
+
+**Which path ran is asserted, not inferred**, and so is what was *not* fetched:
+the server's request log shows the tar patch downloaded and neither the full
+artifact nor the direct patch. Both transitions install identical published
+bytes, so a hash-only harness would have passed twice on an updater that
+downloaded everything — which is precisely what happened in F19's first run.
+
+**The chain is provable rather than assumed.** `base_tar_blake3` of the
+1.0.1→1.0.2 patch equals `target_tar_blake3` of the 1.0.0→1.0.1 release, so the
+artifact transition 2 patched is the one transition 1 cached.
+
+Promotion is separately evidenced: after each install the cache held
+PENDING with ACTIVE unchanged, and only the *relaunch* — the app reporting its
+own version — promoted it.
+
+**Scope.** macOS, one architecture, one bundle format, one ladder, string-only
+source changes, loopback plain HTTP, ad-hoc signing. Integration evidence.
+Closes no Audit #2 blocker except B7, and that only for the tar path.
+
+### F25 — The tar layer's saving reproduces on independent pairs · **DEMONSTRATED, for three controlled macOS builds**
+
+| Pair | Direct patch | Tar patch | Fewer patch bytes |
+| --- | ---: | ---: | ---: |
+| 1.0.0 → 1.0.1 | 3,963,466 (95.20%) | 626,006 (**15.04%**) | 84.21% |
+| 1.0.1 → 1.0.2 | 4,023,061 (96.55%) | 633,594 (**15.21%**) | 84.25% |
+
+Two pairs from one fresh build, with full provenance, reproducing the earlier
+controlled single-pair result (F13: 15.36% vs 95.43%). The agreement across
+three independent pairs is what lifts F13's mechanism claim from "one pair" to
+"reproduced" — though still on one platform, one bundle format, and one class of
+source change (F15 remains unproven).
+
+### F26 — Release tooling that round-trips its own patch catches a failure nothing else can · **DEMONSTRATED**
+
+`delta-release` applies its own tar patch, recompresses, and requires
+byte-identity with the artifact it was given, before writing any metadata.
+
+The failure it catches is invisible otherwise: if the recompression recipe does
+not reproduce *this release's* artifact — a property of the bundler's dependency
+graph, not of the tool — every client would do the work and fall back, and the
+manifest would look entirely correct. `refuses_to_publish_when_recompression_would_not_reproduce_the_artifact`
+exercises it against a genuinely-compressed artifact the recipe cannot rebuild.
+
+Both releases of the three-version build round-tripped against artifacts
+`cargo tauri build` had just produced, which is independent of the committed
+fixture: it shows the recipe works on the current toolchain, not only on one
+artifact retained from an earlier run.
+
+Closes Audit #2 blocker **B7 for the tar path only**. The direct-patch generator
+still does not round-trip its output.
+
 ### F20 — The macOS `.app.tar.gz` ratio, measured with full provenance · **STRONG OBSERVATION**
 
 The same run measured a patch of 3,878,953 bytes against a 4,072,303-byte target
