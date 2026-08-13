@@ -328,13 +328,14 @@ mod tests {
     }
 
     #[test]
-    fn a_target_with_no_published_artifact_installs_nothing() {
+    fn a_document_missing_the_selected_artifact_is_refused() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeServer(HashMap::new());
         let handoff = RecordingHandoff::default();
 
-        // No platforms at all in the document, so there is nothing to install
-        // and the full download 404s rather than silently succeeding.
+        // Tauri says it selected an artifact, and the document we parsed has no
+        // entry describing it. That is one document read two ways, so it is
+        // refused outright rather than downloaded and checked afterwards.
         let identity = UpdateIdentity::new(
             "1.0.0",
             "1.0.1",
@@ -356,7 +357,16 @@ mod tests {
             &handoff,
         );
 
-        assert!(matches!(result, Err(Error::Fetch(_))), "got {result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(Error::Refused(Refusal::IdentityMismatch {
+                    field: "platform",
+                    ..
+                }))
+            ),
+            "got {result:?}"
+        );
         assert!(handoff.installed.borrow().is_empty());
     }
 }
