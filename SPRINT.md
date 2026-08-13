@@ -294,6 +294,56 @@ cross-platform E2E and production readiness all remain unproven.
 
 ---
 
+# CACHE-BACKED TAR-LAYER PROTOTYPE — STOPPED AT THE FEASIBILITY GATE
+
+**Date:** 2026-08-13 · **Status:** not implemented · **Stop condition triggered**
+
+The prototype rests on the plugin being able to recompress an exact tar back into
+the byte-exact official `.app.tar.gz`, because the minisign signature covers the
+compressed artifact and `Update::install` consumes it. That step is not
+demonstrated, and the obvious recipe does not work.
+
+## Measured
+
+`research/experiments/2026-08-13-macos-inprocess-recompression-probe.json`
+
+| Backend | Candidate | Result |
+| --- | --- | --- |
+| flate2 1.1.9 + zlib-rs 0.6.7 | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + zlib-rs **0.6.3** (the version the controlled run identified) | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + system zlib | 4,070,510 | differs at byte 47 |
+| flate2 1.1.9 + miniz_oxide 0.8.9 | 4,070,510 | differs at byte 47 |
+
+Official is 4,070,756. All four candidates are byte-identical **to each other**
+and 246 bytes short. The 10-byte gzip header matches exactly.
+
+## Why this is not a backend problem
+
+Four independent DEFLATE implementations agreeing with each other and all
+disagreeing with the official at one early offset is the signature of a different
+**write/flush pattern** into the encoder, not a different encoder. One-shot
+compression packs marginally better than a stream interrupted at boundaries.
+
+The controlled experiment reproduced the official bytes only by running the
+`cargo-tauri` binary over an extracted tree — which a shipped plugin cannot do.
+Its own scope section already listed "standalone raw-tar recompression stability"
+as **not established**; this probe converts that caveat into a measured negative.
+
+Likely mechanism — `tar::Builder` streaming into `GzEncoder` at entry boundaries
+— is a **HYPOTHESIS**. `tauri-bundler` is not vendored here (cargo-tauri is
+installed as a binary) so its write pattern was not read.
+
+## Not implemented, deliberately
+
+No cache, no schema change, no concurrency mechanism. Two further stop conditions
+were also due for a report before implementation (schema evolution and shared-state
+coordination); both are moot until recompression is settled.
+
+The bandwidth prize is real — 15.36% vs 95.43% on the controlled pair — so this
+is worth resolving, not abandoning.
+
+---
+
 ## Goal
 
 Close the one claim still open: **a running Tauri app accepts a served update.**
