@@ -58,6 +58,10 @@ depends on are observations about upstream's implementation rather than
 guarantees of its API, so the range covers what has been read, not what might
 work.
 
+Measurements and the claims they do or do not support are tracked in
+[research/FINDINGS.md](research/FINDINGS.md), classified so that a plausible
+observation cannot become a stated fact by repetition.
+
 The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
 [SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
 [docs/DECISIONS.md](docs/DECISIONS.md) records the non-obvious calls and why they
