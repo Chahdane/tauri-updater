@@ -1,0 +1,55 @@
+     ok   starting installation is the 1.0.0 build       dd42cb31c0b106d7a075b627ebd232512459fc219436
+three distinct main binaries:
+   1.0.0  dd42cb31c0b106d7a075b627ebd232512459fc219436a961aeddcfb42db0fad3
+   1.0.1  573f38389f71cd2efee53a40cba42b29ed28da15ad7aa01d3a62ad3a127b92d5
+   1.0.2  7caff6909467646c64abd1941ce64a1bdcd4af027b91e27488d5200389bce9b3
+
+== transition 1: 1.0.0 -> 1.0.1, cache EMPTY ==
+     ok   running version                                1.0.0
+     ok   installed binary is the signed 1.0.0           6be3cc85bc8dd941023de06f84af986f9f57f1c1fca1
+     ok   starting binary is not 1.0.1                  
+     ok   starting binary is not 1.0.2                  
+     ok   cache starts empty                             active=none pending=none bytes=0
+     ok   outcome is a FULL download                     ok installed-from-full-download
+     ok   outcome is not a delta                        
+     ok   outcome is not a tar delta                    
+     ok   1.0.1 staged as PENDING                        active=none pending=1.0.1@9230ca75c50638fed5
+     ok   nothing promoted yet                           active=none pending=1.0.1@9230ca75c50638fed5
+     ok   installed binary is now 1.0.1                  573f38389f71cd2efee53a40cba42b29ed28da15ad7a
+   -- relaunch as 1.0.1, which is what licenses the promotion --
+     ok   running version                                1.0.1
+     ok   1.0.1 promoted to ACTIVE                       active=1.0.1@9230ca75c50638fed5e8e17b895dac5
+     ok   PENDING cleared                                active=1.0.1@9230ca75c50638fed5e8e17b895dac5
+
+== transition 2: 1.0.1 -> 1.0.2, cache ACTIVE(1.0.1) ==
+     ok   running version                                1.0.1
+     ok   outcome is a TAR DELTA                         ok installed-from-tar-delta downloaded=63359
+     ok   outcome is not a full download                
+     ok   tar patch was downloaded                       /manifest-1.0.2.served.json
+/tar-1.0.1-1.0.2
+     ok   full artifact was NOT downloaded              
+     ok   direct patch was NOT downloaded               
+     ok   1.0.2 staged as PENDING                        active=1.0.1@9230ca75c50638fed5e8e17b895dac5
+     ok   1.0.1 still ACTIVE                             active=1.0.1@9230ca75c50638fed5e8e17b895dac5
+     ok   installed binary is now 1.0.2                  7caff6909467646c64abd1941ce64a1bdcd4af027b91
+   -- relaunch as 1.0.2 --
+     ok   running version                                1.0.2
+     ok   1.0.2 promoted to ACTIVE                       active=1.0.2@18ea169155443d7e78454ab5712c958
+     ok   PENDING cleared                                active=1.0.2@18ea169155443d7e78454ab5712c958
+
+== degradation: 1.0.1 -> 1.0.2 with a corrupted cache blob ==
+     ok   running version                                1.0.1
+     ok   seeded via a full download                     ok installed-from-full-download
+     ok   1.0.1 is ACTIVE                                active=1.0.1@9230ca75c50638fed5e8e17b895dac5
+     (corrupted 9230ca75c50638fed5e8e17b895dac5c54e73e3535301b1615a0943a0f22a51d.tar.gz)
+     ok   a corrupt cache degrades to FULL               ok installed-from-full-download
+     ok   and not to a tar delta                        
+     ok   the full artifact was downloaded               /manifest-1.0.2.served.json
+/v1.0.2/DeltaUpd
+     ok   and 1.0.2 still installed correctly            7caff6909467646c64abd1941ce64a1bdcd4af027b91
+
+report written to /private/tmp/delta-tar-e2e/e2e-report.json
+
+ALL ASSERTIONS PASSED
+   transition 1: ok installed-from-full-download
+   transition 2: ok installed-from-tar-delta downloaded=633594 full=4167008
