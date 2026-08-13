@@ -9,7 +9,7 @@
 # POST-CODEX HARDENING AUDIT
 
 **Started:** 2026-08-12
-**Status:** Gate A complete, awaiting review. Gates B–D not started.
+**Status:** Gates A and B complete. Gates C and D not started.
 
 An independent adversarial audit (Codex, given the repository cold and told to
 challenge the architecture rather than agree with it) found the prototype
@@ -86,12 +86,48 @@ intended reason, then restored. No mutations committed.
 | downgrade refusal | 8 | `a replayed older release must be refused, got Ok(InstalledFromFullDownload)` |
 | uncomparable-version refusal | 2 | — |
 
-## Gate B — transport and resource safety
+## Gate B — transport and resource safety ✅
 
-- [ ] 5. HTTPS policy, redirect policy, timeouts, response-size limits
-- [ ] 6. Local safety cap independent of manifest-declared size
-- [ ] 7. Atomic output via unique temp path then promote
-- [ ] 8. Per-transaction workspaces replacing fixed filenames
+- [x] 5. HTTPS (mirroring upstream's flag and profile rule), bounded redirects
+      with no HTTPS→HTTP downgrade, a whole-request deadline, and a response
+      ceiling enforced both from `Content-Length` and by counting bytes
+- [x] 6. `Limits::max_target_bytes` — a ceiling the server does not control
+- [x] 7. Reconstruction builds into `.part` and renames after the digest gate;
+      downloads do the same
+- [x] 8. One `tempfile` workspace per update, replacing the fixed filenames
+
+Chosen mechanisms and the arguments for them are in `docs/DECISIONS.md` #18
+(workspace over lock) and #19 (transport policy mirrors Tauri's).
+
+### Mutation evidence
+
+Each guard disabled in turn, intended test confirmed red for the intended
+reason, restored. No mutations committed.
+
+| Guard disabled | Killed | Notes |
+| --- | --- | --- |
+| HTTPS refusal | 1 | `release strictness must refuse http` |
+| Redirect budget | 1 | |
+| Request deadline | 1 | stall test ran 30 s instead of timing out |
+| `Content-Length` pre-check | 1 | |
+| Streaming byte counter | 1 | endless body ran to the deadline |
+| `.part` promotion | 1 | destroys the cached artifact |
+| Local target-size cap | **4** | |
+| Per-update workspace | 2 | |
+
+Three of these did not fail on the first attempt, and the tests were what needed
+fixing:
+
+- The HTTPS refusal only ran in release builds, where the suite never runs. The
+  rule was split into a pure `scheme_verdict(url, insecure, strict)` so the
+  release arm is asserted in any profile.
+- The redirect test used a self-loop, which *hangs* rather than fails when the
+  budget is removed — and a test that hangs under mutation is not evidence. It
+  is now a finite chain longer than the budget.
+- The partial-file test asserted only "nothing left behind", which is equally
+  true of writing to the destination and deleting it on error. It now asserts
+  the property `.part` actually buys: a failed download must not destroy the
+  artifact already at that path.
 
 ## Gate C — concrete defects
 

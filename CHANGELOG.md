@@ -75,3 +75,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guide.
 
 [Unreleased]: https://github.com/Chahdane/tauri-updater/commits/main
+
+### Gate B — transport and resource safety
+
+- **HTTPS required.** Non-HTTPS URLs are refused in release builds and warned
+  about in development, matching `tauri-plugin-updater`'s own policy and its
+  `dangerousInsecureTransportProtocol` opt-in — applied to every URL, not only
+  to manifest endpoints.
+- **Redirects bounded** (5 by default), and an HTTPS→HTTP redirect is refused
+  even under the opt-in.
+- **Deadlines.** A whole-request timeout bounds a server that accepts the
+  connection and then never sends a byte.
+- **Response ceiling.** An oversized `Content-Length` is refused before the body
+  is read, and a streaming byte count enforces the same ceiling when the header
+  lies or is absent.
+- **Local resource cap.** `Limits::max_target_bytes` refuses a manifest that
+  declares an implausible target size, before any download. The manifest is
+  unauthenticated, so its size claim is a request rather than a fact.
+- **One workspace per update**, replacing shared fixed filenames, so concurrent
+  updates cannot consume each other's files.
+- **Atomic writes.** Downloads and reconstructions build into a `.part` file
+  promoted by rename only after they pass their checks, so a failure can neither
+  leave a finished-looking artifact nor destroy the one already there.
+
+Breaking: `plan_update` takes a `Limits`; `Context` gains a `limits` field;
+`HttpFetch::builder()` replaces direct construction for non-default policy.
