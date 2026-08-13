@@ -37,7 +37,7 @@ pub use http::{
 pub use tauri_glue::{Builder, Config, TauriInstall, UpdateExt};
 
 #[doc(no_inline)]
-pub use tauri_updater_delta_core::{Refusal, UpdateIdentity};
+pub use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity};
 
 /// Convenience alias for results produced by this crate.
 pub type Result<T> = std::result::Result<T, Error>;
