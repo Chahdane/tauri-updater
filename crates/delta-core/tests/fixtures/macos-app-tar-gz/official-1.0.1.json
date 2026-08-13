@@ -1,0 +1,9 @@
+{
+  "artifact": "official-1.0.1.app.tar.gz",
+  "version": "1.0.1",
+  "platform_key": "darwin-aarch64",
+  "installer_blake3": "718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36",
+  "installer_size": 4070756,
+  "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHJzaWduIHNlY3JldCBrZXkKUlVRa0JqRGdFSjlnTGk2YUV5ays0bDZnSURwLzk5Vi9wUnliNVM3SVg1WDlBRU95b2RUYStVWUM4RzNHeTgrME00eUlYbmM3NWRIelZLdk5EOTR1b0NaS3M4MC9IYStVcUFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg2NjM3MzEyClpTY0VRY2tOUGM4NVU0TjNiVzBkVGhMY25wa3BJMDYxMHJPcHMydTFNbWdqWFIzUWJNejd1cE9TcUJYR0NtdUhQYTJsSHVMNUNucmpNTUorMW16c0NBPT0K",
+  "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJFNjA5RjEwRTAzMDA2MjQKUldRa0JqRGdFSjlnTGdST2t3clNHVmpQQUZEbEFUS1lVUzJlcVppWTVna0huRnFneG9WMHVQV2IK"
+}

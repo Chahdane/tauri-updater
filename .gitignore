@@ -22,6 +22,9 @@ examples/**/src-tauri/target/
 *.dmg
 *.msi
 *.app.tar.gz
+# ...except the controlled artifact the recompression recipe is checked
+# against. It is evidence, not build output; see its README.
+!crates/delta-core/tests/fixtures/**/*.app.tar.gz
 
 # Signing keys — never commit these
 *.key
