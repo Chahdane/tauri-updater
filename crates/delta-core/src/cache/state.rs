@@ -56,6 +56,14 @@ use crate::{Error, Result};
 /// Version of the on-disk cache layout.
 pub const CACHE_FORMAT_VERSION: u32 = 1;
 
+/// How many times [`StateStore::initialise`] will step over a generation that
+/// appeared underneath it before giving up.
+///
+/// Bounded rather than a `loop`: each iteration means another process published
+/// a generation this build cannot read, and if that keeps happening the honest
+/// answer is that the cache is unusable, not that we should keep trying.
+const INITIALISE_ATTEMPTS: usize = 8;
+
 /// Everything a cache entry must agree with before it may be reused.
 ///
 /// A mismatch on any field means the cached artifact does not describe this
@@ -88,9 +96,21 @@ pub struct CacheEntry {
     /// Size of the compressed installer.
     pub compressed_size: u64,
     /// BLAKE3 of the exact tar inside it.
+    ///
+    /// Lets a manifest's declared base tar be rejected without decompressing
+    /// anything. It is a filter, not a proof — the tar is re-hashed after it is
+    /// actually expanded.
     pub tar_blake3: String,
     /// Size of that tar.
     pub tar_size: u64,
+    /// The base64 minisign signature published over the compressed artifact.
+    ///
+    /// Stored because nothing else can supply it later: the manifest for the
+    /// *next* release carries a signature over the *next* artifact, so without
+    /// this the cached base could never be re-verified. Keeping it here is what
+    /// makes "the cache is untrusted on every reuse" implementable rather than
+    /// aspirational.
+    pub signature: String,
 }
 
 /// The cache's mutable state.
@@ -176,26 +196,46 @@ impl StateStore {
         Ok(found)
     }
 
-    /// Read the current state, or `None` if the store is empty.
+    /// Read the current state.
     ///
-    /// A generation that fails to parse is skipped rather than fatal: a
-    /// half-written file cannot occur under a generation name by construction,
-    /// but a corrupted disk can still produce one, and refusing to read the
-    /// cache at all would be a worse outcome than falling back a generation.
+    /// `None` means there is no state this build can use — either the store is
+    /// empty, or the newest generation is corrupt or written by a format this
+    /// build does not implement. [`initialise`](StateStore::initialise) turns
+    /// either into a fresh empty state.
+    ///
+    /// # Why the newest generation is the only candidate
+    ///
+    /// An earlier version scanned downwards and returned the newest generation
+    /// it could *parse*, on the reasoning that falling back a generation beats
+    /// refusing to read the cache at all. That is wrong, and it is wrong in the
+    /// direction this whole module exists to prevent.
+    ///
+    /// Generation *N-1* is not an older description of the same state; it is a
+    /// state that has been **superseded**. It may name a PENDING entry that has
+    /// since been promoted, or an ACTIVE entry that has since been replaced.
+    /// Reading it is exactly the lost update the compare-and-set refuses to
+    /// allow a *writer* to cause — arrived at through the reader instead.
+    ///
+    /// It also deadlocks the store. A writer that read *N-1* may only publish
+    /// *N*, which exists, so every attempt conflicts and no transition can ever
+    /// commit again.
+    ///
+    /// So an unusable newest generation means the cache is unusable, which costs
+    /// a full download and is the outcome every other cache failure has.
     pub fn load(&self) -> Result<Option<Versioned>> {
-        for generation in self.generations()?.into_iter().rev() {
-            let path = self.path_for(generation);
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            match serde_json::from_str::<CacheState>(&text) {
-                Ok(state) if state.format_version == CACHE_FORMAT_VERSION => {
-                    return Ok(Some(Versioned { generation, state }));
-                }
-                _ => continue,
+        let generations = self.generations()?;
+        let Some(&generation) = generations.last() else {
+            return Ok(None);
+        };
+        let Ok(text) = std::fs::read_to_string(self.path_for(generation)) else {
+            return Ok(None);
+        };
+        match serde_json::from_str::<CacheState>(&text) {
+            Ok(state) if state.format_version == CACHE_FORMAT_VERSION => {
+                Ok(Some(Versioned { generation, state }))
             }
+            _ => Ok(None),
         }
-        Ok(None)
     }
 
     /// Publish `state` as generation `expected + 1`, failing if that generation
@@ -209,14 +249,60 @@ impl StateStore {
         state: &CacheState,
     ) -> std::result::Result<u64, CasError> {
         let next = expected + 1;
-        let target = self.path_for(next);
+        self.publish(next, state).map(|()| next)
+    }
 
+    /// Return the current state, creating an empty one if there is none this
+    /// build can use.
+    ///
+    /// The new state is published **above every generation present**, not at
+    /// generation 0. Those are the same thing for an empty directory and very
+    /// different for a directory holding a file this build cannot read: writing
+    /// generation 0 there collides with a file that is not going away, and the
+    /// store can never move again.
+    pub fn initialise(&self, namespace: Namespace) -> Result<Versioned> {
+        for _ in 0..INITIALISE_ATTEMPTS {
+            if let Some(current) = self.load()? {
+                return Ok(current);
+            }
+            // Nothing readable. Step over whatever is there rather than
+            // assuming the store is empty.
+            let next = self.generations()?.last().map_or(0, |g| g + 1);
+            let state = CacheState::empty(namespace.clone());
+            match self.publish(next, &state) {
+                Ok(()) => {
+                    return Ok(Versioned {
+                        generation: next,
+                        state,
+                    })
+                }
+                // Someone else got there first. Re-read: theirs is as good as
+                // ours, and if theirs is also unreadable this loop steps over
+                // it too rather than giving up or panicking.
+                Err(CasError::Conflict) => continue,
+                Err(CasError::Failed(e)) => return Err(e),
+            }
+        }
+        Err(Error::Manifest(
+            "cache state could not be initialised; the store keeps changing under us".to_owned(),
+        ))
+    }
+
+    /// Write `state` as generation `generation`, failing if it already exists.
+    ///
+    /// The whole compare-and-set is here: a complete file is written and synced
+    /// under a unique temporary name, then linked to the generation name. The
+    /// link is what fails if another writer got there first, and it is the only
+    /// operation that makes a generation visible — so a generation name never
+    /// refers to an incomplete file.
+    fn publish(&self, generation: u64, state: &CacheState) -> std::result::Result<(), CasError> {
+        let target = self.path_for(generation);
         let text = serde_json::to_string_pretty(state)
             .map_err(|e| CasError::Failed(Error::Manifest(e.to_string())))?;
 
         // Unique temp name so two racers never collide on the staging file.
         let temp = self.dir.join(format!(
-            "state.{next}.{}.{:?}.tmp",
+            "state.{generation}.{}.{:?}.tmp",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -224,41 +310,15 @@ impl StateStore {
         write_and_sync(&temp, text.as_bytes())
             .map_err(|e| CasError::Failed(Error::io("write", &temp, e)))?;
 
-        // The CAS. Fails with AlreadyExists on every supported platform if some
-        // other writer already published this generation.
+        // Fails with AlreadyExists on every supported platform if some other
+        // writer already published this generation.
         let result = std::fs::hard_link(&temp, &target);
         let _ = std::fs::remove_file(&temp);
 
         match result {
-            Ok(()) => Ok(next),
+            Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(CasError::Conflict),
             Err(e) => Err(CasError::Failed(Error::io("link", &target, e))),
-        }
-    }
-
-    /// Initialise an empty store at generation 0, if it has none.
-    pub fn initialise(&self, namespace: Namespace) -> Result<Versioned> {
-        if let Some(current) = self.load()? {
-            return Ok(current);
-        }
-        let state = CacheState::empty(namespace);
-        let path = self.path_for(0);
-        let text =
-            serde_json::to_string_pretty(&state).map_err(|e| Error::Manifest(e.to_string()))?;
-        let temp = self.dir.join(format!("state.0.{}.tmp", std::process::id()));
-        write_and_sync(&temp, text.as_bytes()).map_err(|e| Error::io("write", &temp, e))?;
-        let linked = std::fs::hard_link(&temp, &path);
-        let _ = std::fs::remove_file(&temp);
-        match linked {
-            Ok(()) => Ok(Versioned {
-                generation: 0,
-                state,
-            }),
-            // Someone else initialised first; theirs is as good as ours.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(self
-                .load()?
-                .expect("a generation exists because linking said so")),
-            Err(e) => Err(Error::io("link", &path, e)),
         }
     }
 
@@ -310,6 +370,7 @@ mod tests {
             compressed_size: 4_070_756,
             tar_blake3: format!("{version:1>64}").replace('.', "1"),
             tar_size: 9_461_248,
+            signature: format!("signature-for-{version}"),
         }
     }
 
@@ -502,5 +563,89 @@ mod tests {
             store.load().expect("load").is_none(),
             "a cache written by a future format must not be interpreted"
         );
+    }
+
+    // ---- regressions ------------------------------------------------------
+    //
+    // Both of these were live defects, found by the cache state machine built
+    // on top of this store rather than by the store's own suite. They are the
+    // same mistake in two places: treating "cannot read the newest generation"
+    // as "there is no newest generation".
+
+    #[test]
+    fn a_store_whose_only_generation_is_unreadable_initialises_above_it() {
+        // Previously panicked. `load` returned None, so `initialise` tried to
+        // create generation 0, the link failed with AlreadyExists because the
+        // file is right there, and the recovery path called `.expect()` on a
+        // second `load` that returned None for the same reason.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = StateStore::open(dir.path()).expect("open");
+        let mut future = CacheState::empty(namespace());
+        future.format_version = CACHE_FORMAT_VERSION + 1;
+        std::fs::write(
+            dir.path().join("state.0.json"),
+            serde_json::to_string(&future).expect("serialize"),
+        )
+        .expect("write");
+
+        let current = store
+            .initialise(namespace())
+            .expect("a cache from a future format must be stepped over, not fatal");
+        assert_eq!(
+            current.generation, 1,
+            "the empty state must be published above the file that is there"
+        );
+        assert!(current.state.active.is_none());
+
+        // And the store works from then on.
+        let mut next = current.state.clone();
+        next.pending = Some(entry("1.0.1"));
+        store
+            .compare_and_set(current.generation, &next)
+            .expect("the store must be usable after recovery");
+        assert_eq!(
+            store.load().expect("load").expect("state").state.pending,
+            Some(entry("1.0.1"))
+        );
+    }
+
+    #[test]
+    fn a_superseded_generation_is_never_read_in_place_of_the_newest() {
+        // Previously, `load` scanned downwards for the newest generation it
+        // could parse. That resurrects state the CAS had already replaced --
+        // here, a PENDING entry that was promoted two generations ago -- and it
+        // wedges the store, because a writer holding N-1 may only publish N,
+        // which exists.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = StateStore::open(dir.path()).expect("open");
+        let current = store.initialise(namespace()).expect("initialise");
+
+        let mut staged = current.state.clone();
+        staged.pending = Some(entry("1.0.1"));
+        let generation = store
+            .compare_and_set(current.generation, &staged)
+            .expect("stage");
+
+        let mut promoted = staged.clone();
+        promoted.active = Some(entry("1.0.1"));
+        promoted.pending = None;
+        let generation = store
+            .compare_and_set(generation, &promoted)
+            .expect("promote");
+
+        // Corrupt the newest generation only.
+        std::fs::write(store.path_for(generation), b"{ not json").expect("corrupt");
+
+        assert!(
+            store.load().expect("load").is_none(),
+            "a superseded generation must not stand in for an unreadable newest one"
+        );
+
+        // Recovery empties rather than reverting: the alternative is offering a
+        // PENDING that was promoted, as if it had not been.
+        let recovered = store.initialise(namespace()).expect("initialise");
+        assert_eq!(recovered.generation, generation + 1);
+        assert!(recovered.state.active.is_none());
+        assert!(recovered.state.pending.is_none());
     }
 }
