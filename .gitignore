@@ -54,3 +54,6 @@ desktop.ini
 examples/desktop-app/icons/android/
 examples/desktop-app/icons/ios/
 examples/desktop-app/app-icon.png
+
+# Local AI/session artifacts
+/CODEX.jsonl
