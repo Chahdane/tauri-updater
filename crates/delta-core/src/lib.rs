@@ -36,6 +36,7 @@
 #![warn(missing_docs)]
 
 pub mod backend;
+pub mod cache;
 pub mod client;
 mod error;
 pub mod hash;
