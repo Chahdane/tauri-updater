@@ -156,7 +156,22 @@ pub fn recompress_with_limit(tar: &Path, out: &Path, max_tar_bytes: u64) -> Resu
 /// truncating and reporting success.
 pub fn decompress_bounded(src: &Path, out: &Path, max_bytes: u64) -> Result<u64> {
     let file = std::fs::File::open(src).map_err(|e| Error::io("read", src, e))?;
-    let mut decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
+    decompress_reader_bounded(std::io::BufReader::new(file), out, max_bytes)
+}
+
+/// [`decompress_bounded`] over bytes already in memory.
+///
+/// This is the form the cache uses. A [`VerifiedArtifact`](crate::VerifiedArtifact)
+/// owns the bytes its signature was checked against, so expanding *those bytes*
+/// rather than reopening the file they came from is what keeps the tar derived
+/// from the artifact that was actually verified.
+pub fn decompress_bytes_bounded(src: &[u8], out: &Path, max_bytes: u64) -> Result<u64> {
+    decompress_reader_bounded(src, out, max_bytes)
+}
+
+/// [`decompress_bounded`] over any reader.
+pub fn decompress_reader_bounded<R: Read>(src: R, out: &Path, max_bytes: u64) -> Result<u64> {
+    let mut decoder = flate2::read::GzDecoder::new(src);
     let mut destination = std::fs::File::create(out).map_err(|e| Error::io("create", out, e))?;
 
     let mut buffer = vec![0u8; COPY_CHUNK];
@@ -167,7 +182,7 @@ pub fn decompress_bounded(src: &Path, out: &Path, max_bytes: u64) -> Result<u64>
             Ok(n) => n,
             Err(e) => {
                 let _ = std::fs::remove_file(out);
-                return Err(Error::io("decompress", src, e));
+                return Err(Error::io("decompress", out, e));
             }
         };
         // Checked before the write, so the ceiling bounds what reaches the disk
