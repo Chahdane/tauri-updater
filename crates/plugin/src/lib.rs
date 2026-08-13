@@ -30,7 +30,10 @@ mod http;
 mod tauri_glue;
 
 pub use flow::{run_update, Context, InstallHandoff, Outcome};
-pub use http::HttpFetch;
+pub use http::{
+    HttpFetch, HttpFetchBuilder, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_REDIRECTS,
+    DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_REQUEST_TIMEOUT,
+};
 pub use tauri_glue::{Builder, Config, TauriInstall, UpdateExt};
 
 #[doc(no_inline)]
