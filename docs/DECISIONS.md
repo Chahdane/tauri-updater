@@ -871,3 +871,75 @@ that is the correct direction to be wrong in.
 read implementation details for — a verifying install handoff, and a way to learn
 which platform key `get_urls` selected. Either would let a claim rest on a
 contract instead of an observation, and the range could widen honestly.
+
+---
+
+## 22. The platform key is recovered, not reconstructed
+
+**Decided:** 2026-08-13 · **Status:** active · **Corrects #13** · **Found by the real-app E2E**
+
+Gate A bound the delta lookup to `identity.target()`, on the assumption that
+`Update.target` is Tauri's `{os}-{arch}` platform key. **It is not.**
+
+```rust
+// updater.rs:403
+let target = if let Some(target) = &self.target { target }
+             else { updater_os().ok_or(Error::UnsupportedOs)? };
+```
+
+`Update.target` is the **OS alone** — `"darwin"` — unless the app configured an
+override. The architecture lives in a separate `Update.arch` field, and the
+candidate keys `{os}-{arch}-{installer}` and `{os}-{arch}` are built *locally
+inside `get_urls`* and discarded; only the URL and signature are returned.
+
+### Why it was misread
+
+Two different things are called "target":
+
+| | Value |
+| --- | --- |
+| `Update.target` — the **field** | `"darwin"` |
+| `updater::target()` — the **free function** (`updater.rs:1313`) | `"darwin-aarch64"` |
+
+Upstream's own endpoint templates treat them as separate variables:
+`{{target}}/{{arch}}` expands to `/darwin/aarch64/`. Gate A read the field with
+the function's semantics.
+
+**How it survived four gates:** the symptom is silent. `patch_for("darwin", …)`
+matched nothing, `plan_update` fell back with `reason: None`, and a full download
+succeeded. Every test passed, CI was green, and users would have received correct
+updates — just never a delta. A delta updater that never deltas looks exactly
+like a working updater from the outside. Only the real-app E2E, which asserts
+*which path ran*, could catch it.
+
+### The rule
+
+The key is **recovered from what Tauri kept**, not reconstructed:
+
+> Find the platform entries whose `url` **and** `signature` both equal the ones
+> Tauri selected.
+
+| Case | Behaviour |
+| --- | --- |
+| Exactly one match | Use it |
+| Zero | **Refuse** — `IdentityMismatch { field: "platform" }` |
+| Several, agreeing on the target | Use it — duplicates with one answer |
+| Several, disagreeing | **Refuse** — `AmbiguousPlatform` |
+| Same URL, different signatures | Disambiguated by signature |
+| Same signature, different URLs | Disambiguated by URL |
+
+This is #13's principle applied where #13 itself failed to apply it: *consume
+Tauri's decision, never re-derive it.* Matching on the pair is strictly stronger
+than matching a key we compute, because it cannot drift from upstream's search
+order — it never reproduces that order at all.
+
+### One behaviour deliberately relaxed
+
+Where the selected artifact has **no** delta entry, the outcome is now an
+ordinary full download rather than a refusal. The pre-correction model refused,
+which was the conservatism flagged when #13 landed. Publishing no delta for one
+artifact is a normal release choice, not an attack.
+
+**Revisit when:** upstream exposes which key `get_urls` selected. That would make
+this a direct comparison rather than a recovery, and the ambiguity cases would
+collapse.
