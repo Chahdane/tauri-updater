@@ -90,6 +90,35 @@ jobs:
           grep -q "blake3 6892d72ab49da606bbeb98c04c8110aa145038492fbf849568590b99d8d5b546" <<< "$out" \
             || { echo "::error::patch bytes differ on this platform"; exit 1; }
 
+      # The recompression recipe is the whole basis of the tar layer, and its
+      # only falsifier is a real published artifact. If this stops running, the
+      # suite goes on proving that the recipe agrees with itself.
+      - name: Confirm the recompression fixture assertion actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-updater-delta-core --test macos_recompression --locked -- --nocapture)
+          echo "$out"
+          grep -q "test rebuilds_a_real_published_app_tar_gz_byte_for_byte ... ok" <<< "$out" \
+            || { echo "::error::the recompression fixture assertion did not run"; exit 1; }
+          grep -q "test the_published_signature_accepts_the_rebuilt_artifact ... ok" <<< "$out" \
+            || { echo "::error::the signature-over-rebuild assertion did not run"; exit 1; }
+          grep -q "4 passed; 0 failed; 0 ignored" <<< "$out" \
+            || { echo "::error::recompression tests were filtered or ignored"; exit 1; }
+
+      # A tar-delta test suite that never reaches the tar path is exactly the
+      # failure mode DECISIONS #22 records, arriving one layer down.
+      - name: Confirm the tar-delta path assertion actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-plugin-updater-delta --test tar_delta_flow --locked -- --nocapture)
+          echo "$out"
+          grep -q "test a_valid_cache_takes_the_tar_path_and_installs_the_released_bytes ... ok" <<< "$out" \
+            || { echo "::error::the tar-delta happy path did not run"; exit 1; }
+          grep -q "0 failed; 0 ignored" <<< "$out" \
+            || { echo "::error::tar-delta tests were filtered or ignored"; exit 1; }
+
       - name: Confirm the forgery doctests actually ran
         shell: bash
         run: |

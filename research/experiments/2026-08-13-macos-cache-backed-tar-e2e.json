@@ -1,0 +1,124 @@
+{
+  "experiment_id": "2026-08-13-macos-cache-backed-tar-e2e",
+  "date": "2026-08-13T19:44:12Z",
+  "source_commit": "864fb71472d3d1e80499b32f44432c90463a11cb",
+  "tree_dirty": true,
+  "platform": "darwin",
+  "os_version": "macOS 26.5.2",
+  "architecture": "aarch64",
+  "rust_version": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+  "tauri_version": "2.11.5",
+  "tauri_plugin_updater_version": "2.10.1",
+  "zstd_version": "zstd 0.13.3",
+  "bundler_versions": {
+    "tauri-cli": "2.10.1",
+    "tauri-bundler": "2.8.1",
+    "tar": "0.4.46",
+    "flate2": "1.1.9",
+    "gzip-backend": "zlib-rs 0.6.7"
+  },
+  "old_version": "1.0.1",
+  "new_version": "1.0.2",
+  "version_distance": "patch",
+  "old_artifact_hash": "804d769f3cfb1ca883f417351e0fff6ed2329dd313aa635ef252de38fe9f0a0c",
+  "new_artifact_hash": "18ea169155443d7e78454ab5712c9589354c3316c0b9c695feadd6609bcd578c",
+  "old_artifact_size": 4163366,
+  "new_artifact_size": 4167008,
+  "patch_hash": null,
+  "patch_size": 633594,
+  "patch_ratio": 0.15205010405547578,
+  "representation": "app-tar-gz-v1 (tar layer inside .app.tar.gz)",
+  "compression_settings": {
+    "patch_backend": "ZstdBackend",
+    "zstd_level": 19,
+    "recompression": "tauri-app-tar-gz-v1",
+    "gzip_level": "Compression::default() (6)"
+  },
+  "patch_generation_seconds": null,
+  "patch_application_seconds": 0.259,
+  "peak_memory_bytes": null,
+  "disk_usage_bytes": 8334099,
+  "source_change_category": "string-only",
+  "changed_loc": null,
+  "notes": "CACHE-BACKED TAR-LAYER E2E, DEMONSTRATED ON MACOS FOR THIS CONTROLLED RUN. Three genuinely different versions of the example app were built by cargo tauri build; their main binaries hash to dd42cb31..., 573f3838... and 7caff690... (SHA-256), asserted pairwise distinct by both the build script and the runner so no downstream assertion can pass vacuously. TRANSITION 1: real v1.0.0 with an EMPTY cache, advertised v1.0.1, selected FULL -- which is the required outcome, because no valid base exists and no direct base artifact was supplied. The exact official v1.0.1 artifact was downloaded, hash- and signature-verified, staged as PENDING, and installed through the real tauri_plugin_updater Update::install. The installed main binary hashed to 573f3838..., exactly v1.0.1. The app was then relaunched, reported version 1.0.1 about itself, and the cache promoted PENDING -> ACTIVE. TRANSITION 2: real v1.0.1 with ACTIVE(1.0.1), advertised v1.0.2 with a generated tar-layer patch, selected TARDELTA. Only 633594 bytes were downloaded against a 4167008-byte artifact (15.205%). The server's request log confirms the tar patch was fetched and that neither the full artifact nor the direct patch was -- so the saving is observed at the wire, not inferred from a reported number. The cached artifact was re-verified, expanded to the exact old tar, patched, recompressed in-process to the exact official .app.tar.gz, digest- and signature-verified, staged as PENDING and installed through the real Update::install. The installed main binary hashed to 7caff690..., exactly v1.0.2. Relaunch reported 1.0.2 and promoted ACTIVE. CHAIN EVIDENCE: the base_tar_blake3 of the 1.0.1->1.0.2 tar patch (804d769f3cfb1ca883f417351e0fff6ed2329dd313aa635ef252de38fe9f0a0c) is identical to the target_tar_blake3 of the 1.0.0->1.0.1 release, so the artifact transition 2 patched against is provably the one transition 1 cached. BANDWIDTH: direct compressed-artifact patches were 95.1986% and 96.5456% of a full download; tar-layer patches for the same pairs were 15.0361% and 15.205%, i.e. 84.2056% and 84.2509% fewer patch bytes. This reproduces the earlier controlled single-pair result (15.36% vs 95.43%) on two independent pairs from a fresh build. RECOMPRESSION ON FRESH ARTIFACTS: delta-release round-tripped both releases before publishing -- it applied its own patch, recompressed, and required byte-identity with the artifact cargo tauri build had just produced. That is independent of the committed fixture: it shows the recipe reproduces artifacts from the current toolchain, not only one retained from August. DEGRADATION: with the cached blob corrupted at one byte (same length), a real run selected FULL, downloaded the full artifact, and still installed v1.0.2 correctly. SCOPE, EXACTLY. macOS only, one architecture, one bundle format, one three-version ladder, string-only source changes between versions, plain-HTTP loopback enabled through the e2e-control feature, ad-hoc code signing. It demonstrates integration and the cache state machine under a real installer; it is not a general macOS claim, not a performance claim, and closes no Audit #2 blocker. The transition timings (0.113 s and 0.276 s) are control-surface round trips over loopback with no network latency and are not a benchmark. Decompression and recompression were not timed separately.",
+  "raw_log": "logs/2026-08-13-macos-cache-backed-tar-e2e.log",
+  "artifact_provenance": "Built by examples/desktop-app/e2e/build-three-versions.sh, which runs `cargo tauri build --features e2e-control` three times against examples/desktop-app with only the version string changed, then publishes both releases with the delta-release binary built from this tree at --require-tar-layer. No manifest field is written by the harness: the runner rewrites only URLs, because the port is ephemeral. The signing key is generated per run into the output directory and never committed. Artifacts, manifests, patches and e2e-report.json are retained under /private/tmp/delta-tar-e2e. Re-runnable from the repository with build-three-versions.sh followed by run-tar-e2e.sh on macOS arm64 with cargo-tauri 2.10.1 installed.",
+  "measurements": {
+    "main_binary_sha256": {
+      "1.0.0": "dd42cb31c0b106d7a075b627ebd232512459fc219436a961aeddcfb42db0fad3",
+      "1.0.1": "573f38389f71cd2efee53a40cba42b29ed28da15ad7aa01d3a62ad3a127b92d5",
+      "1.0.2": "7caff6909467646c64abd1941ce64a1bdcd4af027b91e27488d5200389bce9b3"
+    },
+    "transition_1": {
+      "from": "1.0.0",
+      "to": "1.0.1",
+      "cache_state_before": "EMPTY",
+      "outcome": "ok installed-from-full-download",
+      "seconds": 0.122
+    },
+    "transition_2": {
+      "from": "1.0.1",
+      "to": "1.0.2",
+      "cache_state_before": "ACTIVE(1.0.1)",
+      "outcome": "ok installed-from-tar-delta downloaded=633594 full=4167008",
+      "seconds": 0.259
+    },
+    "degradation_corrupt_cache_blob": {
+      "outcome": "ok installed-from-full-download"
+    },
+    "cache_bytes_on_disk": 8334099,
+    "build": {
+      "platform": "darwin-aarch64",
+      "versions": {
+        "1.0.0": {
+          "main_binary_sha256": "dd42cb31c0b106d7a075b627ebd232512459fc219436a961aeddcfb42db0fad3",
+          "artifact_size": 4162997,
+          "artifact_sha256": "bbd321b599f08c602f97fb5d7b2bb978d59b12b80647cd6869e5d4d943a953fb",
+          "tar_size": 9659392
+        },
+        "1.0.1": {
+          "main_binary_sha256": "573f38389f71cd2efee53a40cba42b29ed28da15ad7aa01d3a62ad3a127b92d5",
+          "artifact_size": 4163366,
+          "artifact_sha256": "37c90ddb0b0cbfffcc61f1772a41f64c7ac106572da0167e7571c16883807924",
+          "tar_size": 9659392
+        },
+        "1.0.2": {
+          "main_binary_sha256": "7caff6909467646c64abd1941ce64a1bdcd4af027b91e27488d5200389bce9b3",
+          "artifact_size": 4167008,
+          "artifact_sha256": "8b5af3fb920e71ec31ca4a3bb95fc92c5cd681ddbe86dfc1e1ef5a2834b46ef6",
+          "tar_size": 9659392
+        }
+      },
+      "releases": {
+        "1.0.0->1.0.1": {
+          "installer_size": 4163366,
+          "direct_patch_size": 3963466,
+          "direct_patch_percent": 95.1986,
+          "tar_patch_size": 626006,
+          "tar_patch_percent": 15.0361,
+          "reduction_percent": 84.2056,
+          "target_tar_size": 9659392,
+          "target_tar_blake3": "804d769f3cfb1ca883f417351e0fff6ed2329dd313aa635ef252de38fe9f0a0c",
+          "target_installer_blake3": "9230ca75c50638fed5e8e17b895dac5c54e73e3535301b1615a0943a0f22a51d",
+          "base_tar_blake3": "ded1f3efea658ff23e0517a30bd5703451f976671254c525ca29647912f350c4",
+          "representation": "app-tar-gz-v1",
+          "recompression": "tauri-app-tar-gz-v1"
+        },
+        "1.0.1->1.0.2": {
+          "installer_size": 4167008,
+          "direct_patch_size": 4023061,
+          "direct_patch_percent": 96.5456,
+          "tar_patch_size": 633594,
+          "tar_patch_percent": 15.205,
+          "reduction_percent": 84.2509,
+          "target_tar_size": 9659392,
+          "target_tar_blake3": "3bd0403ba9ab64df469a1d447bd8d4f13445419181df8c25ffe31f634956afdf",
+          "target_installer_blake3": "18ea169155443d7e78454ab5712c9589354c3316c0b9c695feadd6609bcd578c",
+          "base_tar_blake3": "804d769f3cfb1ca883f417351e0fff6ed2329dd313aa635ef252de38fe9f0a0c",
+          "representation": "app-tar-gz-v1",
+          "recompression": "tauri-app-tar-gz-v1"
+        }
+      }
+    }
+  }
+}

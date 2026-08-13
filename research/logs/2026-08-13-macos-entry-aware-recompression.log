@@ -1,0 +1,218 @@
+=== entry-aware recompression: raw log ===
+date: 2026-08-13T19:06:10Z
+host: Darwin 25.5.0 arm64
+rustc: rustc 1.91.1 (ed61e7d7e 2025-11-07)
+cargo-tauri: tauri-cli 2.10.1
+
+--- official artifacts under test ---
+-rw-r--r--@ 1 user  wheel  4070693 13 غشت    17:07 /private/tmp/delta-e2e-build/v1.0.0/DeltaUpdaterExample.app.tar.gz
+-rw-r--r--@ 1 user  wheel  4070756 13 غشت    17:08 /private/tmp/delta-e2e-build/v1.0.1/DeltaUpdaterExample.app.tar.gz
+
+--- tauri-bundler 2.8.1 src/bundle/updater_bundle.rs (the write pipeline) ---
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_tar(src_dir: &Path, dest_path: &Path) -> crate::Result<PathBuf> {
+  use flate2::{write::GzEncoder, Compression};
+
+  let dest_file = fs_utils::create_file(dest_path)?;
+  let gzip_encoder = GzEncoder::new(dest_file, Compression::default());
+
+  let gzip_encoder = create_tar_from_src(src_dir, gzip_encoder)?;
+
+  let mut dest_file = gzip_encoder.finish()?;
+  dest_file.flush()?;
+  Ok(dest_path.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn create_tar_from_src<P: AsRef<Path>, W: Write>(src_dir: P, dest_file: W) -> crate::Result<W> {
+  let src_dir = src_dir.as_ref();
+  let mut builder = tar::Builder::new(dest_file);
+  builder.follow_symlinks(false);
+  builder.append_dir_all(src_dir.file_name().expect("Path has no file_name"), src_dir)?;
+  builder.into_inner().map_err(Into::into)
+}
+
+
+--- tar 0.4.46 src/builder.rs append_file payload + padding ---
+fn append_file(
+    dst: &mut dyn Write,
+    path: &Path,
+    file: &mut fs::File,
+    options: BuilderOptions,
+) -> io::Result<()> {
+    let stat = file.metadata()?;
+    let mut header = Header::new_gnu();
+
+    prepare_header_path(dst, &mut header, path, options.preserve_absolute)?;
+    header.set_metadata_in_mode(&stat, options.mode);
+    let sparse_entries = if options.sparse {
+        prepare_header_sparse(file, &stat, &mut header)?
+    } else {
+        None
+    };
+    header.set_cksum();
+    dst.write_all(header.as_bytes())?;
+
+    if let Some(sparse_entries) = sparse_entries {
+        append_extended_sparse_headers(dst, &sparse_entries)?;
+        for entry in sparse_entries.entries {
+            file.seek(io::SeekFrom::Start(entry.offset))?;
+            io::copy(&mut file.take(entry.num_bytes), dst)?;
+        }
+        pad_zeroes(dst, sparse_entries.on_disk_size)?;
+    } else {
+        let len = io::copy(file, dst)?;
+        pad_zeroes(dst, len)?;
+    }
+
+    Ok(())
+fn pad_zeroes(dst: &mut dyn Write, len: u64) -> io::Result<()> {
+    let buf = [0; BLOCK_SIZE as usize];
+    let remaining = BLOCK_SIZE - (len % BLOCK_SIZE);
+    if remaining < BLOCK_SIZE {
+        dst.write_all(&buf[..remaining as usize])?;
+    }
+    Ok(())
+}
+
+--- probe source ---
+use std::io::Write;
+
+const BLOCK: usize = 512;
+const COPY_CHUNK: usize = 8192; // std::io::copy's DEFAULT_BUF_SIZE
+
+#[derive(Debug)]
+struct Entry {
+    header_at: usize,
+    size: usize,
+    typeflag: u8,
+    name: String,
+}
+
+fn parse(tar: &[u8]) -> (Vec<Entry>, usize) {
+    let mut entries = Vec::new();
+    let mut at = 0usize;
+    while at + BLOCK <= tar.len() {
+        let header = &tar[at..at + BLOCK];
+        if header.iter().all(|b| *b == 0) {
+            break;
+        }
+        let size_field = std::str::from_utf8(&header[124..136]).unwrap_or("");
+        let size = usize::from_str_radix(size_field.trim_end_matches(['\0', ' ']).trim(), 8)
+            .unwrap_or(0);
+        let typeflag = header[156];
+        let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
+        let name = String::from_utf8_lossy(&header[..name_end]).into_owned();
+        entries.push(Entry { header_at: at, size, typeflag, name });
+        at += BLOCK + size.div_ceil(BLOCK) * BLOCK;
+    }
+    (entries, at)
+}
+
+/// Replay tar::Builder's write topology: one 512-byte header write, the payload
+/// in std::io::copy-sized chunks, then one padding write. Trailer is one 1024
+/// byte write, exactly as Builder::finish emits it.
+fn topology_entry_aware<W: Write>(tar: &[u8], entries: &[Entry], trailer_at: usize, out: &mut W) {
+    for e in entries {
+        out.write_all(&tar[e.header_at..e.header_at + BLOCK]).unwrap();
+        let payload = &tar[e.header_at + BLOCK..e.header_at + BLOCK + e.size];
+        for chunk in payload.chunks(COPY_CHUNK) {
+            out.write_all(chunk).unwrap();
+        }
+        let remaining = BLOCK - (e.size % BLOCK);
+        if remaining < BLOCK {
+            out.write_all(&vec![0u8; remaining]).unwrap();
+        }
+    }
+    let _ = trailer_at;
+    out.write_all(&[0u8; 1024]).unwrap();
+}
+
+fn topology_one_shot<W: Write>(tar: &[u8], out: &mut W) {
+    out.write_all(tar).unwrap();
+}
+
+fn topology_uniform<W: Write>(tar: &[u8], out: &mut W) {
+    for chunk in tar.chunks(COPY_CHUNK) {
+        out.write_all(chunk).unwrap();
+    }
+}
+
+fn gz(f: impl FnOnce(&mut flate2::write::GzEncoder<Vec<u8>>)) -> Vec<u8> {
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    f(&mut enc);
+    enc.finish().unwrap()
+}
+
+fn report(label: &str, got: &[u8], official: &[u8]) {
+    let first_diff = got
+        .iter()
+        .zip(official.iter())
+        .position(|(a, b)| a != b)
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| {
+            if got.len() == official.len() { "none".into() } else { format!("{}", got.len().min(official.len())) }
+        });
+    let exact = got.len() == official.len() && got == official;
+    println!(
+        "{label:24} len={:>9} official={:>9} first_diff={first_diff:>9} blake3={} {}",
+        got.len(),
+        official.len(),
+        blake3::hash(got).to_hex(),
+        if exact { "*** EXACT ***" } else { "" }
+    );
+}
+
+fn main() {
+    let tar_path = std::env::args().nth(1).expect("tar path");
+    let official_path = std::env::args().nth(2).expect("official .tar.gz path");
+    let tar = std::fs::read(&tar_path).unwrap();
+    let official = std::fs::read(&official_path).unwrap();
+
+    let (entries, trailer_at) = parse(&tar);
+    println!("tar {} bytes, {} entries, trailer at {}", tar.len(), entries.len(), trailer_at);
+    for e in &entries {
+        println!("  type={} size={:>9} at={:>9}  {}", e.typeflag as char, e.size, e.header_at, e.name);
+    }
+    println!("trailer bytes after last entry: {}", tar.len() - trailer_at);
+    println!("official blake3: {}", blake3::hash(&official).to_hex());
+    println!();
+
+    report("entry-aware", &gz(|e| topology_entry_aware(&tar, &entries, trailer_at, e)), &official);
+    report("one-shot", &gz(|e| topology_one_shot(&tar, e)), &official);
+    report("uniform-8192", &gz(|e| topology_uniform(&tar, e)), &official);
+}
+
+=== RUN 1: flate2 zlib-rs 0.6.7, v1.0.1 ===
+tar 9461248 bytes, 7 entries, trailer at 9460224
+  type=5 size=        0 at=        0  DeltaUpdaterExample.app/
+  type=5 size=        0 at=      512  DeltaUpdaterExample.app/Contents
+  type=0 size=     1015 at=     1024  DeltaUpdaterExample.app/Contents/Info.plist
+  type=5 size=        0 at=     2560  DeltaUpdaterExample.app/Contents/Resources
+  type=0 size=    14173 at=     3072  DeltaUpdaterExample.app/Contents/Resources/icon.icns
+  type=5 size=        0 at=    17920  DeltaUpdaterExample.app/Contents/MacOS
+  type=0 size=  9441088 at=    18432  DeltaUpdaterExample.app/Contents/MacOS/delta-updater-example
+trailer bytes after last entry: 1024
+official blake3: 718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36
+
+entry-aware              len=  4070756 official=  4070756 first_diff=     none blake3=718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36 *** EXACT ***
+one-shot                 len=  4070510 official=  4070756 first_diff=       47 blake3=e1fd01326d727d37b5d4a843ee992f55eeab4733c2ba8f02e1b5b597400a1940 
+uniform-8192             len=  4070674 official=  4070756 first_diff=       47 blake3=e1526e0596abf30fcf418232d7f9b83add8e4ebf496f9605885f28594304275c 
+
+=== RUN 2: flate2 zlib-rs 0.6.7, v1.0.0 ===
+
+entry-aware              len=  4070693 official=  4070693 first_diff=     none blake3=b8ce5a9e36b8e00453735fae64bc9d803e1bd06becff3112abdd622df97a1a8b *** EXACT ***
+one-shot                 len=  4070391 official=  4070693 first_diff=       44 blake3=cf1bfe968dec8b8c796517445ee1788bd7d2799ae2f2b51d5a428b1474c55514 
+uniform-8192             len=  4070646 official=  4070693 first_diff=      292 blake3=e787cf6bc5df8fef47ebd1f52a82fd1295a3fa12741809c2565662f8eb1fac59 
+
+=== CONTROL: flate2 rust_backend (miniz_oxide 0.8.9), v1.0.1 ===
+
+entry-aware              len=  3936113 official=  4070756 first_diff=       12 blake3=2080139b331ffe2a8c16d56960bcf4e7a2feb1bdac44b03e28174091f240c49e 
+one-shot                 len=  3936113 official=  4070756 first_diff=       12 blake3=2080139b331ffe2a8c16d56960bcf4e7a2feb1bdac44b03e28174091f240c49e 
+uniform-8192             len=  3936113 official=  4070756 first_diff=       12 blake3=2080139b331ffe2a8c16d56960bcf4e7a2feb1bdac44b03e28174091f240c49e 
+
+=== CONTROL: both flate2 backends enabled, v1.0.1 ===
+
+entry-aware              len=  4070756 official=  4070756 first_diff=     none blake3=718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36 *** EXACT ***
+one-shot                 len=  4070510 official=  4070756 first_diff=       47 blake3=e1fd01326d727d37b5d4a843ee992f55eeab4733c2ba8f02e1b5b597400a1940 
+uniform-8192             len=  4070674 official=  4070756 first_diff=       47 blake3=e1526e0596abf30fcf418232d7f9b83add8e4ebf496f9605885f28594304275c 

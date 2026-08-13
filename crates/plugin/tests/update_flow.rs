@@ -113,6 +113,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             patch_out: &patch,
             notes: None,
             pub_date: None,
+            tar_layer: None,
         },
         &key,
         None,
@@ -168,6 +169,7 @@ fn run_with(
         &Context {
             pubkey: &w.pubkey,
             base,
+            cache: None,
             work_dir: work,
             limits: Limits::default(),
         },

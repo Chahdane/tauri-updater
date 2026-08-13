@@ -22,13 +22,16 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | `PatchBackend` trait + zstd backend | Working, tested |
 | Release manifest (Tauri superset) | Working, tested |
 | `delta-release` patch + manifest tool | Working, tested |
-| Tauri plugin + install handoff | Working, tested — no real-app proof yet |
+| Tauri plugin + install handoff | Working, demonstrated in a real app on macOS |
+| Artifact cache + tar-layer path | Working, demonstrated in a real app on macOS |
 
 ### What is actually proven
 
-Kept deliberately conservative. The distinction between "tested" and "proven in a
-real app" is the whole difference between this being a research prototype and
-something to ship, and it is not yet resolved.
+Kept deliberately conservative. "Tested" and "proven in a real app" are different
+claims, and the table below keeps them apart. A real macOS app now performs both
+a full and a tar-layer update through the official installer; that is integration
+evidence on one platform, not production readiness, and the open v0.1 security
+blockers in [SPRINT.md](SPRINT.md) are untouched by it.
 
 | Claim | Status |
 | --- | --- |
@@ -37,14 +40,16 @@ something to ship, and it is not yet resolved.
 | `VerifiedArtifact` capability boundary (unverified bytes cannot reach install) | **Supported** |
 | Downgrade, replay and update-identity refusal | **Supported** |
 | Transport bounds: HTTPS, redirects, timeouts, size caps | **Supported** |
+| A real running Tauri app installing a delta update | **Supported** — demonstrated on macOS, [F19](research/FINDINGS.md) |
+| Exact in-process rebuild of a published macOS `.app.tar.gz` | **Supported** — [F22](research/FINDINGS.md), [DECISIONS #26](docs/DECISIONS.md) |
+| Cache-backed tar-layer updates on macOS | **Supported** — two real transitions, [F24](research/FINDINGS.md) |
 | Cross-platform deterministic patch generation | Partially — controlled fixtures only |
 | Linux support | Partially — engine tested, no real-app install |
-| macOS support | Partially — see [DECISIONS #15](docs/DECISIONS.md) on the tar layer |
+| macOS bandwidth | Partially — ~15% of a full download via the tar layer, on three controlled builds ([F25](research/FINDINGS.md)); ~95% without it |
 | Network failure handling and full-download fallback | Partially |
-| **A real running Tauri app installing a delta update** | **Unproven** |
 | Windows real-app support | **Unproven** |
 | Production readiness | **Unproven** |
-| Deterministic macOS recompression | **Unproven** |
+| Rollback resistance and multi-platform E2E | **Unproven** |
 
 ### Compatibility
 

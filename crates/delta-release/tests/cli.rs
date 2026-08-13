@@ -137,8 +137,38 @@ fn every_documented_flag_is_accepted() {
         "--pub-date",
         "--private-key",
         "--dry-run",
+        "--tar-patch-out",
+        "--tar-patch-url",
+        "--require-tar-layer",
+        "--max-tar-bytes",
     ] {
         assert!(help.contains(flag), "{flag} missing from --help:\n{help}");
+    }
+}
+
+#[test]
+fn the_tar_layer_flags_are_useless_without_each_other() {
+    // A patch generated with no URL to serve it from, or a URL with no patch
+    // behind it, publishes a manifest entry that cannot work. clap can refuse
+    // both at parse time, so it should.
+    for args in [
+        vec!["--tar-patch-out", "patch.zst"],
+        vec!["--tar-patch-url", "https://example.com/p.zst"],
+        vec!["--require-tar-layer"],
+    ] {
+        let out = delta_release()
+            .args(&args)
+            .output()
+            .expect("run with a partial tar-layer flag set");
+        assert!(
+            !out.status.success(),
+            "{args:?} should have been refused as incomplete"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("panicked"),
+            "a usage error must not be a panic: {stderr}"
+        );
     }
 }
 

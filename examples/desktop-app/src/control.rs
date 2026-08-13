@@ -26,6 +26,8 @@
 //! - `GET /trigger` — run one update, block until it finishes, return the outcome.
 //! - `GET /outcome` — the last outcome, or `none`.
 //! - `GET /version` — the running app's version.
+//! - `GET /cache` — the artifact cache's ACTIVE and PENDING entries.
+//! - `GET /reconcile` — re-run launch reconciliation and report what it did.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -107,6 +109,10 @@ fn handle<R: Runtime>(
         }
         "/outcome" => last_outcome.lock().expect("outcome lock").clone(),
         "/version" => app.package_info().version.to_string(),
+        // The cache is state the harness must be able to see: "did the install
+        // work" and "did the cache promote" are different questions.
+        "/cache" => crate::update::cache_state(app),
+        "/reconcile" => crate::update::reconcile_on_launch(app),
         _ => "unknown".to_owned(),
     };
 

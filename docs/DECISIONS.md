@@ -943,3 +943,222 @@ artifact is a normal release choice, not an attack.
 **Revisit when:** upstream exposes which key `get_urls` selected. That would make
 this a direct comparison rather than a recovery, and the ambiguity cases would
 collapse.
+
+---
+
+## 23. The cache's mutable state needs a compare-and-set, not an atomic write
+
+**Decided:** 2026-08-13 · **Status:** active
+
+The artifact cache has two halves with different concurrency properties, and
+conflating them would have cost either correctness or a lock nobody needs.
+
+**Blobs** are content-addressed and immutable. Two processes that compute the
+same artifact write the same bytes, so a race costs duplicated work and nothing
+else. No coordination.
+
+**State** — which entry is ACTIVE and which is PENDING — is mutable, and every
+transition is a read-modify-write. Writing it atomically stops a *torn file*; it
+does not stop a **lost update**:
+
+```text
+P1 reads {active: v1, pending: v2}   P2 reads {active: v1, pending: v2}
+P1 promotes  -> {active: v2}
+                                     P2 stages v3 -> {active: v1, pending: v3}
+                                        ^ P1's promotion is gone
+```
+
+Both writes were atomic. The second was computed from state that had already
+changed. **Measured, not argued**: 8 threads × 10 transitions against a plain
+atomic replacement produced 16 surviving generations for 80 commits — 64 lost.
+With the compare-and-set below: 80 commits, 80 generations.
+
+### Why `hard_link`, not `rename`
+
+`rename` is the obvious primitive and it is the wrong one:
+
+| | destination exists |
+| --- | --- |
+| POSIX `rename(2)` | silently replaces — no CAS, lost updates return |
+| Windows `MoveFileW` | fails |
+
+Building on `rename` yields a design that happens to work on macOS and silently
+loses updates on Windows. `hard_link` fails with `AlreadyExists` on **both**,
+which is exactly the create-if-absent primitive a CAS needs.
+
+State lives in `state.<generation>.json`; a writer that read *N* may only create
+*N+1*; the loser of a race re-reads and retries.
+
+### The race that is accepted
+
+Reconciliation may discard a PENDING entry another process staged moments
+earlier. Accepted, because the consequence is a cache miss and a full download —
+never an incorrect ACTIVE and never an integrity failure. A global lock to
+eliminate wasted work would be machinery for a threat this shape of application
+does not have, which is the same argument as #18.
+
+**Revisit when:** the cache is shared between processes that update
+concurrently and often, rather than a desktop app whose trigger is a click.
+
+---
+
+## 24. Promotion asks what is *running*, not what was installed
+
+**Decided:** 2026-08-13 · **Status:** active
+
+The cache exists to hold the artifact the user is **currently running**, because
+that is the only correct base for the next patch. So the state machine answers
+"which version is running now?" — not "did the update succeed?".
+
+Those are different questions:
+
+| | Means |
+| --- | --- |
+| `Update::install()` returns `Ok` | bytes were written |
+| the app relaunches as `v'` | `v'` is what is running |
+
+Only the second licenses a promotion. Between them the user may never restart,
+the launch may fail, an OS update may roll the bundle back, or another updater
+may install something else. Promoting on `Ok` would leave ACTIVE naming an
+artifact the user is not running — and the failure would be **silent**, because
+the manifest's declared base digest would match the *cache* while the real
+installation never received an update it could apply. The cache would be
+confidently wrong forever.
+
+So a verified artifact is staged as PENDING, and the next launch promotes it
+from the version the running process reports about **itself**
+(`package_info()`, compiled in) — never a value read from a manifest, a filename
+or the cache.
+
+```text
+EMPTY ───────────── verified v' ─────────────▶ PENDING(v')
+ACTIVE(v) ───────── verified v' ─────────────▶ ACTIVE(v) + PENDING(v')
+
+next launch, running == v'   ─▶  ACTIVE(v')            (promote)
+next launch, running != v'   ─▶  ACTIVE(v) unchanged   (discard PENDING)
+```
+
+**A failed install therefore needs no handling at all.** The next launch is
+still the old version, so the same rule discards the staged entry. There is no
+install-result signal to plumb through, which means there is no install-result
+signal to get wrong — the best kind of error handling is the kind that is not a
+special case.
+
+### Staging happens *before* the install
+
+The artifact is fully verified by that point, and staging first means a process
+that dies mid-install still has the bytes it just paid for. It costs nothing in
+correctness precisely because promotion asks a different question.
+
+---
+
+## 25. The tar layer is additive, not `schema: 2`
+
+**Decided:** 2026-08-13 · **Status:** active
+
+Patching the tar inside a `.app.tar.gz` instead of the compressed artifact is
+worth 83.9% of the patch bytes on the controlled pair (#15, and F13 in the
+research ledger). It is published as an **optional `tar_layer` block on the
+existing platform entry**, not as a new schema version.
+
+### Why not bump the schema
+
+Because the capability is **per-client, not per-release**. Using the tar layer
+requires rebuilding the exact compressed artifact, which a client either can do
+or cannot. A schema bump would make every existing client refuse the whole
+document — including its direct patches, which they can still use. That is the
+opposite of what an additive optimisation should do.
+
+So:
+
+- existing `patches` keep exactly their current meaning;
+- the compressed target's digest, size and signature stay on `DeltaPlatform`
+  and are **not duplicated** into the tar layer — one fact, one place, per #13;
+- target tar properties live on the layer, base properties on the per-version
+  tar patch, because that is where each is needed;
+- a client that does not implement the declared `representation` or
+  `recompression` reads the direct patch instead.
+
+### Unknown identifiers are *valid*, and that is the load-bearing part
+
+`Manifest::validate` accepts a `tar_layer` naming identifiers this build has
+never heard of. Rejecting them at parse time would take the platform's direct
+patches down with a block the client merely cannot read — one bad forward
+reference poisoning a path that works. Support is a client capability, so it is
+decided at *selection* time by `TarLayer::support`, not at parse time.
+
+What validation does reject is anything a well-formed document cannot contain
+whatever the reader's capabilities: malformed digests, zero-sized declarations,
+a patch from the release to itself, a base declared identical to the target.
+
+**Incompatible future semantics get a new identifier**, never a new meaning for
+an old one. `app-tar-gz-v1` and `tauri-app-tar-gz-v1` are frozen.
+
+---
+
+## 26. What `tauri-app-tar-gz-v1` actually pins
+
+**Decided:** 2026-08-13 · **Status:** active · **Supersedes the negative result in the recompression probe**
+
+The tar layer requires rebuilding the published `.app.tar.gz` byte-for-byte,
+because minisign covers the compressed artifact and `Update::install` consumes
+it (#6, #10). An earlier probe recorded this as **not achievable** for a shipped
+plugin. Its measurements were right; its conclusion was not.
+
+### What the probe got right, and where it stopped
+
+Four independent DEFLATE backends produced an identical 4,070,510-byte
+candidate against a 4,070,756-byte official artifact, differing 37 bytes into
+the stream. Four implementations agreeing with each other and all falling short
+implicates the **write pattern**, not the encoder. That inference was correct.
+
+It then tested one-shot compression and stopped, recording the mechanism as a
+hypothesis and naming exactly why it could not settle it: *"tauri-bundler is not
+vendored here and was not read."*
+
+### Reading it settled it
+
+`tauri-bundler` does not compress a tar. It streams:
+
+```text
+tar::Builder  ->  flate2::write::GzEncoder  ->  File
+```
+
+so the encoder sees the archive as a sequence of writes whose boundaries are the
+tar's own structure — a 512-byte header, the payload in `io::copy`-sized pieces,
+one padding write, a 1024-byte trailer. Replaying that topology reproduces both
+official artifacts from the controlled build **exactly**, and the signature
+issued over the original verifies against the rebuild. Uniform 8192-byte
+chunking of the same tar does not match, so it is the entry awareness that
+works, not the chunk size.
+
+This is the seventh time reading upstream replaced a plausible belief with a
+certain one (F18). The gap between "four implementations disagree with the
+official artifact" and "therefore it cannot be done in-process" was one unread
+source file wide.
+
+### What is contracted and what is merely observed
+
+| Element | Status |
+| --- | --- |
+| The write topology | **Read** from `tauri-bundler` 2.8.1 and `tar` 0.4.x |
+| `Compression::default()`, mtime 0, OS byte 255 | Read from the same source |
+| 8192-byte payload chunks | `std::io::copy`'s `DEFAULT_BUF_SIZE` — a standard-library implementation detail |
+| flate2's **zlib-rs** backend | **Observed.** The default `miniz_oxide` produces different bytes and can never match |
+| GNU long-name entries | **Inferred** from `tar`'s source; no artifact here exercises them |
+
+None of that is a guarantee anyone offers, and it does not have to be. **The
+recipe is never trusted.** Its output is checked against the digest the release
+published, and a mismatch falls back to a full download like any other delta
+failure. The identifier exists so that a future incompatible recipe gets a new
+name rather than silently producing wrong bytes under the old one.
+
+`delta-release` runs the client's whole path once before publishing and refuses
+to emit a tar layer it could not consume itself — because a release whose recipe
+does not reproduce its own artifact would make every client do the work and fall
+back, which is strictly worse than publishing no tar layer at all.
+
+**Revisit when:** `tauri-bundler` changes how it writes the archive, or the
+standard library changes `io::copy`'s buffer size. Either invalidates the
+recipe, the fixture test goes red, and the correct response is a new identifier
+rather than a fix under the old one.
