@@ -83,7 +83,7 @@ jobs:
 
           ./target/release/delta-release \
             --platform "$PLATFORM" \
-            --version "$version" \
+            --target-version "$version" \
             --from-version "$PREVIOUS_VERSION" \
             --previous-installer "$PREVIOUS_INSTALLER" \
             --new-installer "$NEW_INSTALLER" \

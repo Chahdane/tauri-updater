@@ -31,8 +31,13 @@ struct Args {
     platform: String,
 
     /// Version being released.
+    ///
+    /// Named `--target-version` rather than `--version` because clap reserves
+    /// the latter for the tool's own version flag. Declaring both made every
+    /// invocation of a debug build panic — including `--help`. See
+    /// `docs/DECISIONS.md` #20.
     #[arg(long)]
-    version: String,
+    target_version: String,
 
     /// Version this patch upgrades from.
     #[arg(long)]
@@ -97,7 +102,7 @@ fn run() -> Result<()> {
 
     let request = ReleaseRequest {
         platform: &args.platform,
-        version: &args.version,
+        version: &args.target_version,
         from_version: &args.from_version,
         previous_installer: &args.previous_installer,
         new_installer: &args.new_installer,
@@ -114,7 +119,7 @@ fn run() -> Result<()> {
     println!(
         "{} -> {} on {}: patch {} bytes, installer {} bytes ({:.2}% of a full download)",
         args.from_version,
-        args.version,
+        args.target_version,
         args.platform,
         summary.patch_size,
         summary.installer_size,
