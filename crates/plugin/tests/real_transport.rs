@@ -25,7 +25,7 @@ use base64::Engine as _;
 use minisign::KeyPair;
 use support::server::{read, Route, TestServer};
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
-use tauri_plugin_updater_delta::{Error, HttpFetch};
+use tauri_plugin_updater_delta::{Error, HttpFetch, HttpFetchBuilder};
 use tauri_updater_delta_core::{FileHash, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
@@ -64,6 +64,15 @@ impl RecordingHandoff {
             "nothing should have reached the installer"
         );
     }
+}
+
+/// A fetcher configured for a localhost test server.
+///
+/// The opt-in is explicit rather than relying on `debug_assertions` allowing
+/// plain HTTP, so these tests assert the same thing whichever profile they are
+/// compiled in — and so the suite exercises the same opt-in a developer uses.
+fn test_fetch() -> HttpFetchBuilder {
+    HttpFetch::builder().dangerous_insecure_transport_protocol(true)
 }
 
 fn keypair() -> KeyPair {
@@ -166,7 +175,7 @@ fn run(
     work: &Path,
     base: Option<&Path>,
 ) -> tauri_plugin_updater_delta::Result<Outcome> {
-    let fetch = HttpFetch::new().expect("build http client");
+    let fetch = test_fetch().build().expect("build http client");
     run_update(
         &w.identity("1.0.0"),
         &Context {
@@ -371,4 +380,196 @@ fn the_flow_never_requests_the_manifest() {
         "expected a delta install, got {outcome:?}"
     );
     handoff.assert_installed_exactly(&w.released_hash);
+}
+
+// ---- Gate B: transport policy, over real sockets ------------------------
+//
+// Every one of these describes something a server chooses and we must bound.
+// They use HttpFetch directly rather than the whole flow, because what is under
+// test is the transport policy itself.
+
+use std::time::{Duration, Instant};
+use tauri_updater_delta_core::client::Fetch;
+
+/// A bare server and a scratch path, for tests that need no release at all.
+fn transport_fixture() -> (TestServer, tempfile::TempDir) {
+    (TestServer::start(), tempfile::tempdir().expect("temp dir"))
+}
+
+#[test]
+fn a_plain_http_url_is_refused_without_the_opt_in() {
+    // The policy this whole gate turns on. In a debug build upstream warns and
+    // allows, so assert the arm that matches the profile — the same shape as the
+    // unit test, but here against a real socket and the real client.
+    let (server, dir) = transport_fixture();
+    server.serve("/thing", b"hello".to_vec());
+
+    let strict = HttpFetch::new().expect("build");
+    let result = strict.fetch(&server.url("/thing"), &dir.path().join("out"));
+
+    if cfg!(debug_assertions) {
+        assert!(
+            result.is_ok(),
+            "development builds allow http, as upstream does"
+        );
+    } else {
+        let err = result.expect_err("release builds must refuse plain http");
+        assert!(
+            err.contains("dangerous_insecure_transport_protocol"),
+            "the refusal must name the opt-in: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_opt_in_makes_plain_http_work_in_any_profile() {
+    let (server, dir) = transport_fixture();
+    server.serve("/thing", b"hello".to_vec());
+    let out = dir.path().join("out");
+
+    test_fetch()
+        .build()
+        .expect("build")
+        .fetch(&server.url("/thing"), &out)
+        .expect("the opt-in permits http");
+
+    assert_eq!(std::fs::read(&out).expect("read"), b"hello");
+}
+
+#[test]
+fn a_redirect_is_followed_within_the_budget() {
+    // Real hosting redirects: GitHub Releases answers with a 302 to
+    // objects.githubusercontent.com. Refusing redirects outright would break
+    // the most common way to publish an artifact, so the budget must be usable.
+    let (server, dir) = transport_fixture();
+    server.serve("/final", b"arrived".to_vec());
+    server.set("/start", Route::Redirect(server.url("/final")));
+    let out = dir.path().join("out");
+
+    test_fetch()
+        .max_redirects(5)
+        .build()
+        .expect("build")
+        .fetch(&server.url("/start"), &out)
+        .expect("one hop is well within budget");
+
+    assert_eq!(std::fs::read(&out).expect("read"), b"arrived");
+}
+
+#[test]
+fn a_redirect_loop_stops_at_the_budget() {
+    let (server, dir) = transport_fixture();
+    // Points at itself: without a budget this never terminates.
+    server.set("/loop", Route::Redirect(server.url("/loop")));
+
+    let err = test_fetch()
+        .max_redirects(3)
+        .build()
+        .expect("build")
+        .fetch(&server.url("/loop"), &dir.path().join("out"))
+        .expect_err("a redirect loop must not be followed forever");
+
+    assert!(
+        err.contains("redirect"),
+        "the error should name the redirect budget: {err}"
+    );
+}
+
+#[test]
+fn a_stalled_server_times_out_rather_than_hanging() {
+    // Headers arrive, a body is promised, and nothing else ever comes. No status
+    // code expresses this and no connect timeout catches it: the connection was
+    // established successfully. Only a request-wide deadline ends it.
+    let (server, dir) = transport_fixture();
+    server.set("/stall", Route::Stall);
+
+    let started = Instant::now();
+    let err = test_fetch()
+        .request_timeout(Duration::from_secs(2))
+        .build()
+        .expect("build")
+        .fetch(&server.url("/stall"), &dir.path().join("out"))
+        .expect_err("a stalled response must not hang forever");
+    let elapsed = started.elapsed();
+
+    // Both bounds matter. Too fast would mean something else failed and the
+    // timeout was never exercised; too slow would mean it did not fire.
+    assert!(
+        elapsed >= Duration::from_secs(1),
+        "returned in {elapsed:?} — too fast to have been the timeout"
+    );
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "took {elapsed:?} — the timeout did not fire"
+    );
+    assert!(
+        err.to_lowercase().contains("timed out"),
+        "the error must say it timed out, or a maintainer will hunt for a corrupt \
+         artifact instead of a silent server: {err}"
+    );
+}
+
+#[test]
+fn an_oversized_content_length_is_refused_before_the_body_is_read() {
+    // The cheap version of the attack: claim an enormous body and see whether
+    // the client acts on the number.
+    let (server, dir) = transport_fixture();
+    server.set("/huge", Route::OversizedDeclared(50 * 1024 * 1024 * 1024));
+    let out = dir.path().join("out");
+
+    let err = test_fetch()
+        .max_response_bytes(1024)
+        .build()
+        .expect("build")
+        .fetch(&server.url("/huge"), &out)
+        .expect_err("a declared length over the cap must be refused");
+
+    assert!(err.contains("declares"), "unexpected error: {err}");
+    assert!(!out.exists(), "nothing may be left at the destination");
+}
+
+#[test]
+fn an_endless_chunked_body_is_cut_off_at_the_cap() {
+    // The same attack with the declared length removed. A Content-Length check
+    // alone would let this run until the disk filled, which is exactly why the
+    // streaming counter exists.
+    let (server, dir) = transport_fixture();
+    server.set("/endless", Route::EndlessChunked);
+    let out = dir.path().join("out");
+
+    let err = test_fetch()
+        .max_response_bytes(256 * 1024)
+        .request_timeout(Duration::from_secs(30))
+        .build()
+        .expect("build")
+        .fetch(&server.url("/endless"), &out)
+        .expect_err("an unbounded body must be cut off");
+
+    assert!(
+        err.contains("exceeded"),
+        "expected the streaming cap to fire, got: {err}"
+    );
+    assert!(!out.exists(), "nothing may be left at the destination");
+}
+
+#[test]
+fn a_failed_download_leaves_nothing_at_the_destination() {
+    // The property that matters beyond any single failure mode: whatever goes
+    // wrong, no half-file is left under a name a later step could mistake for a
+    // finished download.
+    let (server, dir) = transport_fixture();
+    server.set("/truncated", Route::Truncated(vec![b'x'; 4096]));
+    let out = dir.path().join("out.artifact");
+
+    let result = test_fetch()
+        .build()
+        .expect("build")
+        .fetch(&server.url("/truncated"), &out);
+
+    assert!(result.is_err(), "a truncated body must be an error");
+    assert!(!out.exists(), "no artifact may survive a failed download");
+    assert!(
+        !out.with_extension("part").exists(),
+        "the partial file must be cleaned up too"
+    );
 }
