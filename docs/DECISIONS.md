@@ -670,3 +670,128 @@ try to reconcile the roadmap against `main` and conclude the roadmap is lying.
 marked historical.
 
 ---
+
+---
+
+## 18. A workspace per update, not a lock
+
+**Decided:** 2026-08-13 · **Status:** active
+
+Every update used the same three filenames — `update.patch`, `update.artifact`,
+`full.artifact` — under a `work_dir` the only real caller set to a fixed shared
+path. Nothing coordinated access to them.
+
+### What actually breaks, and what does not
+
+Not integrity. Traced end to end: run A writes `update.artifact` and passes the
+digest gate; run B overwrites it; A reads the file and its **signature check
+fails**. Since `VerifiedArtifact` owns the bytes it authenticated (#10), a
+swapped file can only cause a *failure*, never a bad install.
+
+But that failure is `Error::Signature`, which #11 makes the one non-recoverable
+outcome. So a user double-clicking "Check for updates" could turn a benign race
+into a loud, deliberately un-retried abort. **Availability, not integrity** — and
+that distinction sets how much machinery is worth spending.
+
+### Why not a lock
+
+An advisory file lock was the other candidate. Rejected:
+
+- Both crates are `#![forbid(unsafe_code)]`, so `flock` means a new dependency,
+  plus stale-lock recovery after a crash, plus a deadlock surface — real
+  complexity against a threat that is a double-click.
+- It serialises access to a shared name. Giving each update its own name removes
+  the sharing instead, and no contention beats coordinated contention.
+- The exposure is genuinely small: a desktop app, one user, updates triggered by
+  a click. Building for cross-process contention here would be building for a
+  threat this shape of application does not have.
+
+### What was built
+
+`tempfile::Builder::tempdir_in(work_dir)` per `plan_update`, owned by
+`UpdateSource::Delta` so it lives exactly as long as the artifact is needed. One
+mechanism closes three findings: unique paths (concurrency), automatic removal
+(partial-file cleanup), and nothing at a fixed valid-looking name (the crash half
+of atomic handling). `tempfile` moves from dev- to runtime dependency; no new
+third-party code enters the tree.
+
+Reconstruction additionally builds into a `.part` file and renames it into place
+only after the digest gate, so the artifact path never holds unverified bytes.
+
+**Revisit when:** update checks become automatic *and* frequent, or the plugin
+starts caching base artifacts in a shared location that two processes could write
+at once. Either would make real contention likely rather than incidental, and a
+lock would then be earning its cost. Until then it would be machinery for a
+threat we do not have.
+
+---
+
+## 19. The transport policy is Tauri's, applied to every URL
+
+**Decided:** 2026-08-13 · **Status:** active
+
+`HttpFetch` permitted plain HTTP, followed redirects wherever they led, had no
+read or overall deadline, and no size ceiling — it streamed whatever arrived
+straight to the destination path.
+
+### Mirroring upstream rather than inventing
+
+`tauri-plugin-updater` already answers the HTTPS question (`config.rs:145`):
+allowed outright when `dangerousInsecureTransportProtocol` is set, warned and
+allowed in a development build, refused in a release build. We adopt that policy
+and **that name**, deliberately.
+
+This is the same reasoning as matching Tauri's version comparator in #14. Where
+our policy and Tauri's answer the same question, they must not be able to
+disagree — a developer who opted in for the updater and then meets a second,
+differently-named refusal from us has been handed exactly the kind of seam Gate A
+existed to close.
+
+Two places we are deliberately stricter, both free:
+
+- **Every URL, not just endpoints.** Upstream validates the manifest endpoints
+  and then fetches `download_url` with no scheme check at all. We control the
+  patch URL and the artifact URL, so both are checked.
+- **No HTTPS→HTTP redirect, ever.** Not even under the opt-in. Starting on plain
+  HTTP is a choice the app made; being moved off HTTPS mid-chain is a choice the
+  server made, and those are not the same thing.
+
+Rejected: exempting `localhost`/`127.0.0.1` automatically. An implicit rule
+someone has to know is the antipattern; and anyone who can bind localhost has
+already won. The explicit flag is the same escape hatch without the ambiguity.
+
+### The harness was already broken, which is why this is not a weakening
+
+`e2e/build-versions.sh` runs `cargo tauri build` — a **release** build — and the
+example's `tauri.conf.json` served `http://127.0.0.1` endpoints without setting
+`dangerousInsecureTransportProtocol`. Upstream's own `validate_endpoints` refuses
+that combination in release, so **the preserved E2E harness could never have run
+as configured**, independently of anything in this gate.
+
+Found by reading `tauri-plugin-updater`'s source rather than assuming its
+behaviour — the sixth time in this project that reading upstream replaced a
+plausible belief with a certain one, after the `PublicKey::decode` encoding, the
+`install()`-does-not-verify finding, the double-fetch trust seam, `raw_json`
+being retained, and `tauri-build` requiring a Windows `.ico`. The pattern is
+worth naming: when the evidence is one `grep` away in `~/.cargo/registry`,
+guessing is a choice.
+
+So the example now sets the flag, with a warning next to it. That makes an
+implicit dependency explicit; it does not introduce new insecurity. The
+alternative — leaving it out — means E2E stays blocked on folklore setup, which
+is strictly worse than a scary flag with an explanation attached.
+
+### Bounds, and where the numbers came from
+
+| Bound | Default | Why |
+| --- | --- | --- |
+| `max_response_bytes` | 2 GiB | Above any plausible installer, far below "fills the disk" |
+| `request_timeout` | 30 min | Generous: a big artifact on a slow link is ordinary. It exists only to end the server that accepts and then never speaks |
+| `connect_timeout` | 30 s | Unchanged |
+| `max_redirects` | 5 | GitHub Releases answers with a 302 to `objects.githubusercontent.com`, so redirects must work; 5 is far short of a loop |
+
+`Content-Length` is checked before the body is read, and then **not trusted** —
+the streaming counter enforces the same ceiling whether the header lies, or is
+absent, or the body is chunked. Bodies land in a `.part` file promoted by rename
+only on success, so a failed transfer cannot leave something at a
+finished-looking name, and cannot destroy the artifact already there.
