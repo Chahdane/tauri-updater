@@ -795,3 +795,79 @@ the streaming counter enforces the same ceiling whether the header lies, or is
 absent, or the body is chunked. Bodies land in a `.part` file promoted by rename
 only on success, so a failed transfer cannot leave something at a
 finished-looking name, and cannot destroy the artifact already there.
+
+---
+
+## 20. `--target-version`, because clap owns `--version`
+
+**Decided:** 2026-08-13 · **Status:** active
+
+`delta-release` declared `--version` for the release being built while
+`#[command(version)]` declared clap's own. Clap catches the duplicate in a
+`debug_assert`, so **every invocation of a debug build panicked** — including
+`--help`.
+
+The bug is trivial. How it survived is not.
+
+- **The library tests never parsed arguments.** They call `build_release` and
+  friends directly, because that is where the logic lives. Argument parsing is
+  not library code, so a suite can be thorough about the logic and still never
+  touch the boundary a user arrives at.
+- **The CI check ran the binary in the profile that hides it.** `release.yml`
+  ran `cargo run --release … -- --help`. Clap's uniqueness check is a *debug*
+  assertion, compiled out under `--release`. The one step that did invoke the
+  executable did so in the single configuration where the failure is invisible.
+
+So the lesson is narrower than "test the CLI". It is: **run the real binary, in
+the profile that checks the most.** `crates/delta-release/tests/cli.rs` does
+that via `CARGO_BIN_EXE_delta-release`, in debug, over the whole flag surface the
+release workflow depends on. All six of its tests fail if the collision returns.
+
+**Revisit when:** never, for the rename. The testing rule generalises: any binary
+this project ships gets a test that executes it.
+
+---
+
+## 21. A narrow, honestly-tested Tauri range beats a broad assumed one
+
+**Decided:** 2026-08-13 · **Status:** active
+
+`tauri-plugin-updater = "2"` accepted any 2.x. Every security-relevant claim this
+plugin makes had been verified against **2.10.1** and nothing else.
+
+Six behaviours are load-bearing, and not one is a guarantee of upstream's public
+API — each is an observation about an implementation, free to change in a patch
+release:
+
+| Fact | Source | Depends on it |
+| --- | --- | --- |
+| `Update::install` verifies nothing | `updater.rs:718` | Why this plugin verifies at all (#10) |
+| `verify_signature` called from one place | `updater.rs:712` | Same |
+| The verifier's exact steps | `updater.rs:1453` | Our reproduction accepting what Tauri accepts (#6) |
+| `raw_json` retains the fetched document | `updater.rs:492`, `:552` | The single-fetch identity (#13) |
+| `get_urls` tries installer-specific keys first | `updater.rs:1420` | Binding delta metadata to Tauri's selection (#13) |
+| `validate_endpoints`' http policy | `config.rs:145` | Mirroring it in `HttpFetch` (#19) |
+
+A caret range let all six drift while CI stayed green — and worse, stayed green
+*convincingly*, because the tests exercise our reproduction of a behaviour that
+had moved. Green tests against a stale assumption are more dangerous than no
+tests, because they are believed.
+
+**Decided:** `tauri-plugin-updater = ">=2.10.1, <2.11.0"`, plus
+`crates/plugin/tests/upstream_compat.rs`, which reads the resolved version out of
+`Cargo.lock` and fails if it is not in a list of versions someone has actually
+read. The failure message names the six sites to re-read. It is a prompt to do
+the reading, not a number to bump.
+
+`tauri` itself stays at `"2"`. No claim here rests on reading *its* source; the
+security surface is entirely the updater plugin's, and constraining the app's own
+framework version would be cost without evidence behind it.
+
+The cost is real and accepted: consumers on a newer updater cannot use this
+plugin until someone re-reads the source and widens the range. For an updater
+that is the correct direction to be wrong in.
+
+**Revisit when:** upstream offers a stable API for the two things we currently
+read implementation details for — a verifying install handoff, and a way to learn
+which platform key `get_urls` selected. Either would let a claim rest on a
+contract instead of an observation, and the range could widen honestly.
