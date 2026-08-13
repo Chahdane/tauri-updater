@@ -112,17 +112,30 @@ fn reconstruct_inner(base: &Path, patch: &Path, out: &Path, target: &TargetSpec)
     // declines the patch instead of guessing at the format.
     let backend = backend_for(&target.backend_id)?;
 
+    // Built beside the destination and moved into place only once it has passed
+    // the digest gate, so `out` never exists in a half-written or unverified
+    // state — not even for the instant between the last write and the check, and
+    // not if the process dies mid-reconstruction.
+    let building = out.with_extension("part");
+
     if backend.id() == ZstdBackend::ID {
         // Bound the window and the output by the size the manifest committed to,
         // rather than by what the patch's own header claims.
         ZstdBackend::new()
             .with_expected_output_bytes(target.size)
-            .apply(base, patch, out)?;
+            .apply(base, patch, &building)?;
     } else {
-        backend.apply(base, patch, out)?;
+        backend.apply(base, patch, &building)?;
     }
 
-    verify_file(out, &target.digest)
+    if let Err(reason) = verify_file(&building, &target.digest) {
+        let _ = std::fs::remove_file(&building);
+        return Err(reason);
+    }
+
+    // Within one directory, so this is a rename rather than a copy: the artifact
+    // appears at `out` complete or not at all.
+    std::fs::rename(&building, out).map_err(|e| Error::io("promote", out, e))
 }
 
 #[cfg(test)]
