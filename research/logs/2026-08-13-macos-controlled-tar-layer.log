@@ -1,0 +1,220 @@
+CONTROLLED TAR-LAYER DELTA EXPERIMENT
+=====================================
+
+Experiment ID: 2026-08-13-macos-controlled-tar-layer
+Run date (UTC): 2026-08-13T16:47:35Z
+Initial worktree status: clean
+Current repository HEAD: 43fa86fa7e4cacb29419407d1c3e91988362ea87
+Controlled artifact source commit: 908e1d2c33fea65d3a91cef9f4a7db96512c4a62
+
+ENVIRONMENT
+-----------
+macOS: 26.5.2 (build 25F84)
+architecture: arm64 / aarch64-apple-darwin
+rustc: rustc 1.91.1 (ed61e7d7e 2025-11-07)
+cargo-tauri: tauri-cli 2.10.1
+tauri: 2.11.5
+tauri-plugin-updater: 2.10.1
+tauri-bundler: 2.8.1
+zstd crate: 0.13.3
+zstd-safe: 7.2.4
+zstd-sys / bundled libzstd: 2.0.16+zstd.1.5.7
+delta backend: ZstdBackend (ID zstd), default compression level 19
+
+The installed cargo-tauri binary contains resolved source paths for:
+  tauri-bundler 2.8.1
+  tar 0.4.45
+  flate2 1.1.9
+  miniz_oxide 0.8.9
+  zlib-rs 0.6.3
+
+flate2 selects zlib-rs when that feature is active and no C zlib backend is
+active; miniz_oxide is selected only when no fully compliant zlib backend is
+selected. The installed CLI therefore uses zlib-rs 0.6.3 for this gzip path.
+
+PHASE 0: CONTROLLED INPUT PROVENANCE
+------------------------------------
+Prior successful record:
+  research/experiments/2026-08-13-macos-real-app-e2e-delta.json
+Prior successful raw log:
+  research/logs/2026-08-13-macos-real-app-e2e-delta.log
+
+Old official artifact:
+  path: /private/tmp/delta-e2e-build/v1.0.0/DeltaUpdaterExample.app.tar.gz
+  size: 4070693
+  BLAKE3: b8ce5a9e36b8e00453735fae64bc9d803e1bd06becff3112abdd622df97a1a8b
+  SHA-256: e1966e5e862413370722f8cb6c2f4b705d55e4f635f727ef8eb2e7339ac26e35
+
+New official artifact:
+  path: /private/tmp/delta-e2e-build/v1.0.1/DeltaUpdaterExample.app.tar.gz
+  size: 4070756
+  BLAKE3: 718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36
+  SHA-256: f287ff6420d00353ec1df9b89dc65bed0e699c80790fb40493213be894affb84
+
+Existing compressed-artifact patch:
+  path: /private/tmp/delta-e2e-build/patch.zst
+  size: 3884546
+  BLAKE3: b7547c72f7f361035b77045beee837b79b2d32782ee089f9d1e2bc3eec7ca1bd
+  SHA-256: 3c675e1b7444c39b15e61adb3ec44179aedc53bda96f84677a8cd6576a82cee1
+  patch / official compressed target: 0.9542566540465702 (95.42566540465702%)
+
+The sizes and SHA-256 values match the preserved successful E2E record exactly.
+The new artifact's independently measured BLAKE3 matches target_installer_blake3
+in /private/tmp/delta-e2e-build/manifest.json. Note: the earlier E2E record's
+fields named old_artifact_hash, new_artifact_hash, and patch_hash contain these
+SHA-256 values, contrary to SCHEMA.md's BLAKE3 requirement. That existing record
+was not altered.
+
+PHASE 1: RAW TAR DECOMPRESSION
+------------------------------
+Commands were equivalent to:
+  gzip -dc old.app.tar.gz > old.app.tar
+  gzip -dc old.app.tar.gz > old.app.second.tar
+  gzip -dc new.app.tar.gz > new.app.tar
+  gzip -dc new.app.tar.gz > new.app.second.tar
+
+Old tar:
+  size: 9461248
+  BLAKE3: e388f64b21a71ca5b113cfbc147594ccf030a05de0c5cb8b08aa0a5db7f6c3b9
+  SHA-256: 8a9a734ec2c1cacc89075cb040669b86ca3c474914fde6b04fd62bb2fd3231ad
+
+New tar:
+  size: 9461248
+  BLAKE3: d478a9c7016d3a3aeafb7d4704522f1e0face4a487bd64b610269422fa5b989c
+  SHA-256: 79c9b735f92923c508fa447f79c1292f196ae95d51ca33b5b61e02ade6afd9ce
+
+Repeated old decompression: identical hash and cmp PASS
+Repeated new decompression: identical hash and cmp PASS
+
+PHASE 2: TAR-LAYER PATCH
+------------------------
+Production mechanism: delta-release 0.1.0 -> ZstdBackend::new() -> diff()
+Zstd compression level: 19
+Patch path: /private/tmp/tauri-tar-layer-controlled.5YEZ0F/tar.patch.zst
+Patch size: 625269
+Patch BLAKE3: f33df6086a2db8885e967de2477db693f771fd3804a0f585ac2efb249bac531d
+Patch SHA-256: f29bec0e04bda7e8a149519fecba3f2ad65ec0dbe1e4fc98ee34762c564548f5
+Generation time (/usr/bin/time -p): real 2.50, user 2.48, sys 0.02 seconds
+Patch / new tar: 0.06608737029195302 (6.608737029195303%)
+Patch / official compressed target: 0.15360021578301425 (15.360021578301424%)
+
+delta-release output:
+  1.0.0 -> 1.0.1 on darwin-aarch64: patch 625269 bytes,
+  installer 9461248 bytes (6.61% of a full download)
+
+PHASE 3: TAR PATCH APPLICATION
+------------------------------
+Production mechanism: ZstdBackend::new()
+  .with_expected_output_bytes(9461248)
+  .apply(old.app.tar, tar.patch.zst, reconstructed-new.app.tar)
+
+Application time (/usr/bin/time -p): real 0.79, user 0.03, sys 0.00 seconds
+Reconstructed size: 9461248
+Expected BLAKE3:      d478a9c7016d3a3aeafb7d4704522f1e0face4a487bd64b610269422fa5b989c
+Reconstructed BLAKE3: d478a9c7016d3a3aeafb7d4704522f1e0face4a487bd64b610269422fa5b989c
+Expected SHA-256:      79c9b735f92923c508fa447f79c1292f196ae95d51ca33b5b61e02ade6afd9ce
+Reconstructed SHA-256: 79c9b735f92923c508fa447f79c1292f196ae95d51ca33b5b61e02ade6afd9ce
+cmp result: PASS, byte-for-byte exact
+
+PHASE 4: PINNED TAURI COMPRESSION PATH
+--------------------------------------
+tauri-cli 2.10.1 depends on tauri-bundler 2.8.1.
+
+tauri-bundler 2.8.1, crates/tauri-bundler/src/bundle/updater_bundle.rs:
+  bundle_update_macos locates the .app and names the updater source.app.tar.gz.
+  create_tar constructs flate2::write::GzEncoder with Compression::default().
+  create_tar_from_src constructs tar::Builder, sets follow_symlinks(false), and
+  calls append_dir_all(src_dir.file_name(), src_dir).
+
+Resolved implementation details from the installed cargo-tauri binary:
+  tar 0.4.45
+  flate2 1.1.9
+  zlib-rs 0.6.3 (selected gzip/DEFLATE backend)
+
+Compression::default() is level 6. GzEncoder::new uses a blank GzBuilder:
+  FLG: 0 (no extra, filename, or comment)
+  MTIME: 0
+  XFL: 0 at level 6
+  OS: 255
+
+Official gzip first 32 bytes:
+  1f 8b 08 00 00 00 00 00 00 ff ec bd 0b 7c 14 d5
+  f5 38 7e 66 66 b3 3b 9b 04 42 c8 66 37 04 25 09
+
+Tar generation does not select tar::HeaderMode::Deterministic, normalize file
+metadata, or sort entries explicitly. append_dir_all reads filesystem entries;
+the emitted archive therefore retains filesystem metadata and ordering as
+observed by the pinned tar implementation. The controlled official tar has uid
+501, gid 20 and per-entry mtimes from the source app tree.
+
+PHASE 5: EXACT RECOMPRESSION CONTROL
+------------------------------------
+A deliberately wrong-backend control used flate2 1.1.9 with miniz_oxide 0.8.9:
+  candidate size: 3936113
+  candidate BLAKE3: 2080139b331ffe2a8c16d56960bcf4e7a2feb1bdac44b03e28174091f240c49e
+  candidate SHA-256: b23498278ce08d76a9b4b25c175458c26273c35d9cee97f9ba0cbb5b90941715
+  official size: 4070756
+  first difference: zero-based byte 12 (inside DEFLATE data)
+  gzip header bytes 0..9: identical
+  result: NOT EQUIVALENT
+
+The exact control used the installed cargo-tauri 2.10.1 binary as the pinned
+compression oracle. The official tar was extracted with metadata preserved;
+immediately before tauri-bundler's tar walk, source metadata was held equal to
+the controlled tree. The raw tar emitted by the bundler was captured by
+decompression and compared to official_new.tar before judging gzip output.
+
+Oracle raw tar vs official new tar: cmp PASS, 9461248 bytes
+Oracle app.tar.gz vs official app.tar.gz: cmp PASS, 4070756 bytes
+Oracle BLAKE3: 718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36
+Oracle SHA-256: f287ff6420d00353ec1df9b89dc65bed0e699c80790fb40493213be894affb84
+
+This establishes exact recompression for this artifact and pinned installed
+bundler. It also shows that a future implementation must reproduce the actual
+resolved backend and stream behavior, not only the source-level gzip header and
+nominal compression level.
+
+PHASE 6: FULL RECONSTRUCTED-TAR PIPELINE
+----------------------------------------
+The reconstructed tar from Phase 3 was extracted with its recorded metadata and
+passed through the same installed cargo-tauri compression oracle.
+
+Bundler output:
+  Bundling DeltaUpdaterExample.app
+  Bundling DeltaUpdaterExample.app.tar.gz (updater)
+  Finished 1 bundle
+
+Full-pipeline compressed size: 4070756
+Full-pipeline BLAKE3: 718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36
+Full-pipeline SHA-256: f287ff6420d00353ec1df9b89dc65bed0e699c80790fb40493213be894affb84
+Re-emitted raw tar vs official raw tar: cmp PASS
+Full-pipeline app.tar.gz vs official app.tar.gz: cmp PASS
+
+Existing signature verification used the signature in the original controlled
+manifest and public key in the original controlled key.pub. No signature was
+generated for the full-pipeline output.
+
+Verification result:
+  PASS verified_bytes=4070756
+
+COMPARISON
+----------
+Compressed-artifact patch: 3884546 bytes / 95.425665% of compressed target
+Tar-layer patch:             625269 bytes / 15.360022% of compressed target
+Tar-layer patch:             625269 bytes /  6.608737% of uncompressed tar
+Absolute patch savings:     3259277 bytes
+Relative patch reduction:   83.903679%
+Baseline / tar-patch factor: 6.212600x
+
+SCIENTIFIC SCOPE
+----------------
+Measured: on this exact controlled v1.0.0 -> v1.0.1 pair, changing the patched
+representation from official gzip bytes to their exact raw tar streams reduced
+the zstd patch from 3884546 to 625269 bytes. Exact tar reconstruction, exact
+pinned-bundler recompression, and verification by the existing signature all
+passed.
+
+Not established: general macOS ratios; performance on other changes, version
+distances, platforms or bundler versions; the proposition that gzip generally
+causes poor deltas; standalone raw-tar recompression stability across feature
+resolution, compilers or platforms; production resource bounds and atomicity.

@@ -139,11 +139,14 @@ pub fn plan_update(
     // is described by the identity, which parsed fine by definition.
     let manifest = Manifest::from_json(identity.raw_json()).ok();
 
-    // Bind our reading of that document to Tauri's. These are the seams where
-    // one document can still be read two ways.
+    // Bind our reading of that document to Tauri's, and recover the platform
+    // entry Tauri actually selected. These are the seams where one document can
+    // still be read two ways.
+    let mut delta_entry = None;
     if let Some(manifest) = &manifest {
-        if let Some(reason) = identity_mismatch(manifest, identity) {
-            return UpdateSource::Refused { reason };
+        match resolve_identity(manifest, identity) {
+            Ok(entry) => delta_entry = entry,
+            Err(reason) => return UpdateSource::Refused { reason },
         }
     }
 
@@ -163,17 +166,19 @@ pub fn plan_update(
         reason,
     };
 
-    let Some(manifest) = manifest else {
+    if manifest.is_none() {
         return fallback(Some(Error::Manifest(
             "the delta layer could not be parsed".to_owned(),
         )));
-    };
+    }
 
     // Each of these is an ordinary "no patch for you", not a failure: the
-    // manifest may publish no delta layer, none for this platform, or none from
-    // the version this user is on.
-    let Some((entry, patch)) = manifest.patch_for(identity.target(), identity.current_version())
-    else {
+    // manifest may publish no delta layer, none for the artifact Tauri selected,
+    // or none from the version this user is on.
+    let Some(entry) = delta_entry else {
+        return fallback(None);
+    };
+    let Some(patch) = entry.patches.get(identity.current_version()) else {
         return fallback(None);
     };
 
@@ -217,43 +222,96 @@ pub fn plan_update(
     }
 }
 
-/// Check that the delta metadata describes the update Tauri actually checked.
+/// Resolve which platform entry Tauri selected, and check it against ours.
 ///
-/// Two things can still diverge inside a single document:
+/// # Why not compute the key
 ///
-/// - **The version.** Our parse could differ from Tauri's — an alias field, a
-///   duplicate key, a numeric coercion. Cheap to check, so it is checked.
-/// - **The platform entry.** Tauri searches `{os}-{arch}-{installer}` before
-///   `{os}-{arch}` (`updater.rs:1420`) and does not report which key it used.
-///   Rather than reimplement that search — which would be a second selection
-///   algorithm free to drift from the real one — the entry we looked up must
-///   carry the signature Tauri selected. If it does not, the delta layer is
-///   describing a different artifact and we stop.
-fn identity_mismatch(manifest: &Manifest, identity: &UpdateIdentity) -> Option<Refusal> {
+/// Tauri searches `{os}-{arch}-{installer}` then `{os}-{arch}`
+/// (`updater.rs:578`), builds those strings **locally inside `get_urls`**, and
+/// throws them away — it returns only the URL and signature. `Update.target` is
+/// not that key: it is `updater_os()`, bare `"darwin"`.
+///
+/// Gate A used `Update.target` as the key on the assumption it was
+/// `{os}-{arch}`. It matched nothing, so every update quietly took the full
+/// path. The real-app E2E found it; nothing else had, because falling back is
+/// indistinguishable from working unless you look at which path ran.
+///
+/// So the key is not reconstructed. It is *recovered* from the two values Tauri
+/// did keep — the URL and signature it selected — which is the same principle
+/// that motivated the whole of `docs/DECISIONS.md` #13: consume Tauri's
+/// decision, never re-derive it.
+fn resolve_identity<'m>(
+    manifest: &'m Manifest,
+    identity: &UpdateIdentity,
+) -> std::result::Result<Option<&'m crate::manifest::DeltaPlatform>, Refusal> {
     if manifest.version != identity.version() {
-        return Some(Refusal::IdentityMismatch {
+        return Err(Refusal::IdentityMismatch {
             field: "version",
             checked: identity.version().to_owned(),
             delta: manifest.version.clone(),
         });
     }
 
-    // Only meaningful when a delta entry exists for this target. No entry means
-    // no delta is published, which is an ordinary full download, not a mismatch.
-    let entry = manifest
-        .delta
-        .as_ref()
-        .and_then(|delta| delta.platforms.get(identity.target()))?;
+    // Every platform entry describing exactly the artifact Tauri selected.
+    // Matching on both fields disambiguates a shared URL with different
+    // signatures, and a shared signature under different URLs.
+    let keys: Vec<&String> = manifest
+        .platforms
+        .iter()
+        .filter(|(_, p)| p.url == identity.download_url() && p.signature == identity.signature())
+        .map(|(key, _)| key)
+        .collect();
 
-    if entry.signature != identity.signature() {
-        return Some(Refusal::IdentityMismatch {
-            field: "signature",
-            checked: identity.signature().to_owned(),
-            delta: entry.signature.clone(),
+    if keys.is_empty() {
+        // Tauri installed from an entry our parse of the same document does not
+        // contain. One document read two ways — the exact failure #13 exists to
+        // prevent — so this refuses rather than falling back.
+        return Err(Refusal::IdentityMismatch {
+            field: "platform",
+            checked: identity.download_url().to_owned(),
+            delta: "no platform entry matches the artifact Tauri selected".to_owned(),
         });
     }
 
-    None
+    let Some(delta) = manifest.delta.as_ref() else {
+        return Ok(None); // No delta layer at all: an ordinary full download.
+    };
+
+    let entries: Vec<&crate::manifest::DeltaPlatform> = keys
+        .iter()
+        .filter_map(|key| delta.platforms.get(*key))
+        .collect();
+
+    let Some(first) = entries.first().copied() else {
+        return Ok(None); // Nothing published for the selected artifact.
+    };
+
+    // Duplicate keys pointing at one artifact are fine — a manifest may list
+    // both `darwin-aarch64` and `darwin-aarch64-app` for the same bundle. What
+    // is not fine is duplicates that disagree, because then "the target" has no
+    // single answer and picking one would be a guess.
+    let agree = entries.iter().all(|e| {
+        e.target_installer_blake3 == first.target_installer_blake3
+            && e.target_installer_size == first.target_installer_size
+            && e.signature == first.signature
+    });
+    if !agree {
+        return Err(Refusal::AmbiguousPlatform {
+            matches: entries.len(),
+        });
+    }
+
+    // The Gate A cross-check, unchanged: the delta layer must describe the same
+    // artifact the Tauri layer does.
+    if first.signature != identity.signature() {
+        return Err(Refusal::IdentityMismatch {
+            field: "signature",
+            checked: identity.signature().to_owned(),
+            delta: first.signature.clone(),
+        });
+    }
+
+    Ok(Some(first))
 }
 
 fn attempt_delta(
@@ -602,9 +660,16 @@ mod tests {
     }
 
     #[test]
-    fn refuses_when_the_delta_signature_is_not_the_one_tauri_selected() {
-        // Gate A test 2. The delta layer describes a different artifact than the
-        // one Tauri picked, so its digest and size describe the wrong file.
+    fn refuses_when_no_entry_describes_the_artifact_tauri_selected() {
+        // Gate A test 2, restated for the corrected resolution model: Tauri
+        // reports a signature no platform entry carries, so nothing in the
+        // document describes what it selected.
+        //
+        // The delta-layer-disagrees-with-Tauri-layer case is now unreachable
+        // through a parsed manifest, because `Manifest::validate` already
+        // rejects a document whose two layers carry different signatures under
+        // one key. The cross-check in `resolve_identity` is kept as depth, not
+        // because a valid document can trip it.
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
@@ -629,11 +694,11 @@ mod tests {
             matches!(
                 &reason,
                 Refusal::IdentityMismatch {
-                    field: "signature",
+                    field: "platform",
                     ..
                 }
             ),
-            "expected a signature identity mismatch, got {reason:?}"
+            "expected a platform identity mismatch, got {reason:?}"
         );
     }
 
@@ -674,17 +739,15 @@ mod tests {
             limits(),
         );
 
-        // It must not have used the generic delta entry.
-        assert!(
-            !matches!(source, UpdateSource::Delta { .. }),
-            "the delta entry describes a different artifact than Tauri selected"
-        );
-        let reason = refusal(source);
-        assert!(
-            matches!(&reason, Refusal::IdentityMismatch { field: "signature", checked, .. }
-                if checked == "the-appimage-signature"),
-            "expected the refusal to name Tauri's selection, got {reason:?}"
-        );
+        // The generic delta entry describes a different artifact, so it must not
+        // be used. Publishing no delta for the selected artifact is ordinary, so
+        // the correct outcome is a full download from Tauri's own URL — not the
+        // refusal the pre-correction model produced.
+        let UpdateSource::Full { url, signature, .. } = source else {
+            panic!("expected a full download, got {source:?}");
+        };
+        assert_eq!(url, "https://example.com/real.AppImage");
+        assert_eq!(signature, "the-appimage-signature");
     }
 
     #[test]
@@ -694,13 +757,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
         f.manifest.delta = None;
+        // Tauri's selection must correspond to a published entry, so point the
+        // document's own entry at the CDN URL.
+        f.manifest.platforms.get_mut(PLATFORM).unwrap().url =
+            "https://cdn.example.com/selected-by-tauri.AppImage".to_owned();
 
         let identity = UpdateIdentity::new(
             "1.0.0",
             &f.manifest.version,
-            PLATFORM,
+            "darwin",
             "https://cdn.example.com/selected-by-tauri.AppImage",
-            "tauri-selected-signature",
+            SIGNATURE,
             f.manifest.to_json().expect("serialize"),
         );
 
@@ -714,7 +781,178 @@ mod tests {
             panic!("expected a full download");
         };
         assert_eq!(url, "https://cdn.example.com/selected-by-tauri.AppImage");
-        assert_eq!(signature, "tauri-selected-signature");
+        assert_eq!(signature, SIGNATURE);
+    }
+
+    // ---- platform resolution, and every way it can be ambiguous ---------
+    //
+    // The key Tauri used is never reported, so it is recovered from the URL and
+    // signature Tauri did keep. These cover each way that recovery can be
+    // ambiguous. The rule is: fail closed rather than pick.
+
+    /// Add a second platform key with its own url/signature, and a delta entry.
+    fn add_platform(f: &mut Fixture, key: &str, url: &str, sig: &str, blake3: &str, size: u64) {
+        f.manifest.platforms.insert(
+            key.to_owned(),
+            TauriPlatform {
+                url: url.to_owned(),
+                signature: sig.to_owned(),
+            },
+        );
+        let template = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        f.manifest.delta.as_mut().unwrap().platforms.insert(
+            key.to_owned(),
+            DeltaPlatform {
+                signature: sig.to_owned(),
+                target_installer_blake3: blake3.to_owned(),
+                target_installer_size: size,
+                ..template
+            },
+        );
+    }
+
+    #[test]
+    fn a_single_matching_entry_is_selected_whatever_its_key_is_called() {
+        // The corrected model in one assertion: the key is "linux-x86_64" while
+        // Update.target is "darwin", and resolution still succeeds because it
+        // goes by the artifact, not the name.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let f = fixture(dir.path());
+
+        let identity = UpdateIdentity::new(
+            "1.0.0",
+            &f.manifest.version,
+            "darwin", // bare OS, exactly as Tauri reports it
+            FULL_URL,
+            SIGNATURE,
+            f.manifest.to_json().expect("serialize"),
+        );
+        let source = plan_update(
+            &identity,
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        );
+        assert!(
+            matches!(source, UpdateSource::Delta { .. }),
+            "the artifact Tauri selected is published with a delta: {source:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_describing_one_artifact_are_accepted() {
+        // A manifest may reasonably list both `darwin-aarch64` and
+        // `darwin-aarch64-app` for the same bundle. Two matches that agree are
+        // not ambiguous — there is one answer, written twice.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        let entry = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        add_platform(
+            &mut f,
+            "linux-x86_64-appimage",
+            FULL_URL,
+            SIGNATURE,
+            &entry.target_installer_blake3,
+            entry.target_installer_size,
+        );
+
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        );
+        assert!(
+            matches!(source, UpdateSource::Delta { .. }),
+            "identical duplicates have a single answer: {source:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_keys_disagreeing_about_the_target_are_refused() {
+        // Same url and signature, different declared target. There is no
+        // principled way to choose, so it must not choose.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        add_platform(
+            &mut f,
+            "linux-x86_64-appimage",
+            FULL_URL,
+            SIGNATURE,
+            &FileHash::of_bytes(b"a different target entirely").to_hex(),
+            999_999,
+        );
+
+        let reason = refusal(plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        ));
+        assert!(
+            matches!(&reason, Refusal::AmbiguousPlatform { matches: 2 }),
+            "expected an ambiguity refusal, got {reason:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_url_under_two_signatures_is_disambiguated_by_signature() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        let entry = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        // Same URL, a different signature — so it describes different bytes.
+        add_platform(
+            &mut f,
+            "linux-x86_64-other",
+            FULL_URL,
+            "a-different-signature",
+            &entry.target_installer_blake3,
+            entry.target_installer_size,
+        );
+
+        // Tauri selected the original signature, so only one entry matches.
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        );
+        assert!(
+            matches!(source, UpdateSource::Delta { .. }),
+            "got {source:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_signature_under_two_urls_is_disambiguated_by_url() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut f = fixture(dir.path());
+        let entry = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        add_platform(
+            &mut f,
+            "linux-x86_64-mirror",
+            "https://mirror.example.com/full.bin",
+            SIGNATURE,
+            &entry.target_installer_blake3,
+            entry.target_installer_size,
+        );
+
+        // Tauri selected the original URL, so only one entry matches.
+        let source = plan_update(
+            &f.identity("1.0.0"),
+            Some(&f.base),
+            &dir.path().join("work"),
+            &f.server,
+            limits(),
+        );
+        assert!(
+            matches!(source, UpdateSource::Delta { .. }),
+            "got {source:?}"
+        );
     }
 
     // ---- Gate A: version policy -----------------------------------------
@@ -984,17 +1222,17 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_with_no_delta_entry_still_reaches_the_full_path() {
+    fn a_selected_artifact_with_no_delta_entry_reaches_the_full_path() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let f = fixture(dir.path());
+        let mut f = fixture(dir.path());
 
-        // Tauri would not have produced an Update at all here — get_urls would
-        // have failed first — but the flow must still be well-defined if it
-        // somehow does, and "well-defined" means the authenticated full path.
+        // The Tauri layer publishes this artifact; the delta layer does not.
+        // That is an ordinary full download, not a refusal.
+        f.manifest.delta.as_mut().unwrap().platforms.clear();
         let identity = UpdateIdentity::new(
             "1.0.0",
             &f.manifest.version,
-            "windows-x86_64",
+            "darwin",
             FULL_URL,
             SIGNATURE,
             f.manifest.to_json().expect("serialize"),

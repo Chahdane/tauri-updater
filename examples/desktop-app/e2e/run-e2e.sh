@@ -61,9 +61,16 @@ PY
 }
 
 # Run one scenario. $1 name, $2 mutation (a shell snippet over $ROOT), $3 expected
-# main-binary hash after install, or the literal word UNCHANGED.
+# main-binary hash after install or the literal word UNCHANGED, $4 substring the
+# reported outcome must contain.
+#
+# $4 exists because the first real run of this harness passed every scenario
+# while silently taking the full-download path: the installed bytes were correct,
+# so a hash-only check could not tell that the delta path had never run. Judging
+# the bytes is necessary and is not sufficient — the path taken is a separate
+# claim and needs its own assertion.
 scenario() {
-  local name="$1" mutate="$2" expect="$3"
+  local name="$1" mutate="$2" expect="$3" want_outcome="${4:-}"
   local ROOT="$SCRATCH/$name"
   rm -rf "$ROOT"; mkdir -p "$ROOT"
 
@@ -116,19 +123,22 @@ PY
   local want="$expect"; [ "$expect" = "UNCHANGED" ] && want="(unchanged)"
 
   # The judgement is the bytes on disk, not the outcome string.
-  local ok=1
+  local ok=1 why=""
   if [ "$expect" = "UNCHANGED" ]; then
-    [ "$actual" != "$EXPECTED_NEW" ] || ok=0
+    [ "$actual" != "$EXPECTED_NEW" ] || { ok=0; why="binary changed when it must not have"; }
   else
-    [ "$actual" = "$expect" ] || ok=0
+    [ "$actual" = "$expect" ] || { ok=0; why="installed hash mismatch"; }
+  fi
+  if [ -n "$want_outcome" ] && [[ "$outcome" != *"$want_outcome"* ]]; then
+    ok=0; why="outcome did not contain '$want_outcome'"
   fi
 
   if [ $ok -eq 1 ]; then
     printf "  PASS %-38s %s\n" "$name" "${outcome:0:60}"
     PASS=$((PASS+1))
   else
-    printf "  FAIL %-38s\n       outcome: %s\n       want %s\n       got  %s\n" \
-      "$name" "$outcome" "$want" "$actual"
+    printf "  FAIL %-38s (%s)\n       outcome: %s\n       want %s\n       got  %s\n" \
+      "$name" "$why" "$outcome" "$want" "$actual"
     FAIL=$((FAIL+1))
   fi
 }
@@ -137,17 +147,17 @@ echo "expected v1.0.1 main binary: $EXPECTED_NEW"
 echo
 
 echo "-- happy path --"
-scenario "delta-install"            ":"                                          "$EXPECTED_NEW"
+scenario "delta-install"            ":"                                          "$EXPECTED_NEW" "installed-from-delta"
 
 echo "-- fallback: installed bytes must still be the release --"
-scenario "corrupt-patch"            'printf junk > "$ROOT/patch.zst"'            "$EXPECTED_NEW"
-scenario "truncated-patch"          'A=$(stat -f%z "$ROOT/patch.zst"); dd if="$ROOT/patch.zst" of="$ROOT/p2" bs=1 count=$((A/2)) 2>/dev/null; mv "$ROOT/p2" "$ROOT/patch.zst"' "$EXPECTED_NEW"
-scenario "missing-patch"            'rm -f "$ROOT/patch.zst"'                    "$EXPECTED_NEW"
-scenario "wrong-base"               'printf "not the base artifact" > "$ROOT/base.tar.gz"' "$EXPECTED_NEW"
+scenario "corrupt-patch"            'printf junk > "$ROOT/patch.zst"'            "$EXPECTED_NEW" "installed-from-full-download"
+scenario "truncated-patch"          'A=$(stat -f%z "$ROOT/patch.zst"); dd if="$ROOT/patch.zst" of="$ROOT/p2" bs=1 count=$((A/2)) 2>/dev/null; mv "$ROOT/p2" "$ROOT/patch.zst"' "$EXPECTED_NEW" "installed-from-full-download"
+scenario "missing-patch"            'rm -f "$ROOT/patch.zst"'                    "$EXPECTED_NEW" "installed-from-full-download"
+scenario "wrong-base"               'printf "not the base artifact" > "$ROOT/base.tar.gz"' "$EXPECTED_NEW" "installed-from-full-download"
 
 echo "-- refusal: nothing may be installed --"
-scenario "tampered-full-download"   'printf "malicious" > "$ROOT/v1.0.1/DeltaUpdaterExample.app.tar.gz"; rm -f "$ROOT/patch.zst"' UNCHANGED
-scenario "tampered-both"            'printf junk > "$ROOT/patch.zst"; printf "malicious" > "$ROOT/v1.0.1/DeltaUpdaterExample.app.tar.gz"' UNCHANGED
+scenario "tampered-full-download"   'printf "malicious" > "$ROOT/v1.0.1/DeltaUpdaterExample.app.tar.gz"; rm -f "$ROOT/patch.zst"' UNCHANGED "error"
+scenario "tampered-both"            'printf junk > "$ROOT/patch.zst"; printf "malicious" > "$ROOT/v1.0.1/DeltaUpdaterExample.app.tar.gz"' UNCHANGED "error"
 
 echo
 echo "passed $PASS, failed $FAIL"

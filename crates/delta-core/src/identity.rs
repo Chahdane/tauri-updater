@@ -111,7 +111,22 @@ impl UpdateIdentity {
         &self.version
     }
 
-    /// Tauri's `{os}-{arch}` target string.
+    /// Tauri's `Update.target` field, verbatim.
+    ///
+    /// **This is not a manifest platform key, and must never be used as one.**
+    /// It is `updater_os()` — bare `"darwin"`, `"linux"`, `"windows"` — unless
+    /// the app explicitly configured a target override (`updater.rs:403`).
+    ///
+    /// The confusion is upstream's naming: the *field* `Update.target` holds the
+    /// OS, while the free function `updater::target()` returns `{os}-{arch}`.
+    /// Upstream's own endpoint templates treat them as separate variables —
+    /// `{{target}}/{{arch}}` expands to `/darwin/aarch64/`.
+    ///
+    /// An earlier design used this as the delta platform key. It silently
+    /// matched nothing, so every update fell back to a full download while
+    /// looking healthy. See `docs/DECISIONS.md` #22; the platform entry is now
+    /// resolved from [`download_url`](Self::download_url) and
+    /// [`signature`](Self::signature) instead.
     pub fn target(&self) -> &str {
         &self.target
     }
@@ -172,6 +187,18 @@ pub enum Refusal {
         target: String,
     },
 
+    /// The manifest offers more than one platform entry for the artifact Tauri
+    /// selected, and they disagree about what to install.
+    ///
+    /// Duplicate keys describing the *same* artifact are fine and are allowed.
+    /// This is the case where they describe different ones, which means there is
+    /// no single answer to "what is the target", so there is nothing safe to
+    /// pick. Fails closed rather than choosing.
+    AmbiguousPlatform {
+        /// How many platform entries matched Tauri's selection.
+        matches: usize,
+    },
+
     /// A version relevant to that decision could not be parsed as semver.
     ///
     /// Refused rather than fallen back on: an unorderable version means the
@@ -200,6 +227,11 @@ impl fmt::Display for Refusal {
             Self::Downgrade { current, target } => write!(
                 f,
                 "refusing to install {target}: older than the installed {current}"
+            ),
+            Self::AmbiguousPlatform { matches } => write!(
+                f,
+                "{matches} platform entries match the artifact Tauri selected and they \
+                 disagree about the target; refusing rather than choosing one"
             ),
             Self::UncomparableVersion { which, value } => write!(
                 f,
