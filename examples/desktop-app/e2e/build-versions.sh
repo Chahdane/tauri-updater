@@ -25,6 +25,23 @@
 
 set -euo pipefail
 
+# This script rewrites the example's version in Cargo.toml to build two
+# releases, which also rewrites Cargo.lock. Leaving the lock at the temporary
+# version is not cosmetic: every CI job passes --locked, so a stale lock fails
+# all of them — which is exactly how `main` once went red on four jobs at once.
+# Snapshot both and restore on any exit, including failure and interrupt.
+_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+_LOCK="$_ROOT_DIR/Cargo.lock"
+_LOCK_BACKUP="$(mktemp)"
+[ -f "$_LOCK" ] && cp "$_LOCK" "$_LOCK_BACKUP"
+_restore_lock() {
+  if [ -s "$_LOCK_BACKUP" ]; then
+    cp "$_LOCK_BACKUP" "$_LOCK"
+    rm -f "$_LOCK_BACKUP"
+  fi
+}
+trap _restore_lock EXIT INT TERM
+
 OUT="${1:-/tmp/delta-e2e-build}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="$(cd "$APP_DIR/../.." && pwd)"
