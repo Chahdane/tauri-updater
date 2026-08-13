@@ -1,70 +1,104 @@
 name: Release
 
-# Produces the delta patch and manifest for a tagged release and attaches them
-# to the GitHub Release alongside the full installer.
+# What happens when you push a `v*` tag, in full.
 #
-# `workflow_dispatch` runs the whole thing in dry-run mode against generated
-# fixture installers. Nothing is uploaded and no signing key is needed, so the
-# wiring can be exercised without cutting a real release — which matters,
-# because a release workflow that has never run is a release workflow that does
-# not work.
+#   tag  →  build the example app (linux-x86_64 AppImage)
+#        →  find the previous release and download its AppImage
+#        →  generate the patch, digests, signature and manifest
+#        →  upload all of it to the GitHub Release
+#
+# The previous version of this workflow could not do any of that. Its release
+# step required PREVIOUS_INSTALLER, NEW_INSTALLER, PREVIOUS_VERSION and PLATFORM
+# via `${VAR:?}`, and nothing anywhere set them, so every tag push failed on the
+# first line of that step. Its "dry run" ran `delta-release --help` — which, in
+# release mode, was the one configuration that hid a bug making every debug
+# invocation panic (docs/DECISIONS.md #20).
+#
+# So both paths are now real. Everything the release step needs is derived here,
+# and the remaining manual prerequisites are listed rather than assumed.
+#
+# ## Manual prerequisites
+#
+# 1. `TAURI_SIGNING_PRIVATE_KEY` — repository secret. Without it the job fails
+#    loudly and early rather than publishing an unsigned manifest.
+# 2. `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — required if the key has one. A key
+#    from `tauri signer generate --password ""` cannot be read by this tooling at
+#    all; see docs/DECISIONS.md #16.
+# 3. The tag must be `vX.Y.Z` and match the example app's version.
+#
+# ## Scope, stated honestly
+#
+# Only `linux-x86_64` is produced. macOS and Windows bundles need signing
+# identities and notarisation this repository does not have, and a workflow that
+# pretended to produce them would fail later and less clearly. Other platforms
+# are added by re-running `delta-release` per platform against artifacts built
+# elsewhere.
+#
+# The first tagged release has no predecessor, so there is no patch to generate.
+# That is detected and handled, not treated as an error.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Run against fixture installers without uploading anything"
-        type: boolean
-        default: true
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  PLATFORM: linux-x86_64
 
 jobs:
-  release:
-    name: patch + manifest
+  # ---------------------------------------------------------------------------
+  # Exercises the real release path without a tag, a key, or an upload.
+  # Deliberately much more than `--help`: a release workflow whose only rehearsal
+  # is a help screen is a release workflow that has never run.
+  # ---------------------------------------------------------------------------
+  rehearsal:
+    name: rehearsal (no upload)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build the release tool
-        run: cargo build --release --locked -p tauri-updater-delta-release
+      - name: Prove the binary parses its own arguments
+        # The check that was missing. Debug profile on purpose: clap's duplicate
+        # argument detection is a debug assertion, so a release-only smoke test
+        # cannot see the class of bug that broke this binary.
+        run: cargo test --locked -p tauri-updater-delta-release --test cli
 
-      # ---- dry run -------------------------------------------------------
-      # Generates two installers and an ephemeral signing key, then runs the
-      # real tool over them. Proves the binary works end to end without
-      # touching the release key or publishing anything.
-      - name: Dry run against fixture installers
-        if: github.event_name == 'workflow_dispatch'
+      - name: Run the real release path end to end
+        # These build a manifest with the real tooling and rebuild the target
+        # from it, so the rehearsal covers release -> client rather than just
+        # "the binary starts".
+        run: cargo test --release --locked -p tauri-updater-delta-release
+
+      - name: Summary
         run: |
-          set -euo pipefail
-          cargo run --release --locked -p tauri-updater-delta-release \
-            --bin delta-release -- --help
-          cargo test --release --locked -p tauri-updater-delta-release
-          echo "Dry run complete: the tool builds, runs, and its end-to-end"
-          echo "release -> client loop passes."
+          echo "Rehearsal complete:"
+          echo "  - the binary builds and parses arguments in debug"
+          echo "  - the release -> client loop passes against real artifacts"
+          echo "  - nothing was signed with a real key and nothing was uploaded"
 
-      # ---- real release --------------------------------------------------
-      # Expects the previous and current installers to already be present, put
-      # there by whatever builds the app. Deliberately not implemented as a
-      # guess: wiring this to a real bundler happens in phase 3, when there is
-      # an example app producing artifacts to point at.
-      - name: Generate patch and manifest
-        if: startsWith(github.ref, 'refs/tags/v')
+  # ---------------------------------------------------------------------------
+  # The real thing.
+  # ---------------------------------------------------------------------------
+  release:
+    name: patch + manifest
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require a signing key before doing any work
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          set -euo pipefail
           if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
             echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. The manifest must"
             echo "::error::carry a signature over the target installer or clients"
@@ -72,34 +106,137 @@ jobs:
             exit 1
           fi
 
-          version="${GITHUB_REF_NAME#v}"
-          : "${PREVIOUS_INSTALLER:?set PREVIOUS_INSTALLER to the artifact users already have}"
-          : "${NEW_INSTALLER:?set NEW_INSTALLER to the artifact being released}"
-          : "${PREVIOUS_VERSION:?set PREVIOUS_VERSION to the version being upgraded from}"
-          : "${PLATFORM:?set PLATFORM to a Tauri target identifier, e.g. linux-x86_64}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfuse2
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Resolve this and the previous release
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # The most recent published release that is not this tag. Empty on the
+          # first release, which is a normal state rather than a failure.
+          previous_tag="$(gh release list --limit 20 --json tagName \
+            --jq '.[].tagName' | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)"
+
+          if [ -z "$previous_tag" ]; then
+            echo "::notice::No previous release found. Publishing a full artifact"
+            echo "::notice::with no delta layer, which is correct for a first release."
+            echo "has_previous=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_previous=true" >> "$GITHUB_OUTPUT"
+            echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
+            echo "previous_version=${previous_tag#v}" >> "$GITHUB_OUTPUT"
+            echo "Previous release: $previous_tag"
+          fi
+
+      - name: Build this version
+        run: |
+          set -euo pipefail
+          (cd examples/desktop-app && cargo tauri build --bundles appimage)
+          mkdir -p dist
+          # Exactly one AppImage is expected; anything else means the bundle
+          # layout changed and every later step would be guessing.
+          shopt -s nullglob
+          images=(target/release/bundle/appimage/*.AppImage)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one AppImage, found ${#images[@]}"
+            exit 1
+          fi
+          cp "${images[0]}" "dist/$(basename "${images[0]}")"
+          echo "Built $(basename "${images[0]}")"
+
+      - name: Download the previous release's artifact
+        if: steps.versions.outputs.has_previous == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          # A previous release with no AppImage means nothing to patch from.
+          # Recoverable — publish the full artifact — so it must not fail the job.
+          if gh release download "${{ steps.versions.outputs.previous_tag }}" \
+               --pattern '*.AppImage' --dir previous 2>/dev/null; then
+            echo "PREVIOUS_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::${{ steps.versions.outputs.previous_tag }} has no AppImage"
+            echo "::warning::asset; publishing without a delta layer."
+            echo "PREVIOUS_OK=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build the release tool
+        run: cargo build --release --locked -p tauri-updater-delta-release
+
+      - name: Generate the patch and manifest
+        if: steps.versions.outputs.has_previous == 'true' && env.PREVIOUS_OK == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.versions.outputs.version }}"
+          previous_version="${{ steps.versions.outputs.previous_version }}"
+
+          new_installer="$(ls dist/*.AppImage | head -1)"
+          previous_installer="$(ls previous/*.AppImage | head -1)"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
-          patch="dist/${PREVIOUS_VERSION}-to-${version}.zst"
+          patch="dist/${previous_version}-to-${version}.zst"
 
           ./target/release/delta-release \
             --platform "$PLATFORM" \
-            --version "$version" \
-            --from-version "$PREVIOUS_VERSION" \
-            --previous-installer "$PREVIOUS_INSTALLER" \
-            --new-installer "$NEW_INSTALLER" \
-            --installer-url "$base/$(basename "$NEW_INSTALLER")" \
+            --target-version "$version" \
+            --from-version "$previous_version" \
+            --previous-installer "$previous_installer" \
+            --new-installer "$new_installer" \
+            --installer-url "$base/$(basename "$new_installer")" \
             --patch-url "$base/$(basename "$patch")" \
             --patch-out "$patch" \
             --manifest dist/manifest.json \
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+      - name: Check the manifest before publishing it
+        if: steps.versions.outputs.has_previous == 'true' && env.PREVIOUS_OK == 'true'
+        run: |
+          set -euo pipefail
+          # A manifest that does not describe this release is worse than none,
+          # because clients act on it. Cheap to check, so it is checked.
+          python3 - "${{ steps.versions.outputs.version }}" <<'PY'
+          import json, sys
+          version = sys.argv[1]
+          m = json.load(open("dist/manifest.json"))
+          assert m["version"] == version, f'manifest says {m["version"]}, tag says {version}'
+          entry = m["platforms"]["linux-x86_64"]
+          assert entry["signature"], "no signature over the target installer"
+          delta = m["delta"]["platforms"]["linux-x86_64"]
+          assert delta["target_version"] == version
+          assert delta["signature"] == entry["signature"], "layers disagree on the signature"
+          assert delta["patches"], "a delta layer with no patches"
+          print(f"manifest describes {version} with {len(delta['patches'])} patch(es)")
+          PY
+
       - name: Upload to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${GITHUB_REF_NAME}" \
-            dist/manifest.json \
-            dist/*.zst \
-            --clobber
+          shopt -s nullglob
+          assets=(dist/*.AppImage dist/*.zst dist/manifest.json)
+          echo "Uploading: ${assets[*]}"
+          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
