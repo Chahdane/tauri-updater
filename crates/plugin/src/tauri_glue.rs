@@ -53,6 +53,25 @@ pub trait UpdateExt {
 /// That crate exists to be driven by hand — it is how the flow is tested without
 /// an app — and pretending otherwise would be a stronger claim than the code
 /// supports.
+///
+/// Both halves are enforced by the compiler rather than by review.
+///
+/// A fabricated identity has nowhere to go, because the plugin no longer
+/// re-exports `UpdateIdentity` and no public entry point accepts one:
+///
+/// ```compile_fail
+/// // error[E0432]: no `UpdateIdentity` in the root
+/// use tauri_plugin_updater_delta::UpdateIdentity;
+/// ```
+///
+/// And the installer cannot be aimed at a different update, because
+/// `TauriInstall` is private and `run_update`'s handoff cannot be named from
+/// outside this crate:
+///
+/// ```compile_fail
+/// // error[E0603]: struct `TauriInstall` is private
+/// use tauri_plugin_updater_delta::TauriInstall;
+/// ```
 pub struct UpdateSession<'a> {
     update: &'a Update,
     identity: UpdateIdentity,

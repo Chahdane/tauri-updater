@@ -94,7 +94,7 @@ impl World {
         UpdateIdentity::new(
             current_version,
             "1.0.1",
-            &platform(),
+            platform(),
             INSTALLER_URL,
             &self.signature,
             &self.manifest_json,
