@@ -252,11 +252,44 @@ Observation, not a demonstrated methodology result: six is a tally from one
 project, with no comparison against how often the assumption would have been
 right. The pattern is worth naming and is not a measurement.
 
-### F19 — A real Tauri application installing a delta update · **UNPROVEN**
+### F19 — A real Tauri application installing a delta update · **PARTIALLY DEMONSTRATED ON MACOS — delta path NOT demonstrated**
 
-The project's largest open claim. No running app has ever received, verified,
-reconstructed and installed a delta update. Every test to date uses a recording
-handoff by design.
+Superseding the previous UNPROVEN entry, but only as far as the evidence goes.
 
-Nothing in Gates A–D substitutes for this, and no green CI run should be read as
-implying it.
+**Demonstrated**, on macOS 26.5.2 arm64, experiment
+`2026-08-13-macos-real-app-e2e`: a real running Tauri app launched, performed a
+real `Updater::check()`, received 1.0.1 from the served superset manifest,
+derived `UpdateIdentity` from that same `Update` via `delta_identity()`, verified
+the downloaded artifact's signature, produced a `VerifiedArtifact`, reached the
+real `Update::install()`, and left the installed main binary **byte-identical to
+the expected 1.0.1 binary** (`ab689afd…` → `7b4069ca…`). No fake handoff was
+used at any point.
+
+**Not demonstrated:** the delta path itself. The flow selected **Full**, not
+Delta, so no patch was downloaded, reconstructed or installed in a real app.
+
+*Root cause, found by this experiment:* `Update.target` is `updater_os()` alone —
+`"darwin"` — not `"{os}-{arch}"`. The architecture is appended only inside
+`get_urls` for its local search and never reaches the field
+(`updater.rs:403`). Gate A binds delta lookup to `identity.target()`, so
+`patch_for("darwin", "1.0.0")` matched nothing and fell back with
+`reason: None`. Confirmed at runtime, not merely read from source.
+
+This is a genuine architectural incompatibility between our assumption and
+upstream's behaviour, and it is exactly what an integration proof is for. **No
+fix is included in this experiment's branch.**
+
+### F20 — The macOS `.app.tar.gz` ratio, measured with full provenance · **STRONG OBSERVATION**
+
+The same run measured a patch of 3,878,953 bytes against a 4,072,303-byte target
+— **95.25%** — for two real bundles built by the actual Tauri pipeline from a
+string-only source change.
+
+This is the first ratio in the project with complete provenance (commit,
+toolchain, artifact hashes, build command), and it is consistent with F11.
+
+Still a **strong observation**, not a demonstration of the *cause*: it is one
+pair, on one platform, patching the compressed representation, and no controlled
+comparison against the uncompressed tar layer was run. F13 remains a hypothesis.
+Note also that no client consumed this patch in the run — it was measured at
+generation time, because the client took the full path.
