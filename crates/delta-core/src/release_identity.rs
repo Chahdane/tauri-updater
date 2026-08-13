@@ -718,7 +718,8 @@ mod tests {
     #[test]
     fn each_field_is_compared_and_reported_by_name() {
         let id = identity();
-        let cases: Vec<(&str, Box<dyn Fn() -> Result<(), IdentityError>>)> = vec![
+        type Case = (&'static str, Box<dyn Fn() -> Result<(), IdentityError>>);
+        let cases: Vec<Case> = vec![
             (
                 "app",
                 Box::new(|| {
