@@ -76,13 +76,13 @@ So when a merge touches `DECISIONS.md`:
 1. Keep **both** sides. A decision that was worth recording does not stop being
    worth recording because someone else numbered one first.
 2. Renumber the newer set, preferring to move whichever has **fewer inbound
-   references** — check with `grep -rn 'DECISIONS[^ ]* #N' crates/ docs/ README.md`.
+   references** — check with `grep -rn 'DECISIONS[^ ]* #N' crates/ docs/ examples/ README.md`.
 3. Walk **every** cross-reference against its new target before pushing:
 
    ```sh
    for n in $(grep -oE '^## [0-9]+' docs/DECISIONS.md | grep -oE '[0-9]+'); do
      printf '#%-3s %s\n' "$n" "$(grep -m1 "^## $n\." docs/DECISIONS.md)"
-     grep -rn "DECISIONS[^ ]* #$n\b" crates/ docs/ README.md 2>/dev/null | sed 's/^/      /'
+     grep -rn "DECISIONS[^ ]* #$n\b" crates/ docs/ examples/ README.md 2>/dev/null | sed 's/^/      /'
    done
    ```
 

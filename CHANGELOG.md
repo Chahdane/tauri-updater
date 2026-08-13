@@ -100,3 +100,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Breaking: `plan_update` takes a `Limits`; `Context` gains a `limits` field;
 `HttpFetch::builder()` replaces direct construction for non-default policy.
+
+### Gate C — release tooling
+
+- **`delta-release --version` renamed to `--target-version`.** The old name
+  collided with clap's own flag, which made every invocation of a debug build
+  panic — including `--help`. `tests/cli.rs` now runs the real executable.
+- **The release workflow's tag path works.** It previously required four
+  environment variables nothing set, so every tag push failed immediately. It now
+  builds the AppImage, resolves and downloads the previous release, generates the
+  patch and manifest, validates the manifest against the tag, and uploads.
+- **Compatibility narrowed to what was verified.** `tauri-plugin-updater` is
+  `>=2.10.1, <2.11.0`, enforced by a test that reads the resolved version from
+  `Cargo.lock` and names the six upstream behaviours to re-read before widening.
+
+Breaking: `--version` is now `--target-version`.

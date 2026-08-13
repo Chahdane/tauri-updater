@@ -22,7 +22,19 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | `PatchBackend` trait + zstd backend | Working, tested |
 | Release manifest (Tauri superset) | Working, tested |
 | `delta-release` patch + manifest tool | Working, tested |
-| Tauri plugin + install handoff | Planned |
+| Tauri plugin + install handoff | Working, tested — no real-app proof yet |
+
+### Compatibility
+
+| Dependency | Supported | Why |
+| --- | --- | --- |
+| `tauri-plugin-updater` | `>=2.10.1, <2.11.0` | Every security claim was verified by reading 2.10.1's source. See [DECISIONS #21](docs/DECISIONS.md). |
+| `tauri` | `2` | No claim here rests on reading its source. |
+
+The narrow updater range is deliberate. Six behaviours this plugin's safety
+depends on are observations about upstream's implementation rather than
+guarantees of its API, so the range covers what has been read, not what might
+work.
 
 The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
 [SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
