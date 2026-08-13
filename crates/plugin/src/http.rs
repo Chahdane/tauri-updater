@@ -208,13 +208,14 @@ fn is_timeout(error: &std::io::Error) -> bool {
         .is_some_and(|e| e.is_timeout())
 }
 
-/// Apply the transport policy to one URL.
+/// Apply the transport policy to one URL, at a given strictness.
 ///
-/// Mirrors `tauri-plugin-updater`'s `validate_endpoints` step for step: allowed
-/// outright when the caller opted in, warned-but-allowed in a development build,
-/// and refused in a release build. Matching it means a project configured for
-/// one is configured for both.
-fn scheme_allowed(url: &str, insecure: bool) -> std::result::Result<(), String> {
+/// Split from [`scheme_allowed`] so the release-build rule is reachable from a
+/// debug-build test. Otherwise the only way to assert "release refuses plain
+/// HTTP" would be to run the suite twice under two profiles, and in practice
+/// that means the refusal is never actually exercised — which is the same
+/// failure mode as a test that silently stops running.
+fn scheme_verdict(url: &str, insecure: bool, strict: bool) -> std::result::Result<(), String> {
     if insecure {
         return Ok(());
     }
@@ -224,21 +225,29 @@ fn scheme_allowed(url: &str, insecure: bool) -> std::result::Result<(), String> 
         return Ok(());
     }
 
-    #[cfg(debug_assertions)]
-    {
-        eprintln!(
-            "[WARNING] the update URL {url:?} does not use https. This is allowed \
-             in development but will fail in release builds."
-        );
-        eprintln!("[WARNING] if that is intended, enable dangerous_insecure_transport_protocol");
-        Ok(())
+    if strict {
+        return Err(format!(
+            "refusing to fetch {url:?} over an insecure transport: updates must use \
+             https. If that is intended, enable dangerous_insecure_transport_protocol."
+        ));
     }
 
-    #[cfg(not(debug_assertions))]
-    Err(format!(
-        "refusing to fetch {url:?} over an insecure transport: updates must use \
-         https. If that is intended, enable dangerous_insecure_transport_protocol."
-    ))
+    eprintln!(
+        "[WARNING] the update URL {url:?} does not use https. This is allowed \
+         in development but will fail in release builds."
+    );
+    eprintln!("[WARNING] if that is intended, enable dangerous_insecure_transport_protocol");
+    Ok(())
+}
+
+/// Apply the transport policy to one URL at this build's strictness.
+///
+/// Mirrors `tauri-plugin-updater`'s `validate_endpoints` step for step: allowed
+/// outright when the caller opted in, warned-but-allowed in a development build,
+/// and refused in a release build. Matching it means a project configured for
+/// one is configured for both.
+fn scheme_allowed(url: &str, insecure: bool) -> std::result::Result<(), String> {
+    scheme_verdict(url, insecure, !cfg!(debug_assertions))
 }
 
 impl Fetch for HttpFetch {
@@ -350,24 +359,34 @@ mod tests {
     }
 
     #[test]
-    fn plain_http_follows_the_build_profile() {
-        let verdict = scheme_allowed("http://example.com/a", false);
+    fn a_release_build_refuses_plain_http() {
+        // The load-bearing arm, asserted in whatever profile the suite runs in.
+        let reason = scheme_verdict("http://example.com/a", false, true)
+            .expect_err("release strictness must refuse http");
+        assert!(
+            reason.contains("dangerous_insecure_transport_protocol"),
+            "the refusal must name the opt-in or a developer is stuck: {reason}"
+        );
+    }
 
-        // Matching tauri-plugin-updater exactly: a development build warns and
-        // continues, a release build refuses. Asserting both arms here means the
-        // test states the policy rather than the profile it happened to run in.
-        if cfg!(debug_assertions) {
-            assert!(
-                verdict.is_ok(),
-                "development builds allow http with a warning, as upstream does"
-            );
-        } else {
-            let reason = verdict.expect_err("release builds must refuse http");
-            assert!(
-                reason.contains("dangerous_insecure_transport_protocol"),
-                "the refusal must name the opt-in or a developer is stuck: {reason}"
-            );
-        }
+    #[test]
+    fn a_development_build_warns_but_allows_plain_http() {
+        // Matching upstream, so `cargo run` against a local server keeps working.
+        assert!(scheme_verdict("http://127.0.0.1:8080/a", false, false).is_ok());
+    }
+
+    #[test]
+    fn the_opt_in_beats_release_strictness() {
+        assert!(scheme_verdict("http://example.com/a", true, true).is_ok());
+    }
+
+    #[test]
+    fn this_build_uses_its_own_profile_strictness() {
+        // Guards the wiring between the pure rule and the cfg! that selects it.
+        assert_eq!(
+            scheme_allowed("http://example.com/a", false).is_ok(),
+            cfg!(debug_assertions)
+        );
     }
 
     #[test]
