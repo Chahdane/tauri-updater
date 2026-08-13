@@ -92,6 +92,19 @@ pub enum Error {
         actual: u64,
     },
 
+    /// The manifest declared a target larger than this host will attempt.
+    ///
+    /// Distinct from [`Error::OutputTooLarge`], which is about a patch
+    /// exceeding what the manifest promised. This one is about the *promise*
+    /// being unreasonable, and it is checked before anything is downloaded.
+    #[error("manifest declares a {declared} byte target, over the {limit} byte local limit")]
+    DeclaredSizeTooLarge {
+        /// Size the manifest asked for.
+        declared: u64,
+        /// Local ceiling that refused it.
+        limit: u64,
+    },
+
     /// A manifest was malformed, unsupported, or internally inconsistent.
     #[error("invalid manifest: {0}")]
     Manifest(String),
