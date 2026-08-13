@@ -9,7 +9,7 @@
 # POST-CODEX HARDENING AUDIT
 
 **Started:** 2026-08-12
-**Status:** Gates A and B complete. Gates C and D not started.
+**Status:** Gates A, B and C complete. Gate D not started.
 
 An independent adversarial audit (Codex, given the repository cold and told to
 challenge the architecture rather than agree with it) found the prototype
@@ -129,11 +129,25 @@ fixing:
   the property `.part` actually buys: a failed download must not destroy the
   artifact already at that path.
 
-## Gate C — concrete defects
+## Gate C — concrete defects ✅
 
-- [ ] 9. Rename the CLI's `--version` to `--target-version`, test the real binary
-- [ ] 10. Release workflow: make external assumptions explicit or supply them
-- [ ] 11. Honest Tauri compatibility range
+- [x] 9. `--version` → `--target-version`, with `tests/cli.rs` running the real
+      executable in debug. Six tests, all of which fail if the collision returns.
+- [x] 10. The tag path derives everything it needs — builds the AppImage, finds
+      the previous release, downloads its artifact, generates and checks the
+      manifest before upload. Remaining manual prerequisites are listed in the
+      workflow header. The rehearsal now runs the CLI tests and the
+      release-to-client loop instead of `--help`.
+- [x] 11. `tauri-plugin-updater` narrowed to `>=2.10.1, <2.11.0`, enforced by
+      `tests/upstream_compat.rs` reading the resolved version out of `Cargo.lock`.
+
+### Mutation evidence
+
+| Guard disabled | Killed |
+| --- | --- |
+| CLI argument collision reintroduced | **6** |
+| Version requirement widened to `"2"` | 1 |
+| Verified-version list made stale | 1 |
 
 ## Gate D — truthfulness
 
