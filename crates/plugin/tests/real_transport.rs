@@ -457,22 +457,34 @@ fn a_redirect_is_followed_within_the_budget() {
 }
 
 #[test]
-fn a_redirect_loop_stops_at_the_budget() {
+fn a_chain_longer_than_the_budget_is_refused() {
+    // A finite chain rather than a self-loop, deliberately. A loop would also
+    // prove the point, but with the budget removed the test would hang instead
+    // of failing — and a test that hangs under mutation cannot be used as
+    // evidence that the guard is load-bearing.
     let (server, dir) = transport_fixture();
-    // Points at itself: without a budget this never terminates.
-    server.set("/loop", Route::Redirect(server.url("/loop")));
+    const HOPS: usize = 8;
+    server.serve("/hop8", b"should never be reached".to_vec());
+    for i in 0..HOPS {
+        server.set(
+            &format!("/hop{i}"),
+            Route::Redirect(server.url(&format!("/hop{}", i + 1))),
+        );
+    }
+    let out = dir.path().join("out");
 
     let err = test_fetch()
         .max_redirects(3)
         .build()
         .expect("build")
-        .fetch(&server.url("/loop"), &dir.path().join("out"))
-        .expect_err("a redirect loop must not be followed forever");
+        .fetch(&server.url("/hop0"), &out)
+        .expect_err("a chain past the budget must be refused");
 
     assert!(
         err.contains("redirect"),
         "the error should name the redirect budget: {err}"
     );
+    assert!(!out.exists(), "nothing may be written for a refused chain");
 }
 
 #[test]
@@ -571,5 +583,31 @@ fn a_failed_download_leaves_nothing_at_the_destination() {
     assert!(
         !out.with_extension("part").exists(),
         "the partial file must be cleaned up too"
+    );
+}
+
+#[test]
+fn a_failed_download_does_not_destroy_the_file_it_would_have_replaced() {
+    // What the .part file actually buys, which "nothing is left behind" does not
+    // distinguish: writing straight to the destination and deleting it on error
+    // also leaves nothing behind — but it has already truncated whatever was
+    // there. A cached artifact from a previous update is exactly what sits at
+    // that path, and losing it turns a failed download into a lost base.
+    let (server, dir) = transport_fixture();
+    server.set("/truncated", Route::Truncated(vec![b'x'; 8192]));
+
+    let out = dir.path().join("cached.artifact");
+    std::fs::write(&out, b"the artifact we already had").expect("seed the cache");
+
+    let result = test_fetch()
+        .build()
+        .expect("build")
+        .fetch(&server.url("/truncated"), &out);
+
+    assert!(result.is_err(), "a truncated body must be an error");
+    assert_eq!(
+        std::fs::read(&out).expect("the previous artifact must survive"),
+        b"the artifact we already had",
+        "a failed download overwrote the file it was meant to replace"
     );
 }
