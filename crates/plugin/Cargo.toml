@@ -10,12 +10,20 @@ repository.workspace = true
 
 [dependencies]
 tauri = "2"
-tauri-plugin-updater = "2"
+# Narrowed deliberately. Every security-relevant claim this plugin makes was
+# verified by reading 2.10.1's source: that `Update::install` does not verify,
+# that `verify_signature` is called from exactly one place, that `raw_json`
+# retains the fetched document, that `get_urls` searches installer-specific
+# target keys first, and what `validate_endpoints` does about http. A caret
+# range would let any of those change under us while CI stayed green.
+# See docs/DECISIONS.md #21.
+tauri-plugin-updater = ">=2.10.1, <2.11.0"
 tauri-updater-delta-core.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 thiserror.workspace = true
 
 [dev-dependencies]
+semver.workspace = true
 tauri-updater-delta-fixtures.workspace = true
 tauri-updater-delta-release.workspace = true
 minisign.workspace = true
