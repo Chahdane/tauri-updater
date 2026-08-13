@@ -8,13 +8,17 @@
 //! and abort an install.
 //!
 //! A patch is untrusted input, so a successful decompression proves nothing on
-//! its own. Three gates stand between a patch and an install:
+//! its own. Four gates stand between a patch and an install:
 //!
-//! 1. **Size** — the manifest declares the target installer's length, which also
+//! 1. **Local ceiling** — the host's own `Limits::max_target_bytes`, checked
+//!    before anything is downloaded. The three gates below all take the
+//!    manifest's word for the target's size; this one does not, which is why it
+//!    has to come first. See [`crate::limits`].
+//! 2. **Size** — the manifest declares the target installer's length, which also
 //!    bounds the memory zstd may allocate before decompression begins.
-//! 2. **Digest** — the reconstruction must hash to the value the release process
+//! 3. **Digest** — the reconstruction must hash to the value the release process
 //!    published.
-//! 3. **Signature** — verified by the caller against the same minisign key
+//! 4. **Signature** — verified by the caller against the same minisign key
 //!    Tauri's own updater uses, over that same artifact.
 //!
 //! Failing any of them costs a wasted download, never a broken install.

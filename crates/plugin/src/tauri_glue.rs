@@ -87,6 +87,13 @@ pub struct Config {
     ///
     /// This is a superset of Tauri's own updater manifest, so it can be the same
     /// URL the official updater is already pointed at.
+    ///
+    /// **Currently stored and never read.** Before `docs/DECISIONS.md` #13 the
+    /// flow fetched this URL itself; it now reads the release document out of
+    /// `Update::raw_json`, so nothing consults this value. It is kept — and
+    /// still required by [`Builder::build`] — rather than removed, because
+    /// changing the registration API belongs to the developer-experience phase.
+    /// Recorded here so the next reader does not assume it is load-bearing.
     pub manifest_url: String,
 }
 
