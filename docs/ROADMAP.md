@@ -47,32 +47,47 @@ the Tauri-superset manifest, a dry-runnable `release.yml`, and an end-to-end tes
 where a client reaches a verified artifact from the generated manifest alone.
 Wiring the workflow to real bundler output waits for the Phase 3 example app.
 
-## Phase 3 — Client happy path
+## Phase 3 — Client happy path — mostly built, exit criteria NOT met
 
-First end-to-end delta update, on Linux/AppImage.
+- [x] Tauri plugin crate wrapping `tauri-plugin-updater`.
+- [x] Patch selection, download, apply, verify. **Manifest fetch was removed
+      rather than built**: the release document now comes from Tauri's own check
+      (DECISIONS #13), which is a stronger position than the one planned here.
+- [ ] Base-artifact caching after a successful update. Still supplied by the
+      harness rather than by the plugin.
+- [x] Install handoff adapter, via `TauriInstall` over `Update::install`.
+- [x] Example app, in `examples/desktop-app`.
 
-- Tauri plugin crate wrapping `tauri-plugin-updater`.
-- Manifest fetch, patch selection, download, apply, verify.
-- Base-artifact caching after a successful update.
-- Install handoff adapter for AppImage.
-- Example app demonstrating the update.
+*Exit criteria:* **not met.** An AppImage app updating itself from a patch has
+never been observed. Every test to date uses a recording handoff by design, so
+nothing green so far substitutes for it. This is the project's single largest
+open claim.
 
-*Exit criteria:* an AppImage app updates itself from a patch, verified in CI
-containers.
+## Phase 4 — Robustness and security — largely delivered by the hardening sprint
 
-## Phase 4 — Robustness and security
+Most of this was brought forward by the post-Codex audit (see `SPRINT.md`).
 
-Make it safe to depend on.
+- [x] Full-download fallback wired into every failure path, with tests forcing
+      each failure.
+- [x] Bounded decompression, and a **local** ceiling on the declared target size
+      that the update server cannot influence (DECISIONS #19).
+- [x] Concurrency: one workspace per update (DECISIONS #18).
+- [x] Interrupted-update handling: downloads and reconstructions build into
+      `.part` files promoted by rename only after passing their checks.
+- [x] Transport bounds: HTTPS policy, redirect budget, request deadline,
+      response-size caps.
+- [x] Update identity, downgrade and replay policy (DECISIONS #13, #14) — not
+      originally planned for this phase, and the most important thing in it.
+- [ ] Resume and retry for interrupted patch downloads. Not built; a failed
+      patch download falls back to a full download instead.
+- [ ] Fuzzing the apply path against malformed patches. Assessed and deferred —
+      see the research ledger for why ordinary unit tests are not a substitute.
+- [ ] Disk-space checks before writing.
 
-- Full-download fallback wired into every failure path, with tests that force
-  each failure.
-- Bounded decompression; disk-space checks before writing.
-- Resume and retry for interrupted patch downloads.
-- Fuzzing the apply path against malformed patches.
-- Concurrency and interrupted-update handling.
-
-*Exit criteria:* every error variant has a test proving the update still
-completes via full download.
+*Exit criteria:* partially met. Every error variant has a test proving the update
+still completes via full download, **except** the two that deliberately refuse
+rather than fall back: a signature failure (#11) and a version-policy or identity
+violation (#14).
 
 ## Phase 5 — Developer experience
 

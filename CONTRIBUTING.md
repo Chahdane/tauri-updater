@@ -16,28 +16,50 @@ arguing with the design before it hardens.
 
 ## Getting set up
 
-You need a recent stable Rust toolchain (1.85 or newer — see
-[docs/DECISIONS.md](docs/DECISIONS.md) for why the floor sits there):
+You need Rust **1.88 or newer**. The floor moved from 1.85 when `tauri` entered
+the workspace and its dependency tree raised it — see
+[docs/DECISIONS.md](docs/DECISIONS.md) #12. CI reads `rust-version` from
+`Cargo.toml`, so that field is the authority.
 
 ```sh
 git clone git@github.com:Chahdane/tauri-updater.git
 cd tauri-updater
-cargo test
+cargo test --workspace --all-features --locked
 ```
 
-There are no system dependencies and no network access required for the test
-suite. Test fixtures are generated deterministically rather than downloaded, so
-everything runs offline and produces identical results on every machine.
+**On Linux you need system libraries.** `tauri` pulls in `wry` and then
+`webkit2gtk-sys`, which runs `pkg-config` at build time, so the workspace does
+not compile without them:
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libayatana-appindicator3-dev librsvg2-dev
+```
+
+macOS and Windows need nothing extra. (This section previously claimed the
+project had no system dependencies at all. That stopped being true when the
+plugin crate gained its `tauri` dependency.)
+
+No network access is required. Test fixtures are generated deterministically
+rather than downloaded, so everything runs offline and produces identical
+results on every machine.
 
 ## Before opening a PR
 
-All three of these run in CI and must pass:
+These are the commands CI runs, verbatim. `--locked` matters: a lock file that
+has drifted from `Cargo.toml` fails every job, which is how `main` was once red
+on all five at once.
 
 ```sh
-cargo fmt --all
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all
+cargo fmt --all --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 ```
+
+CI additionally re-runs two assertions **by name** and fails if they did not
+execute — the cross-platform determinism test with its exact BLAKE3 digest, and
+both `compile_fail` forgery doctests. A green suite is not by itself proof that a
+load-bearing test still runs.
 
 ## Branching and commits
 
@@ -76,13 +98,13 @@ So when a merge touches `DECISIONS.md`:
 1. Keep **both** sides. A decision that was worth recording does not stop being
    worth recording because someone else numbered one first.
 2. Renumber the newer set, preferring to move whichever has **fewer inbound
-   references** — check with `grep -rn 'DECISIONS[^ ]* #N' crates/ docs/ examples/ README.md`.
+   references** — check with `grep -rn 'DECISIONS[^ ]* #N' crates/ docs/ examples/ research/ README.md CONTRIBUTING.md`.
 3. Walk **every** cross-reference against its new target before pushing:
 
    ```sh
    for n in $(grep -oE '^## [0-9]+' docs/DECISIONS.md | grep -oE '[0-9]+'); do
      printf '#%-3s %s\n' "$n" "$(grep -m1 "^## $n\." docs/DECISIONS.md)"
-     grep -rn "DECISIONS[^ ]* #$n\b" crates/ docs/ examples/ README.md 2>/dev/null | sed 's/^/      /'
+     grep -rn "DECISIONS[^ ]* #$n\b" crates/ docs/ examples/ research/ README.md CONTRIBUTING.md 2>/dev/null | sed 's/^/      /'
    done
    ```
 
