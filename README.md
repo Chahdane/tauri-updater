@@ -24,6 +24,28 @@ Implements the request in [tauri-apps/tauri#11863](https://github.com/tauri-apps
 | `delta-release` patch + manifest tool | Working, tested |
 | Tauri plugin + install handoff | Working, tested — no real-app proof yet |
 
+### What is actually proven
+
+Kept deliberately conservative. The distinction between "tested" and "proven in a
+real app" is the whole difference between this being a research prototype and
+something to ship, and it is not yet resolved.
+
+| Claim | Status |
+| --- | --- |
+| Exact reconstruction on tested fixtures | **Supported** |
+| Signature-verifier compatibility with `tauri-plugin-updater` 2.10.1 | **Supported** |
+| `VerifiedArtifact` capability boundary (unverified bytes cannot reach install) | **Supported** |
+| Downgrade, replay and update-identity refusal | **Supported** |
+| Transport bounds: HTTPS, redirects, timeouts, size caps | **Supported** |
+| Cross-platform deterministic patch generation | Partially — controlled fixtures only |
+| Linux support | Partially — engine tested, no real-app install |
+| macOS support | Partially — see [DECISIONS #15](docs/DECISIONS.md) on the tar layer |
+| Network failure handling and full-download fallback | Partially |
+| **A real running Tauri app installing a delta update** | **Unproven** |
+| Windows real-app support | **Unproven** |
+| Production readiness | **Unproven** |
+| Deterministic macOS recompression | **Unproven** |
+
 ### Compatibility
 
 | Dependency | Supported | Why |
@@ -35,6 +57,10 @@ The narrow updater range is deliberate. Six behaviours this plugin's safety
 depends on are observations about upstream's implementation rather than
 guarantees of its API, so the range covers what has been read, not what might
 work.
+
+Measurements and the claims they do or do not support are tracked in
+[research/FINDINGS.md](research/FINDINGS.md), classified so that a plausible
+observation cannot become a stated fact by repetition.
 
 The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
 [SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
@@ -174,28 +200,59 @@ downloaded it whole. Run the tool once per upgrade path you want to support;
 repeated runs against the same version add to the manifest rather than replacing
 it. Pass `--dry-run` to see the manifest without writing it.
 
-## Configuration
+## Usage
 
-The intended API, for orientation. **This does not exist yet** — it is recorded
-here so the design can be argued with before it is built.
+This is the real API, taken from `examples/desktop-app/src/update.rs` and kept
+honest by that example being a workspace member — it cannot drift without the
+build breaking.
+
+Registration is ordinary Tauri:
 
 ```rust
 fn main() {
     tauri::Builder::default()
         // The official updater is still the one that installs.
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // This plugin makes its download smaller when it can.
-        .plugin(
-            tauri_plugin_updater_delta::Builder::new()
-                .patch_manifest_url(
-                    "https://releases.example.com/{{target}}/{{arch}}/patches.json",
-                )
-                .build(),
-        )
+        .plugin(tauri_plugin_updater_delta::Builder::new()
+            .manifest_url("https://releases.example.com/manifest.json")
+            .build()
+            .expect("configuring the delta updater"))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 ```
+
+Running an update — note that the release comes from Tauri's own check, and this
+plugin never fetches a manifest of its own:
+
+```rust
+use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater_delta::{flow::{run_update, Context}, HttpFetch, Limits,
+                                 TauriInstall, UpdateExt};
+
+let Some(update) = app.updater()?.check().await? else { return Ok(()) };
+
+let outcome = run_update(
+    // One line, and it is the whole trust argument: the release installed is
+    // the release Tauri checked, because it is the same object.
+    &update.delta_identity(),
+    &Context { pubkey: &pubkey, base: cached.as_deref(), work_dir: &work_dir,
+               limits: Limits::default() },
+    &HttpFetch::new()?,
+    &TauriInstall::new(&update),
+)?;
+```
+
+### Known rough edge
+
+`Builder::manifest_url` is **required but unused**. Before the single-fetch
+change ([DECISIONS #13](docs/DECISIONS.md)) the plugin fetched that URL itself;
+it now reads the release document out of `Update::raw_json`, so nothing consults
+the stored value — yet `build()` still fails without it.
+
+That is a real wart, documented rather than quietly fixed because removing it is
+an API change belonging to the developer-experience phase, not to a
+documentation pass. Set it to the same URL as your updater endpoint.
 
 ## Privacy
 
