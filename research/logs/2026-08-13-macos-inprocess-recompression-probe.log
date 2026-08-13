@@ -1,0 +1,51 @@
+IN-PROCESS RECOMPRESSION FEASIBILITY PROBE
+==========================================
+
+Question: can the plugin, in-process, gzip the exact official tar back to the
+byte-exact official .app.tar.gz? This is the gate for the tar-layer strategy,
+because the minisign signature covers the compressed artifact and Update::install
+consumes it.
+
+The controlled tar-layer experiment established exact recompression only by
+running the installed cargo-tauri 2.10.1 binary over an extracted tree. Its own
+scope section lists "standalone raw-tar recompression stability" as NOT
+established. A shipped plugin cannot invoke the bundler, so that gap is decisive.
+
+Input:  /private/tmp/delta-e2e-build/v1.0.1/DeltaUpdaterExample.app.tar.gz
+        official compressed artifact, 4070756 bytes
+        exact tar via gzip -dc, 9461248 bytes
+
+Method: flate2::write::GzEncoder::new(Vec::new(), Compression::default()),
+        single write_all of the exact tar, finish(), compare to official.
+        This mirrors tauri-bundler's documented create_tar construction.
+
+Results:
+  flate2 1.1.9 + zlib-rs 0.6.7      candidate 4070510  DIFFERENT at byte 47
+  flate2 1.1.9 + zlib-rs 0.6.3      candidate 4070510  DIFFERENT at byte 47
+    (0.6.3 is the exact version the controlled experiment identified)
+  flate2 1.1.9 + system zlib (C)    candidate 4070510  DIFFERENT at byte 47
+  flate2 1.1.9 + miniz_oxide 0.8.9  candidate 4070510  DIFFERENT at byte 47
+
+Observations:
+  - All four backends produce byte-identical output to each other.
+  - All four differ from the official at the same offset, byte 47, which is
+    37 bytes into the DEFLATE stream. The 10-byte gzip header matches
+    (1f 8b 08 00 00000000 00 ff): mtime 0, XFL 0, OS 255. No filename field.
+  - Every candidate is 246 bytes SHORTER than the official.
+
+Interpretation:
+  The cause is NOT the DEFLATE backend. Four independent implementations agree
+  with each other and disagree with the official at one early offset, and the
+  official is consistently larger. That is the signature of a different
+  write/flush pattern into the encoder rather than a different encoder: a
+  one-shot compression of the whole tar packs marginally better than a stream
+  interrupted at boundaries.
+
+  The likely mechanism is that tauri-bundler writes the tar into the GzEncoder
+  incrementally through tar::Builder as it walks the tree, so DEFLATE sees entry
+  boundaries. HYPOTHESIS, not established: tauri-bundler's source is not vendored
+  here (cargo-tauri is installed as a binary), so the write pattern was not read.
+
+Conclusion:
+  Byte-exact in-process recompression is NOT demonstrated and the obvious recipe
+  does not work. Stop condition triggered.
