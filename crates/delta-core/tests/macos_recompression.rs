@@ -110,7 +110,13 @@ fn rebuilds_a_real_published_app_tar_gz_byte_for_byte() {
         .position(|(a, b)| a != b);
     assert_eq!(
         first_difference, None,
-        "rebuilt artifact diverges from the published one"
+        "rebuilt artifact diverges from the published one.\n\
+         The fixture was produced by tauri-bundler on macOS/aarch64, and this \
+         test runs everywhere. A failure on another platform or another \
+         toolchain would mean the recipe is not portable -- which is \
+         information worth having, because `tauri-app-tar-gz-v1` currently \
+         claims it is. The runtime is unaffected either way: a client whose \
+         rebuild misses this digest falls back to a full download."
     );
     assert_eq!(
         FileHash::of_bytes(&rebuilt).to_hex(),
