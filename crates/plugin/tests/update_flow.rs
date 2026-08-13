@@ -169,6 +169,7 @@ fn run_with(
         &Context {
             pubkey: &w.pubkey,
             base,
+            cache: None,
             work_dir: work,
             limits: Limits::default(),
         },
