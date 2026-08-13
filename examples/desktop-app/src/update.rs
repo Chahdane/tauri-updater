@@ -16,8 +16,8 @@ use std::path::PathBuf;
 
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
-use tauri_plugin_updater_delta::flow::{run_update, Context, Outcome};
-use tauri_plugin_updater_delta::{HttpFetch, Limits, TauriInstall, UpdateExt};
+use tauri_plugin_updater_delta::flow::{Context, Outcome};
+use tauri_plugin_updater_delta::{HttpFetch, Limits, UpdateExt};
 use tauri_updater_delta_core::cache::{
     ArtifactCache, CacheEntry, CacheLimits, Namespace, Reconciliation,
 };
@@ -219,23 +219,23 @@ pub fn run<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     let base = base_artifact();
     let cache = open_cache(app, &pubkey);
 
-    let outcome = run_update(
-        // One line, and it is the entire trust argument: the release we install
-        // is the release Tauri checked, because it is the same object.
-        &update.delta_identity(),
-        &Context {
-            pubkey: &pubkey,
-            base: base.as_deref(),
-            cache: cache.as_ref(),
-            work_dir: &work_dir,
-            limits: Limits::default(),
-        },
-        &fetch,
-        // The real seam. Everything before this produced a VerifiedArtifact;
-        // this hands it to the official updater's own install step.
-        &TauriInstall::new(&update),
-    )
-    .map_err(|e| format!("update failed: {e}"))?;
+    // One line, and it is the entire trust argument: the session holds the
+    // checked Update, derives its identity from that, and installs through that
+    // same Update. There is no second object for any of them to disagree with.
+    let outcome = update
+        .delta_session()
+        .install(
+            &Context {
+                pubkey: &pubkey,
+                base: base.as_deref(),
+                cache: cache.as_ref(),
+                app_id: &app.config().identifier,
+                work_dir: &work_dir,
+                limits: Limits::default(),
+            },
+            &fetch,
+        )
+        .map_err(|e| format!("update failed: {e}"))?;
 
     Ok(match outcome {
         // Distinct strings, because the harness asserts on which path ran. A

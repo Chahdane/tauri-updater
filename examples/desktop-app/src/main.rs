@@ -40,11 +40,12 @@ fn main() {
         // The official updater still owns checking and installing.
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Ours makes the download smaller when it can.
+        // No configuration: the flow reads the release document out of the
+        // response Tauri's own check already made.
         .plugin(
             tauri_plugin_updater_delta::Builder::new()
-                .manifest_url(update::manifest_url())
                 .build()
-                .expect("the delta plugin needs a manifest URL"),
+                .expect("registering the delta plugin"),
         );
 
     // Reconciliation runs on every launch, feature or not: it is how the cache

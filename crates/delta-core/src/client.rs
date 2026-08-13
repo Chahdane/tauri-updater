@@ -72,6 +72,13 @@ pub struct PlanContext<'a> {
     /// Scratch directory. Each update gets its own subdirectory inside it.
     pub work_dir: &'a Path,
 
+    /// Application bundle identifier, as in `tauri.conf.json`'s `identifier`.
+    ///
+    /// Compared against the identity the signature authenticates, so an artifact
+    /// belonging to a different application signed with the same key is refused
+    /// rather than installed.
+    pub app_id: &'a str,
+
     /// Local ceilings on what a manifest may ask this host to do.
     pub limits: Limits,
 }
@@ -252,6 +259,40 @@ pub fn plan_update(
 
     let mut attempted = Attempted::default();
 
+    // The release identity the signature carries. Read here *unverified*, and
+    // used in one direction only: to refuse, or to make the delta paths
+    // unavailable. Never to authorise. The authoritative check runs after
+    // verification, on VerifiedArtifact::binding.
+    let binding = match crate::signature::advisory_binding(identity.signature()) {
+        Ok(binding) => binding,
+        Err(e) => {
+            return UpdateSource::Refused {
+                reason: Refusal::ReleaseIdentity {
+                    reason: e.to_string(),
+                },
+            }
+        }
+    };
+    if let Some(signed) = binding.identity() {
+        // Everything checkable without the bytes. The digest and size are
+        // compared against what the *manifest* declares, which catches a
+        // document describing an artifact its own signature contradicts; the
+        // comparison against the bytes themselves happens after verification.
+        if let Err(e) = signed.check(
+            ctx.app_id,
+            identity.version(),
+            &crate::release_identity::current_platform(),
+            &signed.artifact_blake3,
+            signed.artifact_size,
+        ) {
+            return UpdateSource::Refused {
+                reason: Refusal::ReleaseIdentity {
+                    reason: e.to_string(),
+                },
+            };
+        }
+    }
+
     // The full path always uses the URL and signature Tauri selected, never a
     // platform entry this crate looked up for itself.
     let fallback = |reason: Option<Error>, attempted: Attempted| UpdateSource::Full {
@@ -308,9 +349,36 @@ pub fn plan_update(
     // this build does not implement, no patch from this version, a cache that
     // does not hold the right base. Each is an ordinary "not this time".
     let mut last_reason = None;
+    if !binding.permits_delta() {
+        // A legacy signature: valid, and carrying no statement about which
+        // release it is. That is a compatibility condition rather than an
+        // attack, so the full path stays available exactly as a stock Tauri
+        // client would have it -- but the delta paths are ours, and they can
+        // require the stronger property. See docs/DECISIONS.md #27.
+        return fallback(
+            Some(Error::ReleaseIdentity(
+                "the signature carries no authenticated release identity, so the \
+                 delta paths are unavailable; downloading in full"
+                    .to_owned(),
+            )),
+            attempted,
+        );
+    }
     if let Some(cache) = ctx.cache {
         match entry.tar_patch(identity.current_version()) {
             Ok(Some((layer, tar_patch))) => {
+                // The manifest's representation claim is unauthenticated; the
+                // signature's is not. Requiring them to agree is what stops a
+                // document describing an artifact as something it is not.
+                if let Some(signed) = binding.identity() {
+                    if let Err(e) = signed.check_representation(&layer.representation) {
+                        return UpdateSource::Refused {
+                            reason: Refusal::ReleaseIdentity {
+                                reason: e.to_string(),
+                            },
+                        };
+                    }
+                }
                 attempted.tar_delta = true;
                 let mut reason = None;
                 if let Some(space) = workspace(&mut reason) {
@@ -684,6 +752,7 @@ mod tests {
                 base,
                 cache: None,
                 pubkey: "",
+                app_id: APP_ID,
                 work_dir,
                 limits,
             },
@@ -699,7 +768,39 @@ mod tests {
     use std::collections::BTreeMap;
 
     const PLATFORM: &str = "linux-x86_64";
-    const SIGNATURE: &str = "a-signature";
+    const APP_ID: &str = "dev.example.testapp";
+
+    /// A real signature over `path`, carrying a real authenticated identity.
+    ///
+    /// These tests used a placeholder string here. They cannot any more: the
+    /// planner reads the release identity out of the signature, so a fixture
+    /// that is not a signature is correctly refused. Signing for real also means
+    /// every test below now exercises the actual wire format rather than a
+    /// stand-in for it.
+    fn sign(key: &minisign::KeyPair, path: &Path, version: &str, representation: &str) -> String {
+        use base64::Engine as _;
+        let identity = crate::release_identity::ReleaseIdentity {
+            app_id: APP_ID.to_owned(),
+            version: version.to_owned(),
+            platform: crate::release_identity::current_platform(),
+            representation: representation.to_owned(),
+            artifact_blake3: FileHash::of_file(path).expect("hash").to_hex(),
+            artifact_size: std::fs::metadata(path).expect("stat").len(),
+            signed_at: 1_786_637_312,
+        };
+        let file = std::fs::File::open(path).expect("open to sign");
+        base64::engine::general_purpose::STANDARD.encode(
+            minisign::sign(
+                None,
+                &key.sk,
+                file,
+                Some(&identity.to_trusted_comment()),
+                None,
+            )
+            .expect("sign")
+            .into_string(),
+        )
+    }
     const FULL_URL: &str = "https://example.com/full.bin";
 
     /// Serves canned bytes, and can be told to fail.
@@ -724,6 +825,9 @@ mod tests {
         base: PathBuf,
         released: PathBuf,
         patch_url: String,
+        /// The real signature over `released`, with its authenticated identity.
+        signature: String,
+        key: minisign::KeyPair,
     }
 
     impl Fixture {
@@ -764,6 +868,10 @@ mod tests {
         let patch_bytes = std::fs::read(&patch).expect("read patch");
         let patch_url = "https://example.com/update.patch".to_owned();
 
+        let key = minisign::KeyPair::generate_encrypted_keypair(Some(String::new()))
+            .expect("generate keypair");
+        let signature = sign(&key, &new, "1.0.1", "opaque-v1");
+
         let manifest = Manifest {
             version: "1.0.1".to_owned(),
             notes: None,
@@ -772,7 +880,7 @@ mod tests {
                 PLATFORM.to_owned(),
                 TauriPlatform {
                     url: FULL_URL.to_owned(),
-                    signature: SIGNATURE.to_owned(),
+                    signature: signature.clone(),
                 },
             )]),
             delta: Some(DeltaLayer {
@@ -786,7 +894,7 @@ mod tests {
                             .expect("hash new")
                             .to_hex(),
                         target_installer_size: new_bytes.len() as u64,
-                        signature: SIGNATURE.to_owned(),
+                        signature: signature.clone(),
                         patches: BTreeMap::from([(
                             "1.0.0".to_owned(),
                             Patch {
@@ -813,6 +921,8 @@ mod tests {
             },
             base: old,
             released: new,
+            signature,
+            key,
             patch_url,
         }
     }
@@ -855,7 +965,7 @@ mod tests {
             panic!("expected a delta, got {source:?}");
         };
 
-        assert_eq!(signature, SIGNATURE);
+        assert_eq!(signature, f.signature);
         assert!(downloaded < would_have_downloaded);
 
         // And it really is the released artifact.
@@ -914,7 +1024,7 @@ mod tests {
         };
         assert!(reason.is_none());
         assert_eq!(url, FULL_URL, "the full URL must be Tauri's selection");
-        assert_eq!(signature, SIGNATURE);
+        assert_eq!(signature, f.signature);
     }
 
     #[test]
@@ -924,7 +1034,14 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
 
+        // Re-sign as 9.9.9. The signature authenticates the version now, so a
+        // manifest edited to claim a different release without re-signing is
+        // correctly refused -- which is the whole point, and makes this fixture
+        // have to be a real 9.9.9 release rather than a relabelled 1.0.1.
         f.manifest.version = "9.9.9".to_owned();
+        f.signature = sign(&f.key, &f.released, "9.9.9", "opaque-v1");
+        f.manifest.platforms.get_mut(PLATFORM).unwrap().signature = f.signature.clone();
+        let signature = f.signature.clone();
         let entry = f
             .manifest
             .delta
@@ -934,6 +1051,7 @@ mod tests {
             .get_mut(PLATFORM)
             .unwrap();
         entry.target_version = "9.9.9".to_owned();
+        entry.signature = signature;
         let patch = entry.patches.remove("1.0.0").expect("fixture patch");
         entry.patches.insert("0.2.0".to_owned(), patch);
 
@@ -1041,11 +1159,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
 
+        // A second, genuinely signed entry. Minisign includes randomness, so
+        // signing the same artifact again yields different signature bytes --
+        // which is exactly the shape this test needs, and it has to be a real
+        // signature now that the planner reads one.
+        let appimage_signature = sign(&f.key, &f.released, "1.0.1", "opaque-v1");
         f.manifest.platforms.insert(
             "linux-x86_64-appimage".to_owned(),
             TauriPlatform {
                 url: "https://example.com/real.AppImage".to_owned(),
-                signature: "the-appimage-signature".to_owned(),
+                signature: appimage_signature.clone(),
             },
         );
 
@@ -1056,7 +1179,7 @@ mod tests {
             &f.manifest.version,
             PLATFORM,
             "https://example.com/real.AppImage",
-            "the-appimage-signature",
+            &appimage_signature,
             f.manifest.to_json().expect("serialize"),
         );
 
@@ -1076,7 +1199,7 @@ mod tests {
             panic!("expected a full download, got {source:?}");
         };
         assert_eq!(url, "https://example.com/real.AppImage");
-        assert_eq!(signature, "the-appimage-signature");
+        assert_eq!(signature, appimage_signature);
     }
 
     #[test]
@@ -1096,7 +1219,7 @@ mod tests {
             &f.manifest.version,
             "darwin",
             "https://cdn.example.com/selected-by-tauri.AppImage",
-            SIGNATURE,
+            &f.signature,
             f.manifest.to_json().expect("serialize"),
         );
 
@@ -1110,7 +1233,7 @@ mod tests {
             panic!("expected a full download");
         };
         assert_eq!(url, "https://cdn.example.com/selected-by-tauri.AppImage");
-        assert_eq!(signature, SIGNATURE);
+        assert_eq!(signature, f.signature);
     }
 
     // ---- platform resolution, and every way it can be ambiguous ---------
@@ -1153,7 +1276,7 @@ mod tests {
             &f.manifest.version,
             "darwin", // bare OS, exactly as Tauri reports it
             FULL_URL,
-            SIGNATURE,
+            &f.signature,
             f.manifest.to_json().expect("serialize"),
         );
         let source = plan_without_cache(
@@ -1177,11 +1300,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
         let entry = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        let signature = f.signature.clone();
         add_platform(
             &mut f,
             "linux-x86_64-appimage",
             FULL_URL,
-            SIGNATURE,
+            &signature,
             &entry.target_installer_blake3,
             entry.target_installer_size,
         );
@@ -1205,11 +1329,12 @@ mod tests {
         // principled way to choose, so it must not choose.
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
+        let signature = f.signature.clone();
         add_platform(
             &mut f,
             "linux-x86_64-appimage",
             FULL_URL,
-            SIGNATURE,
+            &signature,
             &FileHash::of_bytes(b"a different target entirely").to_hex(),
             999_999,
         );
@@ -1261,11 +1386,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut f = fixture(dir.path());
         let entry = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].clone();
+        let signature = f.signature.clone();
         add_platform(
             &mut f,
             "linux-x86_64-mirror",
             "https://mirror.example.com/full.bin",
-            SIGNATURE,
+            &signature,
             &entry.target_installer_blake3,
             entry.target_installer_size,
         );
@@ -1533,7 +1659,7 @@ mod tests {
             "1.0.1",
             PLATFORM,
             FULL_URL,
-            SIGNATURE,
+            &f.signature,
             "{ not json at all",
         );
 
@@ -1563,7 +1689,7 @@ mod tests {
             &f.manifest.version,
             "darwin",
             FULL_URL,
-            SIGNATURE,
+            &f.signature,
             f.manifest.to_json().expect("serialize"),
         );
         let source = plan_without_cache(

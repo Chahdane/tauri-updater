@@ -22,6 +22,16 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use base64::Engine as _;
+
+/// The platform this test runs on, not a hard-coded one.
+///
+/// The release signature now authenticates the platform it was built for, so a
+/// fixture claiming `linux-x86_64` is correctly refused on a macOS runner. That
+/// is the guard working, and the fixture is what has to describe the machine.
+fn platform() -> String {
+    tauri_updater_delta_core::release_identity::current_platform()
+}
+
 use minisign::KeyPair;
 use support::server::{read, Route, TestServer};
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
@@ -29,8 +39,6 @@ use tauri_plugin_updater_delta::{Error, HttpFetch, HttpFetchBuilder};
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
-
-const PLATFORM: &str = "linux-x86_64";
 
 #[derive(Default)]
 struct RecordingHandoff {
@@ -117,7 +125,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
 
     let (manifest, _) = build_release(
         &ReleaseRequest {
-            platform: PLATFORM,
+            platform: &platform(),
             version: "1.0.1",
             from_version: "1.0.0",
             previous_installer: &fixture.old,
@@ -127,6 +135,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             patch_out: &patch,
             notes: None,
             pub_date: None,
+            app_id: "dev.example.testapp",
             tar_layer: None,
         },
         &key,
@@ -145,7 +154,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         pubkey: pubkey_b64(pair),
         base: fixture.old,
         released_hash,
-        signature: manifest.platforms[PLATFORM].signature.clone(),
+        signature: manifest.platforms[&platform()].signature.clone(),
         manifest_json: manifest.to_json().expect("serialise"),
         server,
     }
@@ -162,7 +171,7 @@ impl World {
         UpdateIdentity::new(
             current_version,
             "1.0.1",
-            PLATFORM,
+            platform(),
             self.server.url("/app_1.0.1.AppImage"),
             &self.signature,
             &self.manifest_json,
@@ -183,6 +192,7 @@ fn run(
             pubkey: &w.pubkey,
             base,
             cache: None,
+            app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),
         },

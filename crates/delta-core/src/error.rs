@@ -113,6 +113,15 @@ pub enum Error {
     #[error("signature verification failed: {0}")]
     Signature(String),
 
+    /// The signature carried a release identity that contradicts the release
+    /// being installed, or one this build cannot read.
+    ///
+    /// Deliberately distinct from [`Error::Signature`]: the cryptography held,
+    /// and what failed is the *statement it authenticated*. Both fail closed —
+    /// see `docs/DECISIONS.md` #27 — but a reader deserves to know which.
+    #[error("release identity rejected: {0}")]
+    ReleaseIdentity(String),
+
     /// A download failed.
     ///
     /// Carries the host transport's own message, since this layer does nothing

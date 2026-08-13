@@ -81,6 +81,16 @@ pub struct ReleaseRequest<'a> {
     /// Optional RFC 3339 publication timestamp.
     pub pub_date: Option<&'a str>,
 
+    /// Application bundle identifier, bound into the signature's authenticated
+    /// release identity.
+    ///
+    /// Required, and deliberately not inferred from the artifact. macOS could be
+    /// read out of `Contents/Info.plist`, but that is one bundle format on one
+    /// platform, and a security field derived by guessing is a security field
+    /// that is sometimes wrong. Callers pass their `tauri.conf.json`
+    /// `identifier`; the release workflow reads it with `jq`.
+    pub app_id: &'a str,
+
     /// Also publish a tar-layer patch, when the artifacts support one.
     ///
     /// `None` reproduces the pre-tar-layer behaviour exactly.
@@ -181,7 +191,24 @@ pub fn build_release(
     // Over the target installer, not the patch: both the delta path and the
     // full-download path end up holding this exact artifact, so one signature
     // covers both.
-    let signature = key.sign_file(req.new_installer)?;
+    //
+    // The signature now also carries the release identity, so it says which
+    // release these bytes are rather than only that they are ours. See
+    // `docs/DECISIONS.md` #27.
+    let representation = if tar_layer::looks_like_app_tar_gz(req.new_installer) {
+        tauri_updater_delta_core::manifest::REPRESENTATION_APP_TAR_GZ_V1
+    } else {
+        tauri_updater_delta_core::release_identity::REPRESENTATION_OPAQUE_V1
+    };
+    let signature = key.sign_release(
+        req.new_installer,
+        &signing::ReleaseFacts {
+            app_id: req.app_id,
+            version: req.version,
+            platform: req.platform,
+            representation,
+        },
+    )?;
 
     let patch = Patch {
         backend_id: ZstdBackend::ID.to_owned(),

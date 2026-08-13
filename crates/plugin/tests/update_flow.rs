@@ -14,6 +14,16 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use base64::Engine as _;
+
+/// The platform this test runs on, not a hard-coded one.
+///
+/// The release signature now authenticates the platform it was built for, so a
+/// fixture claiming `linux-x86_64` is correctly refused on a macOS runner. That
+/// is the guard working, and the fixture is what has to describe the machine.
+fn platform() -> String {
+    tauri_updater_delta_core::release_identity::current_platform()
+}
+
 use minisign::KeyPair;
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::Error;
@@ -22,7 +32,6 @@ use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity, VerifiedArtifact
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest};
 
-const PLATFORM: &str = "linux-x86_64";
 const MANIFEST_URL: &str = "https://example.com/manifest.json";
 const PATCH_URL: &str = "https://example.com/patch.zst";
 const INSTALLER_URL: &str = "https://example.com/app_1.0.1.AppImage";
@@ -85,7 +94,7 @@ impl World {
         UpdateIdentity::new(
             current_version,
             "1.0.1",
-            PLATFORM,
+            &platform(),
             INSTALLER_URL,
             &self.signature,
             &self.manifest_json,
@@ -103,7 +112,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
 
     let (manifest, _) = build_release(
         &ReleaseRequest {
-            platform: PLATFORM,
+            platform: &platform(),
             version: "1.0.1",
             from_version: "1.0.0",
             previous_installer: &fixture.old,
@@ -113,6 +122,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             patch_out: &patch,
             notes: None,
             pub_date: None,
+            app_id: "dev.example.testapp",
             tar_layer: None,
         },
         &key,
@@ -143,7 +153,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         pubkey: pubkey_b64(pair),
         base: fixture.old,
         released: fixture.new,
-        signature: manifest.platforms[PLATFORM].signature.clone(),
+        signature: manifest.platforms[&platform()].signature.clone(),
         manifest_json: manifest.to_json().expect("serialise"),
     }
 }
@@ -170,6 +180,7 @@ fn run_with(
             pubkey: &w.pubkey,
             base,
             cache: None,
+            app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),
         },
@@ -424,7 +435,7 @@ fn a_version_tauri_never_checked_installs_nothing() {
     let lying = UpdateIdentity::new(
         "1.0.0",
         "9.9.9",
-        PLATFORM,
+        platform(),
         INSTALLER_URL,
         &w.signature,
         &w.manifest_json,
