@@ -29,9 +29,11 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::cache::ArtifactCache;
 use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 use crate::limits::Limits;
-use crate::manifest::Manifest;
+use crate::manifest::{DeltaPlatform, Manifest, TarLayer, TarPatch, TarSupport};
+use crate::recompress::recompress_app_tar_gz;
 use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 
 /// Fetches a URL into a local file.
@@ -44,10 +46,80 @@ pub trait Fetch {
     fn fetch(&self, url: &str, out: &Path) -> Result<(), String>;
 }
 
+/// Everything the planner needs about the host.
+///
+/// A struct rather than five parameters because the tar path added two more,
+/// and a positional list of `Option`s and paths is exactly where a caller
+/// eventually passes the wrong one.
+pub struct PlanContext<'a> {
+    /// Previously cached installer for the **direct** patch path, if the host
+    /// keeps one itself. Independent of [`cache`](PlanContext::cache).
+    pub base: Option<&'a Path>,
+
+    /// The artifact cache, when the host has one.
+    ///
+    /// `None` disables the tar path entirely — with no verified base there is
+    /// nothing to patch a tar against, which is the ordinary state before a
+    /// host's first cached update.
+    pub cache: Option<&'a ArtifactCache>,
+
+    /// Base64 minisign public key, as in `tauri.conf.json`.
+    ///
+    /// Needed here rather than only at install time, because a cached base is
+    /// re-verified against it before it is used.
+    pub pubkey: &'a str,
+
+    /// Scratch directory. Each update gets its own subdirectory inside it.
+    pub work_dir: &'a Path,
+
+    /// Local ceilings on what a manifest may ask this host to do.
+    pub limits: Limits,
+}
+
+/// Which delta paths were actually attempted before falling back.
+///
+/// Carried on [`UpdateSource::Full`] so a test can tell "the tar path was tried
+/// and correctly refused" from "the tar path was never reached". The first is
+/// evidence; the second is a fallback test that proves nothing, which is the
+/// failure mode that let a delta updater ship without ever deltaing
+/// (`docs/DECISIONS.md` #22).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Attempted {
+    /// The tar-layer path ran and did not produce an artifact.
+    pub tar_delta: bool,
+    /// The direct patch path ran and did not produce an artifact.
+    pub direct_delta: bool,
+}
+
 /// How the update should be obtained.
 #[derive(Debug)]
 #[must_use = "the caller must act on the chosen source"]
 pub enum UpdateSource {
+    /// A verified artifact rebuilt through the **tar layer**: a cached base was
+    /// expanded, patched, and recompressed back into the published artifact.
+    ///
+    /// Deliberately a separate variant from [`Delta`](UpdateSource::Delta)
+    /// rather than a flag on it. The two paths differ in what they trust (a
+    /// local cache, re-verified) and in what they do (recompression, which can
+    /// fail on a client whose toolchain does not reproduce the published
+    /// bytes), so a caller reporting them as one thing cannot tell which
+    /// mechanism was exercised — and neither can a test.
+    ///
+    /// Has passed the base, tar, size and installer digest gates. The caller
+    /// still performs the signature check.
+    TarDelta {
+        /// The rebuilt artifact.
+        artifact: PathBuf,
+        /// Owns the per-update workspace the artifact lives in.
+        _workspace: tempfile::TempDir,
+        /// Signature to validate it against, from the manifest.
+        signature: String,
+        /// Bytes actually downloaded.
+        downloaded: u64,
+        /// Bytes a full download would have cost.
+        would_have_downloaded: u64,
+    },
+
     /// A verified artifact, already rebuilt from a patch and ready to install.
     ///
     /// It has passed the size and digest gates. The caller still performs the
@@ -80,6 +152,8 @@ pub enum UpdateSource {
         ///
         /// For logging only. Every reason leads to the same action.
         reason: Option<Error>,
+        /// Which delta paths ran before this was chosen.
+        attempted: Attempted,
     },
 
     /// The release is already installed. Not an error, and nothing to do.
@@ -109,10 +183,30 @@ impl UpdateSource {
                 downloaded,
                 would_have_downloaded,
                 ..
+            }
+            | Self::TarDelta {
+                downloaded,
+                would_have_downloaded,
+                ..
             } if *would_have_downloaded > 0 => {
                 Some(*downloaded as f64 / *would_have_downloaded as f64 * 100.0)
             }
             _ => None,
+        }
+    }
+
+    /// A short, stable name for which path was chosen.
+    ///
+    /// For logs and for the E2E harness, which asserts on it. A final hash
+    /// alone cannot distinguish a working delta updater from an updater that
+    /// silently downloads everything.
+    pub fn path_name(&self) -> &'static str {
+        match self {
+            Self::TarDelta { .. } => "tar-delta",
+            Self::Delta { .. } => "delta",
+            Self::Full { .. } => "full",
+            Self::UpToDate => "up-to-date",
+            Self::Refused { .. } => "refused",
         }
     }
 }
@@ -129,10 +223,8 @@ impl UpdateSource {
 /// it as a delta failure to be recovered from.
 pub fn plan_update(
     identity: &UpdateIdentity,
-    base: Option<&Path>,
-    work_dir: &Path,
+    ctx: &PlanContext<'_>,
     fetch: &dyn Fetch,
-    limits: Limits,
 ) -> UpdateSource {
     // The document Tauri fetched, parsed here rather than fetched again. A
     // malformed delta layer disqualifies the delta path only; the full download
@@ -158,59 +250,121 @@ pub fn plan_update(
         VersionVerdict::Refused(reason) => return UpdateSource::Refused { reason },
     }
 
+    let mut attempted = Attempted::default();
+
     // The full path always uses the URL and signature Tauri selected, never a
     // platform entry this crate looked up for itself.
-    let fallback = |reason: Option<Error>| UpdateSource::Full {
+    let fallback = |reason: Option<Error>, attempted: Attempted| UpdateSource::Full {
         url: identity.download_url().to_owned(),
         signature: identity.signature().to_owned(),
         reason,
+        attempted,
     };
 
     if manifest.is_none() {
-        return fallback(Some(Error::Manifest(
-            "the delta layer could not be parsed".to_owned(),
-        )));
+        return fallback(
+            Some(Error::Manifest(
+                "the delta layer could not be parsed".to_owned(),
+            )),
+            attempted,
+        );
     }
 
-    // Each of these is an ordinary "no patch for you", not a failure: the
-    // manifest may publish no delta layer, none for the artifact Tauri selected,
-    // or none from the version this user is on.
+    // No delta layer, or none for the artifact Tauri selected. Ordinary.
     let Some(entry) = delta_entry else {
-        return fallback(None);
-    };
-    let Some(patch) = entry.patches.get(identity.current_version()) else {
-        return fallback(None);
-    };
-
-    let Some(base) = base else {
-        return fallback(None);
+        return fallback(None, attempted);
     };
 
     // Refuse an absurd declared size before a byte is downloaded. The manifest
     // is unauthenticated, so its idea of "how big is the target" is a request,
-    // not a fact. See crate::limits.
-    if let Err(reason) = limits.check_target_size(entry.target_installer_size) {
-        return fallback(Some(reason));
+    // not a fact. See crate::limits. Checked once, ahead of both delta paths.
+    if let Err(reason) = limits_check(ctx.limits, entry) {
+        return fallback(Some(reason), attempted);
     }
 
-    // One workspace per update, so two concurrent runs cannot consume or
-    // overwrite each other's files. Cheaper and simpler than locking, and it
-    // covers the realistic exposure — see docs/DECISIONS.md #18.
-    if let Err(e) = std::fs::create_dir_all(work_dir) {
-        return fallback(Some(Error::io("create", work_dir, e)));
-    }
-    let workspace = match tempfile::Builder::new()
-        .prefix("update-")
-        .tempdir_in(work_dir)
-    {
-        Ok(dir) => dir,
-        Err(e) => return fallback(Some(Error::io("create", work_dir, e))),
+    let workspace = |reason: &mut Option<Error>| -> Option<tempfile::TempDir> {
+        // One workspace per update, so two concurrent runs cannot consume or
+        // overwrite each other's files. Cheaper and simpler than locking, and
+        // it covers the realistic exposure — see docs/DECISIONS.md #18.
+        if let Err(e) = std::fs::create_dir_all(ctx.work_dir) {
+            *reason = Some(Error::io("create", ctx.work_dir, e));
+            return None;
+        }
+        match tempfile::Builder::new()
+            .prefix("update-")
+            .tempdir_in(ctx.work_dir)
+        {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                *reason = Some(Error::io("create", ctx.work_dir, e));
+                None
+            }
+        }
     };
 
-    match attempt_delta(entry, patch, base, workspace.path(), fetch) {
+    // ---- the tar layer, tried first because it is by far the cheapest -----
+    //
+    // Everything about it is optional: no cache, no layer, a representation
+    // this build does not implement, no patch from this version, a cache that
+    // does not hold the right base. Each is an ordinary "not this time".
+    let mut last_reason = None;
+    if let Some(cache) = ctx.cache {
+        match entry.tar_patch(identity.current_version()) {
+            Ok(Some((layer, tar_patch))) => {
+                attempted.tar_delta = true;
+                let mut reason = None;
+                if let Some(space) = workspace(&mut reason) {
+                    match attempt_tar_delta(
+                        entry,
+                        layer,
+                        tar_patch,
+                        cache,
+                        ctx.pubkey,
+                        space.path(),
+                        fetch,
+                    ) {
+                        Ok(artifact) => {
+                            return UpdateSource::TarDelta {
+                                artifact,
+                                _workspace: space,
+                                signature: identity.signature().to_owned(),
+                                downloaded: tar_patch.patch_size,
+                                would_have_downloaded: entry.target_installer_size,
+                            };
+                        }
+                        Err(e) => last_reason = Some(e),
+                    }
+                } else {
+                    last_reason = reason;
+                }
+            }
+            Ok(None) => {}
+            // A representation or recipe this build does not implement. Not an
+            // error, and specifically not a reason to stop: the direct patch
+            // below is exactly what such a client is supposed to use.
+            Err(unsupported) => last_reason = Some(unsupported_reason(&unsupported)),
+        }
+    }
+
+    // ---- the direct patch, unchanged in meaning ---------------------------
+
+    let Some(patch) = entry.patches.get(identity.current_version()) else {
+        return fallback(last_reason, attempted);
+    };
+    let Some(base) = ctx.base else {
+        return fallback(last_reason, attempted);
+    };
+
+    attempted.direct_delta = true;
+    let mut reason = None;
+    let Some(space) = workspace(&mut reason) else {
+        return fallback(reason.or(last_reason), attempted);
+    };
+
+    match attempt_delta(entry, patch, base, space.path(), fetch) {
         Ok(artifact) => UpdateSource::Delta {
             artifact,
-            _workspace: workspace,
+            _workspace: space,
             // The identity's signature, not the entry's. They were just proven
             // equal, so this is the same value — taking it from the identity
             // keeps the authoritative source obvious at the point of use.
@@ -218,7 +372,23 @@ pub fn plan_update(
             downloaded: patch.patch_size,
             would_have_downloaded: entry.target_installer_size,
         },
-        Err(reason) => fallback(Some(reason)),
+        Err(reason) => fallback(Some(reason), attempted),
+    }
+}
+
+fn limits_check(limits: Limits, entry: &DeltaPlatform) -> Result<(), Error> {
+    limits.check_target_size(entry.target_installer_size)
+}
+
+fn unsupported_reason(support: &TarSupport) -> Error {
+    match support {
+        TarSupport::UnknownRepresentation(id) => Error::Manifest(format!(
+            "tar layer declares representation {id:?}, which this build does not implement"
+        )),
+        TarSupport::UnknownRecompression(id) => Error::Manifest(format!(
+            "tar layer declares recompression recipe {id:?}, which this build cannot perform"
+        )),
+        TarSupport::Supported => Error::Manifest("supported".to_owned()),
     }
 }
 
@@ -314,6 +484,138 @@ fn resolve_identity<'m>(
     Ok(Some(first))
 }
 
+/// The tar-layer path, end to end.
+///
+/// ```text
+/// cached ACTIVE .app.tar.gz          re-hashed, re-signature-checked
+///   -> exact old tar                 bounded expand, digest checked
+///   -> + downloaded tar patch        digest checked before it is applied
+///   -> exact new tar                 digest checked
+///   -> recompressed .app.tar.gz      digest checked against the manifest
+/// ```
+///
+/// Five gates, and none of them is skippable. The cached artifact is untrusted
+/// on reuse; the patch is untrusted input; and the recompression is a recipe
+/// this build might not perform correctly on this release's artifacts, which is
+/// exactly why its output is checked rather than assumed. Any failure is an
+/// ordinary fallback — the caller has a full download to reach for.
+#[allow(clippy::too_many_arguments)]
+fn attempt_tar_delta(
+    entry: &DeltaPlatform,
+    layer: &TarLayer,
+    patch: &TarPatch,
+    cache: &ArtifactCache,
+    pubkey: &str,
+    work_dir: &Path,
+    fetch: &dyn Fetch,
+) -> Result<PathBuf, Error> {
+    // The cached base, re-hashed and re-verified against the key configured
+    // now. Being in the cache establishes nothing.
+    let Some(base) = cache.active(pubkey)? else {
+        return Err(Error::Manifest(
+            "no cached base artifact for the tar path".to_owned(),
+        ));
+    };
+
+    // Is what we have the base this patch was made against? Checked on the
+    // compressed artifact and on the tar, both before anything is expanded or
+    // downloaded — the cheapest possible rejection of a wrong base.
+    if base.entry.compressed_blake3 != patch.base_installer_blake3
+        || base.entry.compressed_size != patch.base_installer_size
+    {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<cached base installer>"),
+            expected: patch.base_installer_blake3.clone(),
+            actual: base.entry.compressed_blake3.clone(),
+        });
+    }
+    if base.entry.tar_blake3 != patch.base_tar_blake3 || base.entry.tar_size != patch.base_tar_size
+    {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<cached base tar>"),
+            expected: patch.base_tar_blake3.clone(),
+            actual: base.entry.tar_blake3.clone(),
+        });
+    }
+
+    std::fs::create_dir_all(work_dir).map_err(|e| Error::io("create", work_dir, e))?;
+
+    // Expanded from the verified bytes, not from the file they came from, and
+    // checked against the digest the manifest declares rather than against the
+    // one the cache recorded. The cache's own record is a filter; this is the
+    // gate.
+    let base_tar = work_dir.join("base.tar");
+    cache.expand_to_tar(
+        &base.artifact,
+        &base_tar,
+        &patch.base_tar_blake3,
+        patch.base_tar_size,
+    )?;
+
+    let patch_path = work_dir.join("update.tar.patch");
+    fetch
+        .fetch(&patch.patch_url, &patch_path)
+        .map_err(|e| Error::Fetch(format!("downloading the tar patch: {e}")))?;
+
+    let expected = FileHash::from_hex(&patch.patch_blake3)?;
+    let actual = FileHash::of_file(&patch_path)?;
+    if actual != expected {
+        return Err(Error::ChecksumMismatch {
+            path: patch_path,
+            expected: expected.to_hex(),
+            actual: actual.to_hex(),
+        });
+    }
+
+    let target = TargetSpec::new(
+        &patch.backend_id,
+        layer.target_tar_size,
+        &layer.target_tar_blake3,
+    )?;
+    let target_tar = work_dir.join("target.tar");
+    let target_tar = match try_reconstruct(&base_tar, &patch_path, &target_tar, &target) {
+        Reconstruction::Verified(path) => path,
+        Reconstruction::FallBack(reason) => return Err(reason),
+    };
+    let _ = std::fs::remove_file(&patch_path);
+    let _ = std::fs::remove_file(&base_tar);
+
+    // Back to the published artifact. Built beside the destination and promoted
+    // only after the digest gate, so `artifact` never holds unverified bytes —
+    // the same discipline `try_reconstruct` applies to the tar.
+    let artifact = work_dir.join("update.artifact");
+    let building = artifact.with_extension("part");
+    recompress_app_tar_gz(&target_tar, &building)?;
+    let _ = std::fs::remove_file(&target_tar);
+
+    let expected = FileHash::from_hex(&entry.target_installer_blake3)?;
+    let rebuilt = FileHash::of_file(&building)?;
+    if rebuilt != expected {
+        let _ = std::fs::remove_file(&building);
+        // The recipe did not reproduce what the release published. On this
+        // client, with this toolchain — which is a real possibility and the
+        // reason the recipe is versioned and its output checked.
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<recompressed installer>"),
+            expected: expected.to_hex(),
+            actual: rebuilt.to_hex(),
+        });
+    }
+    let size = std::fs::metadata(&building)
+        .map_err(|e| Error::io("stat", &building, e))?
+        .len();
+    if size != entry.target_installer_size {
+        let _ = std::fs::remove_file(&building);
+        return Err(Error::UnexpectedOutputSize {
+            expected: entry.target_installer_size,
+            actual: size,
+        });
+    }
+
+    std::fs::rename(&building, &artifact).map_err(|e| Error::io("promote", &artifact, e))?;
+    Ok(artifact)
+}
+
 fn attempt_delta(
     entry: &crate::manifest::DeltaPlatform,
     patch: &crate::manifest::Patch,
@@ -363,6 +665,31 @@ fn attempt_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The planner as it was before the cache existed: no cache, no key.
+    ///
+    /// Every test below this line is about the direct or full path, so a shim
+    /// keeps them reading as they did and makes the tar-path tests -- which
+    /// pass a real cache -- visibly different.
+    fn plan_without_cache(
+        identity: &UpdateIdentity,
+        base: Option<&Path>,
+        work_dir: &Path,
+        fetch: &dyn Fetch,
+        limits: Limits,
+    ) -> UpdateSource {
+        plan_update(
+            identity,
+            &PlanContext {
+                base,
+                cache: None,
+                pubkey: "",
+                work_dir,
+                limits,
+            },
+            fetch,
+        )
+    }
     use std::collections::HashMap;
 
     use crate::backend::{PatchBackend, ZstdBackend};
@@ -509,7 +836,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -544,7 +871,7 @@ mod tests {
         let f = fixture(dir.path());
 
         // The common case for a user's first delta update. Not an error.
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             None,
             &dir.path().join("work"),
@@ -569,7 +896,7 @@ mod tests {
 
         // Gate A test 9: no patch published from this version, but the target is
         // a legitimate newer release, so the full path must still be reached.
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("0.1.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -580,6 +907,7 @@ mod tests {
             url,
             signature,
             reason,
+            ..
         } = source
         else {
             panic!("expected a full download, got {source:?}");
@@ -609,7 +937,7 @@ mod tests {
         let patch = entry.patches.remove("1.0.0").expect("fixture patch");
         entry.patches.insert("0.2.0".to_owned(), patch);
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("0.2.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -643,7 +971,7 @@ mod tests {
             honest.raw_json(), // what the document says: 1.0.1
         );
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &lying,
             Some(&f.base),
             &dir.path().join("work"),
@@ -684,7 +1012,7 @@ mod tests {
             honest.raw_json(),
         );
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &diverged,
             Some(&f.base),
             &dir.path().join("work"),
@@ -732,7 +1060,7 @@ mod tests {
             f.manifest.to_json().expect("serialize"),
         );
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &selected,
             Some(&f.base),
             &dir.path().join("work"),
@@ -772,7 +1100,7 @@ mod tests {
             f.manifest.to_json().expect("serialize"),
         );
 
-        let UpdateSource::Full { url, signature, .. } = plan_update(
+        let UpdateSource::Full { url, signature, .. } = plan_without_cache(
             &identity,
             Some(&f.base),
             &dir.path().join("work"),
@@ -828,7 +1156,7 @@ mod tests {
             SIGNATURE,
             f.manifest.to_json().expect("serialize"),
         );
-        let source = plan_update(
+        let source = plan_without_cache(
             &identity,
             Some(&f.base),
             &dir.path().join("work"),
@@ -858,7 +1186,7 @@ mod tests {
             entry.target_installer_size,
         );
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -886,7 +1214,7 @@ mod tests {
             999_999,
         );
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -915,7 +1243,7 @@ mod tests {
         );
 
         // Tauri selected the original signature, so only one entry matches.
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -943,7 +1271,7 @@ mod tests {
         );
 
         // Tauri selected the original URL, so only one entry matches.
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -966,7 +1294,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &f.identity("2.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -987,7 +1315,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("2.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1008,7 +1336,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.1"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1025,7 +1353,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &f.identity("not-a-version"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1058,7 +1386,7 @@ mod tests {
             .unwrap()
             .target_version = "1.0".to_owned();
 
-        let reason = refusal(plan_update(
+        let reason = refusal(plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1087,7 +1415,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let _ = plan_update(
+        let _ = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1109,7 +1437,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let _ = plan_update(
+        let _ = plan_without_cache(
             &f.identity("2.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1130,7 +1458,7 @@ mod tests {
         let mut f = fixture(dir.path());
         f.server.files.clear(); // every request 404s
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1153,7 +1481,7 @@ mod tests {
             .files
             .insert(f.patch_url.clone(), b"not the patch at all".to_vec());
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1177,7 +1505,7 @@ mod tests {
         let wrong = dir.path().join("wrong.bin");
         std::fs::write(&wrong, b"a completely different installer").expect("write");
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&wrong),
             &dir.path().join("work"),
@@ -1209,7 +1537,7 @@ mod tests {
             "{ not json at all",
         );
 
-        let UpdateSource::Full { url, reason, .. } = plan_update(
+        let UpdateSource::Full { url, reason, .. } = plan_without_cache(
             &identity,
             Some(&f.base),
             &dir.path().join("work"),
@@ -1238,7 +1566,7 @@ mod tests {
             SIGNATURE,
             f.manifest.to_json().expect("serialize"),
         );
-        let source = plan_update(
+        let source = plan_without_cache(
             &identity,
             Some(&f.base),
             &dir.path().join("work"),
@@ -1261,7 +1589,7 @@ mod tests {
         let work = dir.path().join("work");
 
         {
-            let source = plan_update(
+            let source = plan_without_cache(
                 &f.identity("1.0.0"),
                 Some(&f.base),
                 &work,
@@ -1304,7 +1632,7 @@ mod tests {
             .unwrap()
             .target_installer_size = 500 * 1024 * 1024 * 1024;
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1334,7 +1662,7 @@ mod tests {
         let f = fixture(dir.path());
         let declared = f.manifest.delta.as_ref().unwrap().platforms[PLATFORM].target_installer_size;
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),
@@ -1363,14 +1691,14 @@ mod tests {
         let f = fixture(dir.path());
         let work = dir.path().join("shared-work");
 
-        let first = plan_update(
+        let first = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &work,
             &f.server,
             limits(),
         );
-        let second = plan_update(
+        let second = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &work,
@@ -1399,7 +1727,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let f = fixture(dir.path());
 
-        let source = plan_update(
+        let source = plan_without_cache(
             &f.identity("1.0.0"),
             Some(&f.base),
             &dir.path().join("work"),

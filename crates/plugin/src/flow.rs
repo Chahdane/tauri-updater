@@ -23,7 +23,8 @@
 
 use std::path::Path;
 
-use tauri_updater_delta_core::client::{plan_update, Fetch, UpdateSource};
+use tauri_updater_delta_core::cache::ArtifactCache;
+use tauri_updater_delta_core::client::{plan_update, Fetch, PlanContext, UpdateSource};
 use tauri_updater_delta_core::{verify_artifact, Limits, UpdateIdentity, VerifiedArtifact};
 
 use crate::{Error, Result};
@@ -38,9 +39,23 @@ pub trait InstallHandoff {
 }
 
 /// What an update run did.
+///
+/// The variants name the **mechanism**, not just the result, and that is
+/// load-bearing. A delta updater that quietly falls back on every update is
+/// indistinguishable from a working one by its installed bytes alone; the only
+/// thing that tells them apart is an assertion about which path ran
+/// (`docs/DECISIONS.md` #22).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Installed from a patch.
+    /// Installed from a **tar-layer** patch: a cached base was expanded,
+    /// patched, and recompressed into the published artifact.
+    InstalledFromTarDelta {
+        /// Bytes downloaded.
+        downloaded: u64,
+        /// Bytes a full download would have cost.
+        saved_against: u64,
+    },
+    /// Installed from a patch against the compressed artifact.
     InstalledFromDelta {
         /// Bytes downloaded.
         downloaded: u64,
@@ -51,6 +66,19 @@ pub enum Outcome {
     InstalledFromFullDownload,
     /// The release is already installed.
     UpToDate,
+}
+
+impl Outcome {
+    /// A short, stable name for the path taken, matching
+    /// [`UpdateSource::path_name`].
+    pub fn path_name(&self) -> &'static str {
+        match self {
+            Self::InstalledFromTarDelta { .. } => "tar-delta",
+            Self::InstalledFromDelta { .. } => "delta",
+            Self::InstalledFromFullDownload => "full",
+            Self::UpToDate => "up-to-date",
+        }
+    }
 }
 
 /// Everything the flow needs to know about the host.
@@ -64,6 +92,12 @@ pub struct Context<'a> {
     pub pubkey: &'a str,
     /// Previously cached installer, if any.
     pub base: Option<&'a Path>,
+    /// The artifact cache, when the host keeps one.
+    ///
+    /// Supplies the base for the tar path, and receives every verified artifact
+    /// as PENDING. `None` disables both — the flow then behaves exactly as it
+    /// did before the cache existed.
+    pub cache: Option<&'a ArtifactCache>,
     /// Scratch directory. Each update gets its own subdirectory inside it, so
     /// concurrent runs cannot consume one another's files.
     pub work_dir: &'a Path,
@@ -86,7 +120,17 @@ pub fn run_update(
     std::fs::create_dir_all(ctx.work_dir)
         .map_err(|e| Error::Io(format!("creating {}: {e}", ctx.work_dir.display())))?;
 
-    let source = plan_update(identity, ctx.base, ctx.work_dir, fetch, ctx.limits);
+    let source = plan_update(
+        identity,
+        &PlanContext {
+            base: ctx.base,
+            cache: ctx.cache,
+            pubkey: ctx.pubkey,
+            work_dir: ctx.work_dir,
+            limits: ctx.limits,
+        },
+        fetch,
+    );
 
     match source {
         UpdateSource::UpToDate => Ok(Outcome::UpToDate),
@@ -96,6 +140,22 @@ pub fn run_update(
         // reach for.
         UpdateSource::Refused { reason } => Err(Error::Refused(reason)),
 
+        UpdateSource::TarDelta {
+            artifact,
+            signature,
+            downloaded,
+            would_have_downloaded,
+            _workspace,
+        } => {
+            let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
+            stage(ctx, identity, &verified, &signature);
+            handoff.install(&verified)?;
+            Ok(Outcome::InstalledFromTarDelta {
+                downloaded,
+                saved_against: would_have_downloaded,
+            })
+        }
+
         UpdateSource::Delta {
             artifact,
             signature,
@@ -103,38 +163,15 @@ pub fn run_update(
             would_have_downloaded,
             _workspace,
         } => {
-            let bytes = std::fs::read(&artifact)
-                .map_err(|e| Error::Io(format!("reading the rebuilt artifact: {e}")))?;
-
-            // The reconstruction already matched the manifest's digest. This is
-            // the separate question of whether the release process actually
-            // published it — and nothing else will ask it.
-            match verify_artifact(bytes, &signature, ctx.pubkey) {
-                Ok(verified) => {
-                    handoff.install(&verified)?;
-                    // No explicit cleanup: dropping _workspace removes the whole
-                    // per-update directory, artifact included.
-                    Ok(Outcome::InstalledFromDelta {
-                        downloaded,
-                        saved_against: would_have_downloaded,
-                    })
-                }
-                Err(_) => {
-                    // The artifact matched the digest this document published
-                    // but not the signature it published alongside it. That
-                    // does not prove the document is forged — it is not signed,
-                    // so there was never a claim to disprove. What it does mean
-                    // is that something in the chain that produced this release
-                    // is wrong, and we cannot tell what. Falling back would
-                    // fetch a second artifact chosen by the same document and
-                    // check it against a signature from that same document,
-                    // which grants a second attempt rather than a safer one.
-                    // See docs/DECISIONS.md #11.
-                    Err(Error::Signature(
-                        "the rebuilt artifact did not match the manifest's signature".to_owned(),
-                    ))
-                }
-            }
+            let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
+            stage(ctx, identity, &verified, &signature);
+            handoff.install(&verified)?;
+            // No explicit cleanup: dropping _workspace removes the whole
+            // per-update directory, artifact included.
+            Ok(Outcome::InstalledFromDelta {
+                downloaded,
+                saved_against: would_have_downloaded,
+            })
         }
 
         UpdateSource::Full { url, signature, .. } => {
@@ -148,11 +185,62 @@ pub fn run_update(
             let verified = verify_artifact(bytes, &signature, ctx.pubkey)
                 .map_err(|e| Error::Signature(e.to_string()))?;
 
+            stage(ctx, identity, &verified, &signature);
             handoff.install(&verified)?;
             let _ = std::fs::remove_file(&full);
             Ok(Outcome::InstalledFromFullDownload)
         }
     }
+}
+
+/// Signature-check an artifact this crate rebuilt.
+///
+/// The reconstruction already matched the manifest's digest. This is the
+/// separate question of whether the release process actually published it — and
+/// nothing else will ask it, because Tauri does not verify what it installs
+/// (`docs/DECISIONS.md` #10).
+fn verify_rebuilt(
+    artifact: &Path,
+    signature: &str,
+    pubkey: &str,
+) -> Result<tauri_updater_delta_core::VerifiedArtifact> {
+    let bytes = std::fs::read(artifact)
+        .map_err(|e| Error::Io(format!("reading the rebuilt artifact: {e}")))?;
+
+    verify_artifact(bytes, signature, pubkey).map_err(|_| {
+        // The artifact matched the digest this document published but not the
+        // signature it published alongside it. That does not prove the document
+        // is forged — it is not signed, so there was never a claim to disprove.
+        // What it does mean is that something in the chain that produced this
+        // release is wrong, and we cannot tell what. Falling back would fetch a
+        // second artifact chosen by the same document and check it against a
+        // signature from that same document, which grants a second attempt
+        // rather than a safer one. See docs/DECISIONS.md #11.
+        Error::Signature("the rebuilt artifact did not match the manifest's signature".to_owned())
+    })
+}
+
+/// Record a verified artifact as the cache's PENDING entry.
+///
+/// Runs **before** the install, deliberately. The artifact is fully verified by
+/// this point, and staging it first means a process that dies during the install
+/// still has the bytes it just paid for — while the promotion rule keeps that
+/// from being mistaken for a successful update, because promotion asks what is
+/// running rather than what was installed.
+///
+/// Failures are swallowed. A cache that cannot be written costs the *next*
+/// update its patch; failing this one instead would make an optimisation into a
+/// dependency, which is the thing this whole design refuses to do.
+fn stage(
+    ctx: &Context<'_>,
+    identity: &UpdateIdentity,
+    verified: &tauri_updater_delta_core::VerifiedArtifact,
+    signature: &str,
+) {
+    let Some(cache) = ctx.cache else {
+        return;
+    };
+    let _ = cache.stage_pending(identity.version(), verified, signature);
 }
 
 #[cfg(test)]
@@ -222,6 +310,7 @@ mod tests {
             &Context {
                 pubkey: "",
                 base: None,
+                cache: None,
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -260,6 +349,7 @@ mod tests {
             &Context {
                 pubkey: "",
                 base: None,
+                cache: None,
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -291,6 +381,7 @@ mod tests {
             &Context {
                 pubkey: "",
                 base: None,
+                cache: None,
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -318,6 +409,7 @@ mod tests {
             &Context {
                 pubkey: "",
                 base: None,
+                cache: None,
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -350,6 +442,7 @@ mod tests {
             &Context {
                 pubkey: "",
                 base: None,
+                cache: None,
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },

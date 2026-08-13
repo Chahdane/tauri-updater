@@ -3948,9 +3948,12 @@ name = "tauri-plugin-updater-delta"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "minisign",
  "reqwest 0.12.28",
  "semver",
+ "serde_json",
+ "tar",
  "tauri",
  "tauri-plugin-updater",
  "tauri-updater-delta-core",
