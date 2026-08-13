@@ -1,8 +1,8 @@
-# Sprint 4 — The real-app end-to-end
+# Sprint 5 — The cache-backed tar layer
 
 **Phase:** 3 of 8, final gate ([roadmap](docs/ROADMAP.md))
 **Started:** 2026-08-12
-**Status:** Paused for hardening — see below
+**Status:** Tar-layer prototype demonstrated end to end on macOS. Audit #2 blockers still open.
 
 ---
 
@@ -296,7 +296,8 @@ cross-platform E2E and production readiness all remain unproven.
 
 # CACHE-BACKED TAR-LAYER PROTOTYPE — STOPPED AT THE FEASIBILITY GATE
 
-**Date:** 2026-08-13 · **Status:** not implemented · **Stop condition triggered**
+**Date:** 2026-08-13 · **Status:** SUPERSEDED — see the next section
+**Retained** because its measurements all still reproduce and its conclusion did not.
 
 The prototype rests on the plugin being able to recompress an exact tar back into
 the byte-exact official `.app.tar.gz`, because the minisign signature covers the
@@ -446,3 +447,104 @@ Nothing.
 Phase 4 — robustness: resumable downloads, disk-full, atomic writes, and an
 audit of every failure branch. Much of it already exists; the work is closing
 gaps rather than starting fresh.
+
+---
+
+# CACHE-BACKED TAR LAYER — DEMONSTRATED ON MACOS
+
+**Date:** 2026-08-13 · **Branch:** `feat/macos-tar-cache-prototype`
+**Record:** `research/experiments/2026-08-13-macos-cache-backed-tar-e2e`
+
+The previous section's stop condition is resolved. What it measured was correct;
+what it concluded was not, and the difference is one unread source file — see
+`docs/DECISIONS.md` #26 and findings F22/F23.
+
+## The gate: exact in-process recompression
+
+`tauri-bundler` does not compress a tar. It streams `tar::Builder` **into**
+`GzEncoder`, so the encoder sees writes whose boundaries are the tar's own entry
+structure. Replaying that topology reproduces the published artifact exactly.
+
+| Topology | v1.0.1 output | Official | |
+| --- | ---: | ---: | --- |
+| **entry-aware** | 4,070,756 | 4,070,756 | **identical** |
+| one-shot | 4,070,510 | 4,070,756 | differs at byte 47 |
+| uniform 8192 | 4,070,674 | 4,070,756 | differs at byte 47 |
+
+Confirmed on a second artifact (v1.0.0, 4,070,693 bytes, identical) and on both
+releases of the new three-version build, and the published minisign signature
+verifies against the rebuild. The one-shot number reproduces the earlier probe
+exactly, so that record is superseded rather than contradicted.
+
+`flate2`'s **zlib-rs** backend is required; its default `miniz_oxide` produces
+3,936,113 bytes for every topology and can never match. Enabling both backends
+still matches, so feature unification in a consumer's graph does not break it.
+
+## The three-version end-to-end
+
+One real installation, moved twice through the real `Update::install`:
+
+```
+REAL v1.0.0, cache EMPTY
+     → Full → exact verified v1.0.1 → PENDING → real install
+     → relaunch as 1.0.1 → ACTIVE 1.0.1
+     → TarDelta → exact v1.0.2 tar → exact official .app.tar.gz
+     → signature PASS → PENDING → real install
+     → relaunch as 1.0.2 → ACTIVE 1.0.2
+```
+
+| | Transition 1 | Transition 2 |
+| --- | --- | --- |
+| Cache before | EMPTY | ACTIVE(1.0.1) |
+| **Required outcome** | **Full** | **TarDelta** |
+| Observed | `installed-from-full-download` | `installed-from-tar-delta` |
+| Downloaded | 4,163,366 (whole artifact) | **633,594** |
+| Installed main binary | `573f3838…` = v1.0.1 ✓ | `7caff690…` = v1.0.2 ✓ |
+
+The three main binaries hash to `dd42cb31…`, `573f3838…`, `7caff690…` and are
+asserted pairwise distinct by both the build script and the runner, so no
+downstream assertion can pass vacuously.
+
+**Which path ran is asserted, not inferred.** Both transitions install the same
+published bytes, so a hash-only harness would pass twice while an updater
+silently downloaded everything — which is what the first real E2E did (#22). The
+server's request log additionally shows the tar patch fetched and neither the
+full artifact nor the direct patch, so the saving is observed at the wire.
+
+**The chain is provable.** `base_tar_blake3` of the 1.0.1→1.0.2 patch equals
+`target_tar_blake3` of the 1.0.0→1.0.1 release, so transition 2 patched the
+artifact transition 1 cached.
+
+## Bandwidth
+
+| Pair | Direct patch | Tar patch | Fewer patch bytes |
+| --- | ---: | ---: | ---: |
+| 1.0.0 → 1.0.1 | 3,963,466 (95.20%) | 626,006 (**15.04%**) | 84.21% |
+| 1.0.1 → 1.0.2 | 4,023,061 (96.55%) | 633,594 (**15.21%**) | 84.25% |
+
+Two independent pairs from a fresh build, reproducing the earlier controlled
+single-pair result (15.36% vs 95.43%).
+
+## Defects found and fixed on the way
+
+- **The state store treated "unreadable" as "absent".** `initialise` panicked on
+  a state file written by a future format — a plugin downgrade would have
+  crashed the updater — and `load` scanned downwards for the newest generation
+  it could *parse*, resurrecting state the compare-and-set had already replaced
+  and wedging the store permanently. Both fixed, both pinned by regressions. The
+  CAS mechanism itself was sound and is unchanged.
+- **`SPRINT.md` had been swallowed by a `sprint.md` gitignore rule**, because
+  git matches ignore patterns case-insensitively where `core.ignorecase` is set.
+  It then vanished in a history rewrite meant only to purge `CODEX.jsonl`.
+- **The example config was committed mid-harness-run**, capturing a temporary
+  version, a generated key and `dangerousInsecureTransportProtocol: true`.
+
+## Scope, exactly
+
+macOS only, one architecture, one bundle format, one three-version ladder,
+string-only source changes, plain-HTTP loopback via `e2e-control`, ad-hoc code
+signing. Integration and cache-state-machine evidence. **No Audit #2 blocker is
+closed** except B7, and only for the tar path: `delta-release` now round-trips
+its own tar patch before publishing, while the direct-patch generator still does
+not. Windows, Linux, rollback resistance and production readiness remain
+unproven.

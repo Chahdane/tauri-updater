@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tar-layer patching for macOS `.app.tar.gz`.** An optional `tar_layer` block
+  on the existing platform entry describes patches against the *uncompressed*
+  tar inside a compressed bundle. On three controlled builds the tar patch is
+  ~15% of a full download where a direct patch is ~95% — 84% fewer patch bytes.
+  Purely additive: existing `patches` are unchanged, and a client that does not
+  implement the declared representation or recompression recipe reads them
+  instead. See `docs/DECISIONS.md` #25.
+- **Exact in-process rebuild of a published `.app.tar.gz`.** Replaying
+  `tar::Builder`'s write topology into `flate2`'s `GzEncoder` reproduces the
+  artifact `tauri-bundler` published byte-for-byte, so the existing minisign
+  signature verifies against the rebuild. Pinned by a regression test against a
+  real retained artifact. See `docs/DECISIONS.md` #26.
+- **A persistent artifact cache**: content-addressed immutable blobs, plus
+  ACTIVE/PENDING state behind a generation compare-and-set. `BlobStore::put`
+  takes a `VerifiedArtifact`, so unverified bytes cannot be cached; `get`
+  re-hashes and re-verifies the signature on every reuse against the currently
+  configured key. Promotion happens on the next launch, from the version the
+  running process reports about itself — never on `install()` returning `Ok`.
+  See `docs/DECISIONS.md` #23 and #24.
+- **`UpdateSource::TarDelta` and `Outcome::InstalledFromTarDelta`**, distinct
+  from the direct-delta variants, and `UpdateSource::Full::attempted`, so a
+  fallback test can assert the tar path was *tried* rather than never reached.
+- `delta-release --tar-patch-out/--tar-patch-url/--require-tar-layer`. The
+  generator applies its own patch, recompresses and requires byte-identity with
+  the published artifact before emitting any metadata, and refuses to publish
+  otherwise.
+
 ### Fixed
+
+- **The cache state store treated an unreadable generation as an absent one.**
+  `initialise` panicked on a state file written by a newer format — a plugin
+  downgrade would have crashed the updater — and `load` fell back to the newest
+  generation it could *parse*, resurrecting state the compare-and-set had
+  already replaced and permanently wedging the store.
+- `SPRINT.md` was being ignored by a `sprint.md` gitignore rule, because git
+  matches ignore patterns case-insensitively where `core.ignorecase` is set.
 
 - Corrected the declared minimum supported Rust version from 1.77 to 1.85. The
   1.77 claim was wrong and CI's `msrv` job failed on it: `blake3` pulls in
