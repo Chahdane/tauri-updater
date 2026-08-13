@@ -65,7 +65,8 @@ open claim.
 
 ## Phase 4 — Robustness and security — largely delivered by the hardening sprint
 
-Most of this was brought forward by the post-Codex audit (see `SPRINT.md`).
+Most of this was brought forward by the post-Codex audit; the resulting
+decisions are in `DECISIONS.md` and the evidence in `../research/`.
 
 - [x] Full-download fallback wired into every failure path, with tests forcing
       each failure.
