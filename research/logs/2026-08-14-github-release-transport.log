@@ -1,0 +1,26 @@
+# GitHub release transport probe
+# date: 2026-08-14T02:51:03+0100
+# host: Darwin 25.5.0 arm64
+#
+# Question: what does a client actually meet when it downloads a GitHub
+# release asset over HTTPS? The plugin bounds the redirect chain and refuses
+# an HTTPS->HTTP hop, and those bounds should be set from measurement.
+#
+# Read-only and unauthenticated. Nothing was created.
+
+== asset ==
+https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_386.tar.gz
+
+== HEAD, following redirects ==
+HTTP/2 302 
+content-type: text/html; charset=utf-8
+location: https://release-assets.githubusercontent.com/github-production-release-asset/212613049/413785d1-3474-4603-817d-2ae9060d41f3?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-08-14T02%3A50%3A31Z&rscd=attachment%3B+filename%3Dgh_2.97.0_linux_386.tar.gz&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-08-14T01%3A49%3A53Z&ske=2026-08-14T02%3A50%3A31Z&sks=b&skv=2018-11-09&sig=<redacted>&jwt=<redacted>&response-content-disposition=attachment%3B%20filename%3Dgh_2.97.0_linux_386.tar.gz&response-content-type=application%2Foctet-stream
+server: github.com
+content-length: 0
+HTTP/2 200 
+server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0
+content-type: application/octet-stream
+content-length: 13818702
+final_code=200
+num_redirects=1
+scheme=HTTPS
