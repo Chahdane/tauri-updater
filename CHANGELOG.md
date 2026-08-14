@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Every stage of the tar pipeline now has a local ceiling.** Gate B bounded one
+  quantity, the compressed installer, which predates the tar layer entirely. The
+  reconstructed target tar's declared size reached zstd's window and output bound
+  with nothing local above it, so a manifest could ask a client to reserve and
+  write an arbitrary amount — spent long before any digest or signature check
+  runs. `Limits::max_tar_bytes` closes it, as a dial independent of the cache's,
+  because gzip's expansion ratio is unbounded and a ratio-derived cap inherits
+  that. See `docs/DECISIONS.md` #29.
+
+- **The blob store no longer infers a stored artifact from an occupied path.**
+  `put` treated `AlreadyExists` as "the same bytes are already there", which holds
+  for a file it wrote and not for a path anything running as this user can
+  create. Planting a directory at a content address made staging report success.
+  Nothing unsafe could be installed — reuse re-checks kind, size, digest and
+  signature — but the bogus entry was promoted over a good base, permanently
+  emptying the cache. See #30.
+
+### Fixed
+
+- **The full download raced itself.** `work_dir/full.artifact` was a fixed name
+  under a shared directory, while both delta paths had had private workspaces
+  since `docs/DECISIONS.md` #18 — which named this file and did not fix it. Since
+  `HttpFetch` streams into a sibling `.part` and renames, concurrent updates
+  could rename each other's in-flight downloads away, or read another release's
+  bytes into their own signature check. Blocker **B4**; see #28.
+
+- **Abandoned transaction workspaces are collected.** A crash mid-update stranded
+  a full copy of the artifact under `work_dir` forever. Inert — the names are
+  random, so nothing can find or misread one — but unbounded. Swept after 24
+  hours, a threshold set far above any live transaction rather than copied from
+  the cache's 60-second blob grace, because collecting a live workspace would
+  break the update that owns it. See #31.
+
+### Security
+
 - **The release identity is now authenticated.** Minisign signature blocks carry
   a *trusted comment* covered by a second Ed25519 signature over
   `artifact_sig ‖ trusted_comment`, which `PublicKey::verify` — the call Tauri

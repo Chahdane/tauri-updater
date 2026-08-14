@@ -539,3 +539,232 @@ fn concurrent_transitions_never_produce_an_incorrect_active() {
         "the blob ACTIVE names must be the blob ACTIVE describes"
     );
 }
+
+// ---- the namespace, field by field --------------------------------------
+
+/// Every field of the namespace, changed one at a time.
+///
+/// The existing platform test moves `platform` and `arch` together, which is
+/// what a real machine change looks like but leaves each field individually
+/// unproven: a namespace that ignored `bundle_id` would still pass it. A cache
+/// keyed on five things and checking four is a cache that hands one application
+/// another application's base.
+#[test]
+fn changing_any_single_namespace_field_empties_the_cache() {
+    /// One namespace field and the change that should invalidate the cache.
+    type Field = (&'static str, fn(&mut Namespace));
+
+    let fields: Vec<Field> = vec![
+        ("bundle_id", |n| {
+            n.bundle_id = "com.example.other".to_owned()
+        }),
+        ("platform", |n| n.platform = "linux-x86_64".to_owned()),
+        ("arch", |n| n.arch = "x86_64".to_owned()),
+        ("pubkey_fingerprint", |n| {
+            n.pubkey_fingerprint = FileHash::of_bytes(b"another key").to_hex()
+        }),
+        ("representation", |n| {
+            n.representation = "app-tar-gz-v2".to_owned()
+        }),
+        ("recompression", |n| {
+            n.recompression = "tauri-app-tar-gz-v2".to_owned()
+        }),
+    ];
+
+    for (name, change) in fields {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let k = key();
+        {
+            let cache = cache(dir.path(), &k);
+            let (artifact, signature) = k.artifact("1.0.1");
+            cache
+                .stage_pending("1.0.1", &artifact, &signature)
+                .expect("stage");
+            cache.reconcile("1.0.1").expect("promote");
+            assert!(
+                cache.active(&k.public).expect("active").is_some(),
+                "{name}: the fixture must have a base before the field changes"
+            );
+        }
+
+        let mut foreign = namespace(&k.fingerprint);
+        change(&mut foreign);
+        let cache = ArtifactCache::open(dir.path(), foreign, CacheLimits::default())
+            .unwrap_or_else(|e| panic!("{name}: reopening must not fail: {e}"));
+
+        assert_eq!(
+            cache.reconcile("1.0.1").expect("reconcile"),
+            Reconciliation::NamespaceReset,
+            "{name}: a changed namespace must reset rather than reuse"
+        );
+        assert!(
+            cache.active(&k.public).expect("active").is_none(),
+            "{name}: a base recorded under a different namespace must not be offered"
+        );
+    }
+}
+
+// ---- a filesystem that will not cooperate --------------------------------
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_cache_is_a_miss_rather_than_a_failure() {
+    // An installation whose cache directory the user cannot write -- a
+    // restrictive umask, a managed device, a volume remounted read-only. The
+    // cache is an optimisation, so the correct behaviour is to lose the
+    // optimisation and keep updating. `flow::stage` discards staging errors for
+    // exactly this reason; this proves the error it discards is a clean one and
+    // not a panic or a half-written state.
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path().join("cache");
+    let k = key();
+
+    // Establish a good cache first, so the read-only case is about writing
+    // rather than about creating.
+    {
+        let cache = cache(&root, &k);
+        let (artifact, signature) = k.artifact("1.0.0");
+        cache
+            .stage_pending("1.0.0", &artifact, &signature)
+            .expect("stage");
+        cache.reconcile("1.0.0").expect("promote");
+    }
+
+    let original = std::fs::metadata(&root).expect("stat").permissions();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+
+    // Running as root defeats the mode bits entirely, so check rather than
+    // assume -- otherwise this test would silently prove nothing in a container.
+    let writable = std::fs::write(root.join(".probe"), b"x").is_ok();
+    let _ = std::fs::remove_file(root.join(".probe"));
+
+    if !writable {
+        let cache = cache(&root, &k);
+        let (artifact, signature) = k.artifact("1.0.1");
+        let staged = cache.stage_pending("1.0.1", &artifact, &signature);
+        assert!(
+            staged.is_err(),
+            "a read-only cache must report a clean error rather than claim success"
+        );
+
+        // And the base that was already there is still readable and still
+        // correct: a failed write may not damage what it could not replace.
+        let active = cache
+            .active(&k.public)
+            .expect("reading must still work")
+            .expect("the existing base survives");
+        assert_eq!(active.entry.version, "1.0.0");
+    }
+
+    std::fs::set_permissions(&root, original).expect("restore");
+}
+
+#[test]
+fn a_blob_path_occupied_by_a_directory_is_a_clean_write_failure() {
+    // The practical stand-in for a write that cannot complete: something is
+    // already at the path the blob must occupy, and it is not a file. Real
+    // causes differ -- a full disk, a hostile plant, a previous crash -- but the
+    // requirement is the same, that the cache reports it rather than recording
+    // an entry pointing at something it cannot read back.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let cache = cache(dir.path(), &k);
+    let (artifact, signature) = k.artifact("1.0.1");
+
+    let digest = FileHash::of_bytes(artifact.as_bytes()).to_hex();
+    let blobs = dir.path().join("blobs");
+    std::fs::create_dir_all(&blobs).expect("mkdir blobs");
+    std::fs::create_dir_all(blobs.join(format!("{digest}.tar.gz"))).expect("plant a directory");
+
+    let staged = cache.stage_pending("1.0.1", &artifact, &signature);
+    assert!(
+        staged.is_err(),
+        "a blob path that cannot be written must not be recorded as staged"
+    );
+    assert!(
+        cache.state().expect("state").pending.is_none(),
+        "a failed blob write must not leave a PENDING entry naming it"
+    );
+}
+
+#[test]
+fn the_grace_period_protects_a_blob_that_is_not_yet_referenced() {
+    // The window `blob_grace` exists for: staging writes the blob, then commits
+    // the entry naming it, and in between the blob is referenced by nothing. A
+    // collection pass in another process is entitled to delete it -- and would,
+    // if the grace period did not hold it.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let store = super::blob::BlobStore::open(dir.path()).expect("open");
+    let (artifact, signature) = k.artifact("1.0.1");
+    let size = artifact.len() as u64;
+    let fresh = store.put(&artifact).expect("put").to_hex();
+
+    // Nothing references it. With a real grace period it survives anyway.
+    let removed = store
+        .retain(&[], std::time::Duration::from_secs(60))
+        .expect("retain");
+    assert_eq!(removed, 0, "a just-written blob must survive collection");
+    store
+        .get(&fresh, size, &signature, &k.public, u64::MAX)
+        .expect("the blob the stager is about to name must still be readable");
+
+    // With the grace period off -- which is what the eager cache does -- the
+    // same unreferenced blob goes. That is what makes the guard load-bearing
+    // rather than incidental.
+    let removed = store
+        .retain(&[], std::time::Duration::ZERO)
+        .expect("retain");
+    assert_eq!(removed, 1, "without a grace period the blob is collectable");
+}
+
+#[test]
+fn an_intact_blob_with_the_wrong_recorded_signature_is_a_miss() {
+    // The signature gate on reuse, isolated from every other gate.
+    //
+    // A key *rotation* never reaches it: the fingerprint is part of the
+    // namespace, so a rotated key empties the cache before anything is read.
+    // That is a deliberate cheap pre-filter, and it means the pre-filter is
+    // what the rotation tests actually exercise.
+    //
+    // This is the case the pre-filter cannot see. The key is unchanged, the
+    // blob is byte-perfect and hashes exactly as recorded -- and the signature
+    // stored beside it belongs to a different artifact. Only re-running the
+    // signature check on reuse catches that, so if it is ever dropped in favour
+    // of trusting the namespace, this is the test that notices.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let cache = cache(dir.path(), &k);
+
+    let (artifact, _correct) = k.artifact("1.0.1");
+    let (_other, other_signature) = k.artifact("9.9.9");
+
+    // Both are genuinely signed by the current key. They just do not describe
+    // each other.
+    cache
+        .stage_pending("1.0.1", &artifact, &other_signature)
+        .expect("staging records what it is given");
+    cache.reconcile("1.0.1").expect("promote");
+
+    let err = cache
+        .active(&k.public)
+        .expect_err("a mismatched signature must not yield a usable base");
+    assert!(
+        matches!(err, Error::Signature(_)),
+        "expected a signature failure, got {err:?}"
+    );
+
+    // And it is a miss, not damage: the state is untouched, so the next launch
+    // sees the same thing rather than a cache that quietly repaired itself.
+    assert_eq!(
+        cache
+            .state()
+            .expect("state")
+            .active
+            .expect("active survives")
+            .version,
+        "1.0.1"
+    );
+}
