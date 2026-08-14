@@ -1,22 +1,25 @@
 //! Tests the application-facing seam instead of assembling the internal flow.
 
-// The supported v0.1 application path is macOS. Under a unified Windows
-// workspace build, Tauri's mock-test feature produces a test executable that
-// the runner cannot load (STATUS_ENTRYPOINT_NOT_FOUND) before any assertion
-// runs. Keep the API proof on macOS and Linux; Windows continues to run every
-// engine, transport, release, and compile test without claiming an app path.
-#![cfg(not(target_os = "windows"))]
-
+/// The mock-runtime half, which Windows cannot load.
+///
+/// Under a unified Windows workspace build, Tauri's `test` feature produces a
+/// test executable the runner fails to start (`STATUS_ENTRYPOINT_NOT_FOUND`)
+/// before any assertion runs. That is a property of the mock runtime, not of the
+/// product, so the exclusion is scoped to the one test that needs it — see
+/// `normal_example_is_https_only_and_does_not_enable_the_harness` below, which
+/// asserts shipped configuration and runs everywhere.
+#[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
 mod support;
 
-use std::time::Duration;
-
-use support::server::TestServer;
-use tauri_plugin_updater_delta::DeltaUpdaterExt;
-
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn one_public_check_makes_one_authoritative_manifest_request() {
+    use std::time::Duration;
+
+    use support::server::TestServer;
+    use tauri_plugin_updater_delta::DeltaUpdaterExt;
+
     let server = TestServer::start();
     let platform = tauri_updater_delta_core::release_identity::current_platform();
     let manifest = serde_json::json!({
@@ -61,12 +64,19 @@ fn one_public_check_makes_one_authoritative_manifest_request() {
     assert_eq!(update.current_version(), "0.1.0");
     assert_eq!(update.version(), "1.0.1");
 
-    // A second plugin-owned manifest lookup would be observable even if it ran
-    // just after the authoritative check returned.
+    // A second plugin-owned manifest lookup would be observable even if it
+    // ran just after the authoritative check returned.
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(server.request_count(), 1);
 }
 
+/// Shipped-configuration policy, asserted on every platform.
+///
+/// This reads two files and touches no Tauri runtime, so nothing about the mock
+/// executable applies to it. Keeping it outside the `cfg` above matters: it is
+/// the check that would notice the example regaining a plain-HTTP endpoint or
+/// default-enabling the harness feature, and a Windows job that skipped it would
+/// report green while proving less than it appears to.
 #[test]
 fn normal_example_is_https_only_and_does_not_enable_the_harness() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
