@@ -1,0 +1,142 @@
+# minisign trusted-comment binding probe
+# date: 2026-08-13T23:56:31Z
+# host: Darwin 25.5.0 arm64
+# rustc: rustc 1.91.1 (ed61e7d7e 2025-11-07)
+# minisign: 0.7.9   minisign-verify: 0.2.5
+#
+# Question: is the minisign trusted comment authenticated against THIS
+# artifact's signature, such that editing it, splicing another release's
+# comment onto it, or swapping the block wholesale all fail verification?
+#
+# Verification is minisign_verify::PublicKey::verify -- the same call
+# tauri-plugin-updater makes and that this crate reproduces.
+
+== source ==
+
+//! Does the minisign trusted comment resist tampering?
+//!
+//! Signs two artifacts under one key, then tries the three attacks the design
+//! depends on being impossible. Prints one line per case: what was attempted and
+//! whether `PublicKey::verify` accepted it.
+
+use base64::Engine;
+use std::io::Cursor;
+
+fn b64(s: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(s)
+}
+
+/// Runs `PublicKey::verify` exactly as `tauri-plugin-updater` does.
+fn verify(pk_b64: &str, sig_b64: &str, data: &[u8]) -> Result<String, String> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64)
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8(raw).map_err(|e| e.to_string())?;
+    let sig = minisign_verify::Signature::decode(&text).map_err(|e| e.to_string())?;
+    let pk = minisign_verify::PublicKey::from_base64(pk_b64).map_err(|e| e.to_string())?;
+    pk.verify(data, &sig, false)
+        .map_err(|e| e.to_string())
+        .map(|()| sig.trusted_comment().to_string())
+}
+
+fn report(case: &str, r: Result<String, String>) {
+    match r {
+        Ok(c) => println!("  ACCEPTED  {case}\n            comment = {c}"),
+        Err(e) => println!("  REJECTED  {case}\n            {e}"),
+    }
+}
+
+fn main() {
+    let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let pk_b64 = kp.pk.to_base64();
+    // `pk.to_base64()` is the raw key line; Tauri's pubkey is the same string.
+    println!("public key: {pk_b64}");
+
+    let art_a = b"artifact A: pretend this is version 1.0.1".to_vec();
+    let art_b = b"artifact B: pretend this is version 1.0.0".to_vec();
+
+    let comment_a = "delta-v1 app:dev.example.app v:1.0.1 plat:darwin-aarch64 \
+                     rep:opaque-v1 b3:aa sz:41 ts:1786656490";
+    let comment_b = "delta-v1 app:dev.example.app v:1.0.0 plat:darwin-aarch64 \
+                     rep:opaque-v1 b3:bb sz:41 ts:1786656400";
+
+    let sign = |data: &[u8], comment: &str| {
+        let sk = kp.sk.clone();
+        minisign::sign(None, &sk, Cursor::new(data), Some(comment), None)
+            .unwrap()
+            .to_string()
+    };
+
+    let sig_a = sign(&art_a, comment_a);
+    let sig_b = sign(&art_b, comment_b);
+
+    println!("\nsignature A, verbatim:\n{sig_a}");
+
+    println!("\n== case 1: honest signature ==");
+    report("artifact A + signature A", verify(&pk_b64, &b64(&sig_a), &art_a));
+
+    println!("\n== case 2: edit the version inside the trusted comment ==");
+    let edited = sig_a.replace("v:1.0.1", "v:9.9.9");
+    assert_ne!(edited, sig_a, "the edit must actually have happened");
+    report(
+        "artifact A + signature A with v:1.0.1 rewritten to v:9.9.9",
+        verify(&pk_b64, &b64(&edited), &art_a),
+    );
+
+    println!("\n== case 3: splice B's genuine comment onto A's signature ==");
+    let spliced = sig_a.replace(comment_a, comment_b);
+    assert_ne!(spliced, sig_a, "the splice must actually have happened");
+    report(
+        "artifact A + signature A carrying B's authenticated comment",
+        verify(&pk_b64, &b64(&spliced), &art_a),
+    );
+
+    println!("\n== case 4: serve old artifact B under new version's name ==");
+    report(
+        "artifact B + signature B (both genuine, wrong release)",
+        verify(&pk_b64, &b64(&sig_b), &art_b),
+    );
+    println!("            ^ accepted by minisign, as it must be: both halves are");
+    println!("              genuine. The comment says v:1.0.0, so the identity");
+    println!("              check is what refuses it, not the signature.");
+
+    println!("\n== case 5: swap the whole signature block ==");
+    report(
+        "artifact A + signature B",
+        verify(&pk_b64, &b64(&sig_b), &art_a),
+    );
+}
+
+== run ==
+
+public key: RWTo3RrcjftVUZ5dHDwNW/MXWhvSymLiiFsNqXv3Bwl+Zn32TbRT+S+b
+
+signature A, verbatim:
+untrusted comment: signature from rsign secret key
+RUTo3RrcjftVUSVPntCnR0o4u5FHSunyia4lViwb6bgl2c5QAYez2KhLdEPoEsKOkZifbH4kHwCOFINprM2TwJ3iiA7uWAs1gww=
+trusted comment: delta-v1 app:dev.example.app v:1.0.1 plat:darwin-aarch64 rep:opaque-v1 b3:aa sz:41 ts:1786656490
+mE1bUcekwdzLrWNAuIoJQF2trJQERVUBJw+gRnNubzlPGK85ZJNWrJNHRRgV0cMlB3iyq8KcvQca7zQIa0nDCw==
+
+
+== case 1: honest signature ==
+  ACCEPTED  artifact A + signature A
+            comment = delta-v1 app:dev.example.app v:1.0.1 plat:darwin-aarch64 rep:opaque-v1 b3:aa sz:41 ts:1786656490
+
+== case 2: edit the version inside the trusted comment ==
+  REJECTED  artifact A + signature A with v:1.0.1 rewritten to v:9.9.9
+            The signature verification failed
+
+== case 3: splice B's genuine comment onto A's signature ==
+  REJECTED  artifact A + signature A carrying B's authenticated comment
+            The signature verification failed
+
+== case 4: serve old artifact B under new version's name ==
+  ACCEPTED  artifact B + signature B (both genuine, wrong release)
+            comment = delta-v1 app:dev.example.app v:1.0.0 plat:darwin-aarch64 rep:opaque-v1 b3:bb sz:41 ts:1786656400
+            ^ accepted by minisign, as it must be: both halves are
+              genuine. The comment says v:1.0.0, so the identity
+              check is what refuses it, not the signature.
+
+== case 5: swap the whole signature block ==
+  REJECTED  artifact A + signature B
+            The signature verification failed
