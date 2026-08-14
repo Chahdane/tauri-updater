@@ -40,12 +40,15 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - name: Build public documentation with warnings denied
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --all-features --no-deps --locked
 
   test:
     # The engine is platform-agnostic by design, so it is tested on all three
-    # desktop platforms even though only Linux artifacts are supported yet.
-    # Development happens on macOS, which makes the Linux and Windows runs the
-    # only evidence that claim holds.
+    # desktop platforms. The v0.1 application path is macOS; Linux and Windows
+    # jobs prove engine portability and compilation, not real install support.
     name: test / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -112,7 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=$(cargo test -p tauri-plugin-updater-delta --test tar_delta_flow --locked -- --nocapture)
+          out=$(cargo test -p tauri-plugin-updater-delta --features test-support \
+                  --test tar_delta_flow --locked -- --nocapture)
           echo "$out"
           grep -q "test a_valid_cache_takes_the_tar_path_and_installs_the_released_bytes ... ok" <<< "$out" \
             || { echo "::error::the tar-delta happy path did not run"; exit 1; }

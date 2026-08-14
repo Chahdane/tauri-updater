@@ -47,7 +47,7 @@ adapter that hands the finished artifact to the installer.
 
 ```mermaid
 flowchart TD
-    A[App calls Updater::check] --> B[ONE fetch of the release document<br/>Tauri retains it on Update.raw_json]
+    A[App calls app.delta_updater.check] --> B[ONE official Tauri fetch<br/>release document retained on Update.raw_json]
     B --> P{Version policy:<br/>target newer than installed?}
     P -- "older / uncomparable" --> R([REFUSED — install nothing])
     P -- equal --> U([Up to date])
@@ -107,17 +107,22 @@ Four stages, in order:
 
 ### Where the base artifact comes from
 
-Applying a patch requires the *old* artifact, and an installed app does not
-normally keep the installer it came from. Two strategies, both planned:
+Applying a patch requires the *old official artifact*, and an installed app does
+not normally keep the installer it came from. The shipping macOS path therefore
+maintains a plugin-owned cache:
 
-- **Cache the artifact** after an update completes, so the next update has its
-  base ready. Cheap, but useless for the very first delta update and for anyone
-  who installed from the website.
-- **Reconstruct the base** from what is on disk where the installed layout allows
-  it deterministically.
+1. A verified target artifact is stored as an immutable content-addressed blob
+   and recorded as PENDING before installation.
+2. `install()` returning `Ok` does not promote it.
+3. On a later launch, the plugin compares the running app's compiled-in version
+   with PENDING. Only an exact match becomes ACTIVE.
+4. ACTIVE is re-hashed and signature-verified against the currently configured
+   key every time it is reused.
 
-Until a base is available, the plugin simply does a full download. The design
-never assumes the base is present.
+The first update after adopting the plugin, an install from a website, a cache
+miss, and cache corruption therefore take Full. A later compatible update may
+use ACTIVE for TarDelta. Cache persistence errors are non-fatal diagnostics:
+they cost a future fast path, not the current update.
 
 ## The `PatchBackend` trait
 
@@ -155,28 +160,46 @@ where CI memory is cheap.
 
 ## Per-platform adapter seams
 
-Everything above is shared. Per-platform code is confined to one small trait: how
-to obtain the base artifact, and how to hand the rebuilt one to the installer.
+The byte engine is shared, but v0.1 support is deliberately narrower than the
+platform-independent tests.
 
 | Platform | Artifact | Notes |
 | --- | --- | --- |
-| Linux | `.AppImage` | Simplest case: a single self-contained file, no installer step, no code signature to preserve. This is why it is the first target — and why the engine can be proven on macOS, since round-tripping an AppImage is just file I/O. |
-| Windows | NSIS `.exe` / `.msi` | Artifact is a single file. Handoff means pointing the existing installer-launch step at the rebuilt file. |
-| macOS | `.app.tar.gz` | Compressed tarball, so unrelated changes perturb the compressed stream widely. Likely needs the delta taken against the *uncompressed* tar and the gzip layer reproduced deterministically — the hardest of the three, hence last. |
+| Linux | `.AppImage` | Engine and release fixtures only; no v0.1 client/install support claim. |
+| Windows | NSIS `.exe` / `.msi` | CI compilation and engine coverage only; no v0.1 client/install support claim. |
+| macOS | `.app.tar.gz` | Supported v0.1 path. The cache expands the old artifact, patches the tar, and exactly reproduces Tauri's gzip write topology before final verification and the real Tauri install. |
 
 ## Failure model
 
-The safety property is: **the delta path can only ever make an update faster,
-never make it fail.**
+Ordinary delta availability failures have exactly one recovery: discard the
+candidate and download the complete artifact selected by the same official
+Tauri check. This includes missing/corrupt cache entries, unavailable patches,
+unknown backends, patch errors, and reconstruction mismatches.
 
-Every step from manifest lookup to hash verification is fallible and every
-failure has exactly one recovery: discard whatever the delta path produced and
-let the official updater do a full download. There is no error state in which the
-user is left worse off than if this plugin were not installed.
+That rule does **not** turn security policy into fallback. A downgrade, an
+authenticated identity contradiction, ambiguous platform metadata, or final
+signature failure refuses or errors and installs nothing. The high-level API
+keeps `Error::Refused` distinct from transport/installation errors, while
+successful `Outcome` variants keep Full, DirectDelta, and TarDelta distinct.
+Nothing in the delta path panics on malformed or hostile input.
 
-`delta_core::Error` is `#[non_exhaustive]` and every variant is treated as
-recoverable at the plugin boundary. Nothing in the delta path panics on
-malformed or hostile input.
+## Public API boundary
+
+The shipping crate exposes `Builder`, `DeltaUpdaterExt`, an opaque checked
+`Update`, `Outcome`, `Diagnostic`, progress phases, errors, and advanced local
+limits. Engine seams such as `Context`, `InstallHandoff`, transport builders,
+cache state, identities, and `VerifiedArtifact` are not application API.
+
+`app.delta_updater().check()` delegates to the official updater once. The opaque
+value returned owns that exact `tauri_plugin_updater::Update`; `install()`
+derives identity from it and hands verified bytes back through the same object.
+There is no public constructor or second installer parameter to mismatch.
+The alternatives and Rust-first v0.1 decision are recorded in
+[`DECISIONS.md` #34](DECISIONS.md#34-the-plugin-owns-the-ordinary-update-flow).
+
+The repository's low-level harness seams and localhost relaxation are available
+only behind the non-default `test-support` feature. The normal example and
+normal plugin build contain neither.
 
 ## Security notes
 
@@ -265,6 +288,10 @@ malformed or hostile input.
   address anything outside the file being rebuilt.
 - **No new network surface.** The plugin fetches from the update server the app
   already configures, and sends no telemetry.
+- **Patch metadata cannot redirect application credentials.** Headers inherited
+  from Tauri are attached only to the exact authoritative full-artifact URL.
+  Patch URLs come from additional unauthenticated fields and never receive those
+  headers, even when they share the same update document.
 
 ## The manifest
 
