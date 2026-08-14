@@ -129,6 +129,20 @@ jobs:
           [ "$count" -eq 2 ] \
             || { echo "::error::expected 2 compile_fail doctests, saw $count"; exit 1; }
 
+      # The claim is that the plugin's public API cannot express a fabricated
+      # identity or a mismatched installer. That claim is only carried by two
+      # compile_fail doctests, and a doctest that silently stops running looks
+      # exactly like one that passes.
+      - name: Confirm the API-boundary doctests actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-plugin-updater-delta --doc --locked)
+          echo "$out"
+          count=$(grep -c "compile fail ... ok" <<< "$out" || true)
+          [ "$count" -eq 2 ] \
+            || { echo "::error::expected 2 compile_fail doctests, saw $count"; exit 1; }
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
