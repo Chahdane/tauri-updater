@@ -28,6 +28,7 @@ minisign = "0.7"
 minisign-verify = "0.2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+log = "0.4"
 
 # Internal
 tauri-updater-delta-core = { path = "crates/delta-core" }

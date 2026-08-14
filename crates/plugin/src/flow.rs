@@ -43,6 +43,46 @@ pub trait InstallHandoff {
     fn install(&self, artifact: &VerifiedArtifact) -> Result<()>;
 }
 
+/// Coarse phases emitted by the high-level API.
+///
+/// Kept inside the plugin: callers see [`crate::ProgressEvent`], while the
+/// engine stays independent of Tauri and of any particular UI model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FlowPhase {
+    Downloading,
+    Reconstructing,
+    Verifying,
+    Installing,
+}
+
+/// The ordinary flow result plus details that must not turn a successful
+/// install into an error.
+pub(crate) struct RunReport {
+    pub(crate) outcome: Outcome,
+    pub(crate) cache_write_error: Option<String>,
+    pub(crate) full_downloaded: Option<u64>,
+}
+
+struct ObservedFetch<'a> {
+    inner: &'a dyn Fetch,
+    full_url: &'a str,
+    progress: &'a dyn Fn(FlowPhase),
+}
+
+impl Fetch for ObservedFetch<'_> {
+    fn fetch(&self, url: &str, out: &Path) -> std::result::Result<(), String> {
+        (self.progress)(FlowPhase::Downloading);
+        let result = self.inner.fetch(url, out);
+        if result.is_ok() && url != self.full_url {
+            // Patch validation and reconstruction begin immediately after a
+            // successful patch fetch. There is no honest percentage to report,
+            // so the public API exposes this phase boundary only.
+            (self.progress)(FlowPhase::Reconstructing);
+        }
+        result
+    }
+}
+
 /// What an update run did.
 ///
 /// The variants name the **mechanism**, not just the result, and that is
@@ -128,8 +168,25 @@ pub fn run_update(
     fetch: &dyn Fetch,
     handoff: &dyn InstallHandoff,
 ) -> Result<Outcome> {
+    run_update_detailed(identity, ctx, fetch, handoff, &|_| {}).map(|report| report.outcome)
+}
+
+/// The shipping flow, including progress and non-fatal cache diagnostics.
+pub(crate) fn run_update_detailed(
+    identity: &UpdateIdentity,
+    ctx: &Context<'_>,
+    fetch: &dyn Fetch,
+    handoff: &dyn InstallHandoff,
+    progress: &dyn Fn(FlowPhase),
+) -> Result<RunReport> {
     std::fs::create_dir_all(ctx.work_dir)
         .map_err(|e| Error::Io(format!("creating {}: {e}", ctx.work_dir.display())))?;
+
+    let fetch = ObservedFetch {
+        inner: fetch,
+        full_url: identity.download_url(),
+        progress,
+    };
 
     let source = plan_update(
         identity,
@@ -141,11 +198,15 @@ pub fn run_update(
             work_dir: ctx.work_dir,
             limits: ctx.limits,
         },
-        fetch,
+        &fetch,
     );
 
     match source {
-        UpdateSource::UpToDate => Ok(Outcome::UpToDate),
+        UpdateSource::UpToDate => Ok(RunReport {
+            outcome: Outcome::UpToDate,
+            cache_write_error: None,
+            full_downloaded: None,
+        }),
 
         // Never a fallback. The full-download path is described by the same
         // document that just failed the check, so there is nothing safer to
@@ -159,13 +220,19 @@ pub fn run_update(
             would_have_downloaded,
             _workspace,
         } => {
+            progress(FlowPhase::Verifying);
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
             check_release_identity(ctx, identity, &verified)?;
-            stage(ctx, identity, &verified, &signature);
+            let cache_write_error = stage(ctx, identity, &verified, &signature);
+            progress(FlowPhase::Installing);
             handoff.install(&verified)?;
-            Ok(Outcome::InstalledFromTarDelta {
-                downloaded,
-                saved_against: would_have_downloaded,
+            Ok(RunReport {
+                outcome: Outcome::InstalledFromTarDelta {
+                    downloaded,
+                    saved_against: would_have_downloaded,
+                },
+                cache_write_error,
+                full_downloaded: None,
             })
         }
 
@@ -176,15 +243,21 @@ pub fn run_update(
             would_have_downloaded,
             _workspace,
         } => {
+            progress(FlowPhase::Verifying);
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
             check_release_identity(ctx, identity, &verified)?;
-            stage(ctx, identity, &verified, &signature);
+            let cache_write_error = stage(ctx, identity, &verified, &signature);
+            progress(FlowPhase::Installing);
             handoff.install(&verified)?;
             // No explicit cleanup: dropping _workspace removes the whole
             // per-update directory, artifact included.
-            Ok(Outcome::InstalledFromDelta {
-                downloaded,
-                saved_against: would_have_downloaded,
+            Ok(RunReport {
+                outcome: Outcome::InstalledFromDelta {
+                    downloaded,
+                    saved_against: would_have_downloaded,
+                },
+                cache_write_error,
+                full_downloaded: None,
             })
         }
 
@@ -210,14 +283,21 @@ pub fn run_update(
 
             let bytes = std::fs::read(&full)
                 .map_err(|e| Error::Io(format!("reading the downloaded artifact: {e}")))?;
+            progress(FlowPhase::Verifying);
             let verified = verify_artifact(bytes, &signature, ctx.pubkey).map_err(classify)?;
             check_release_identity(ctx, identity, &verified)?;
 
-            stage(ctx, identity, &verified, &signature);
+            let downloaded = verified.len() as u64;
+            let cache_write_error = stage(ctx, identity, &verified, &signature);
+            progress(FlowPhase::Installing);
             handoff.install(&verified)?;
             // No explicit cleanup: dropping `space` removes the directory and
             // the artifact inside it.
-            Ok(Outcome::InstalledFromFullDownload)
+            Ok(RunReport {
+                outcome: Outcome::InstalledFromFullDownload,
+                cache_write_error,
+                full_downloaded: Some(downloaded),
+            })
         }
     }
 }
@@ -322,11 +402,12 @@ fn stage(
     identity: &UpdateIdentity,
     verified: &tauri_updater_delta_core::VerifiedArtifact,
     signature: &str,
-) {
-    let Some(cache) = ctx.cache else {
-        return;
-    };
-    let _ = cache.stage_pending(identity.version(), verified, signature);
+) -> Option<String> {
+    let cache = ctx.cache?;
+    cache
+        .stage_pending(identity.version(), verified, signature)
+        .err()
+        .map(|e| e.to_string())
 }
 
 #[cfg(test)]
