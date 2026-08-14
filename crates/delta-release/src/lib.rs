@@ -62,7 +62,7 @@ pub enum Error {
 /// A release to publish, with or without an upgrade path into it.
 #[derive(Debug, Clone)]
 pub struct ReleaseRequest<'a> {
-    /// Tauri platform identifier, e.g. `"linux-x86_64"`.
+    /// Tauri platform identifier, e.g. `"darwin-aarch64"`.
     pub platform: &'a str,
     /// Version being released.
     pub version: &'a str,
