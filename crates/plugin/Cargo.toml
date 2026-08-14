@@ -21,8 +21,17 @@ tauri-plugin-updater = ">=2.10.1, <2.11.0"
 tauri-updater-delta-core.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 thiserror.workspace = true
+log.workspace = true
+
+[features]
+default = []
+# Internal flow and localhost transport controls used by this repository's
+# integration tests and real-app harness. Normal applications must not enable
+# this feature.
+test-support = []
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 semver.workspace = true
 tauri-updater-delta-fixtures.workspace = true
 tauri-updater-delta-release.workspace = true
@@ -33,3 +42,33 @@ tempfile.workspace = true
 # Real .app.tar.gz fixtures, built the way tauri-bundler builds them.
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 tar = "0.4"
+
+[[test]]
+name = "real_transport"
+path = "tests/real_transport.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "release_identity_flow"
+path = "tests/release_identity_flow.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "tar_delta_flow"
+path = "tests/tar_delta_flow.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "transaction_isolation"
+path = "tests/transaction_isolation.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "update_flow"
+path = "tests/update_flow.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "public_api"
+path = "tests/public_api.rs"
+required-features = ["test-support"]

@@ -24,7 +24,7 @@ use std::path::Path;
 
 use base64::Engine as _;
 use minisign::KeyPair;
-use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
+use tauri_plugin_updater_delta::test_support::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::Error;
 use tauri_updater_delta_core::client::Fetch;
 use tauri_updater_delta_core::release_identity::{current_platform, ReleaseIdentity};

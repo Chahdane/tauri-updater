@@ -58,6 +58,45 @@ at the same publish gate. Only `gh` is absent.
 3. The tag is `vX.Y.Z` and matches the app's version. `release-check` compares
    them and refuses to publish a manifest describing a different release.
 
+4. The application identifier and platform are known. Use the exact
+   `identifier` from `tauri.conf.json` and `darwin-aarch64` or
+   `darwin-x86_64`. These are signed release facts, not cosmetic labels.
+
+## Normal macOS release sequence
+
+1. Install the pinned bundler and build the `.app.tar.gz`:
+
+   ```sh
+   cargo install tauri-cli --version =2.10.1 --locked
+   cargo tauri build
+   ```
+
+   The repository workflow deliberately keeps `TAURI_SIGNING_PRIVATE_KEY` out
+   of the build step. `delta-release` performs the one updater signing operation
+   later, with the authenticated identity in its trusted comment. If the bundler
+   emits its own legacy `.sig`, do not publish that file in place of the one
+   written below.
+
+2. Build or install `delta-release`, then generate the release. The CLI examples
+   in the [README quickstart](../README.md#5-produce-release-artifacts) show both
+   a first Full-only release and a later Full + direct + tar-layer release.
+   Predecessor flags are all-or-none. On macOS production workflows should pass
+   `--require-tar-layer` when a usable predecessor exists, so a silently missing
+   optimization fails at release time instead of sending every client Full.
+
+3. Run `release-check` against the exact artifact, manifest, tag, app id,
+   platform, and public key that will be published. This is mandatory even
+   though `delta-release` self-applies each patch: the publish gate also checks
+   URLs, tag identity, signature, and cross-layer consistency.
+
+4. Upload only the asset set listed above. Point the existing Tauri updater
+   endpoint at `manifest.json`; there is no second delta-specific endpoint.
+
+The release tool needs no cache directory, installed-app path, or client
+configuration. It requires app id, target version, platform, artifact paths and
+public URLs because those facts cannot safely be guessed and some are bound into
+the signature.
+
 ## The publish gate
 
 Before any upload, `release-check` reads the manifest back as a stranger would
