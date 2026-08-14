@@ -37,6 +37,9 @@ OUT="${1:-/private/tmp/delta-tar-e2e}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="$(cd "$APP_DIR/../.." && pwd)"
 KEY_PASSWORD="e2e-test-password"
+# Bound into the signature's authenticated release identity, and compared at
+# runtime against the app's own tauri.conf.json identifier.
+APP_ID="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["identifier"])' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tauri.conf.json")"
 APP_NAME="DeltaUpdaterExample.app"
 MAIN_BINARY="Contents/MacOS/delta-updater-example"
 
@@ -123,6 +126,7 @@ publish() {
   echo "==> publishing $from -> $to"
   "$ROOT/target/release/delta-release" \
     --platform "$PLATFORM" \
+    --app-id "$APP_ID" \
     --target-version "$to" --from-version "$from" \
     --previous-installer "$OUT/v$from/$APP_NAME.tar.gz" \
     --new-installer      "$OUT/v$to/$APP_NAME.tar.gz" \
