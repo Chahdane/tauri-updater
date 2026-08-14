@@ -71,30 +71,8 @@ jobs:
             librsvg2-dev
       - uses: Swatinem/rust-cache@v2
       - name: Test
-        if: runner.os != 'Windows'
         # --nocapture so the measured patch ratio lands in the CI log.
         run: cargo test --workspace --all-features --locked -- --nocapture
-      - name: Test and surface failures on Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cargo test --workspace --all-features --locked -- --nocapture 2>&1 |
-            Tee-Object -FilePath workspace-tests.log
-          $status = $LASTEXITCODE
-          if ($status -ne 0) {
-            $contents = Get-Content workspace-tests.log
-            $failureStart = $contents | Select-String -Pattern '^failures:$' |
-              Select-Object -First 1
-            if ($null -ne $failureStart) {
-              $failureLines = $contents |
-                Select-Object -Skip ($failureStart.LineNumber - 1) -First 80
-            } else {
-              $failureLines = $contents | Select-Object -Last 80
-            }
-            $message = (($failureLines | ForEach-Object { $_.Trim() }) -join ' | ')
-            Write-Output "::error title=workspace test failures::$message"
-          }
-          exit $status
 
       # The two assertions below are load-bearing, and a green job is not proof
       # they ran: a build-dependency change is exactly how a test starts being
