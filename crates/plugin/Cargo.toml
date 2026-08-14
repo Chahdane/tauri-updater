@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["tauri", "updater", "delta", "auto-update", "macos"]
+categories = ["development-tools", "gui"]
 
 [dependencies]
 tauri = "2"
