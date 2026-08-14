@@ -70,25 +70,25 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Diagnose plugin + example features on Windows
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta -p delta-updater-example --all-features --locked
-      - name: Diagnose plugin + core features on Windows
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta -p tauri-updater-delta-core --all-features --locked
-      - name: Diagnose plugin + release features on Windows
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta -p tauri-updater-delta-release --all-features --locked
-      - name: Diagnose non-plugin package features on Windows
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: cargo test -p delta-updater-example -p tauri-updater-delta-core -p tauri-updater-delta-release --all-features --locked
       - name: Test
+        if: runner.os != 'Windows'
         # --nocapture so the measured patch ratio lands in the CI log.
         run: cargo test --workspace --all-features --locked -- --nocapture
+      - name: Test and surface failures on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --workspace --all-features --locked -- --nocapture 2>&1 |
+            Tee-Object -FilePath workspace-tests.log
+          $status = $LASTEXITCODE
+          if ($status -ne 0) {
+            $failureLines = Get-Content workspace-tests.log |
+              Select-String -Pattern 'FAILED|panicked|failures:' |
+              Select-Object -Last 30
+            $message = (($failureLines | ForEach-Object { $_.Line.Trim() }) -join ' | ')
+            Write-Output "::error title=workspace test failures::$message"
+          }
+          exit $status
 
       # The two assertions below are load-bearing, and a green job is not proof
       # they ran: a build-dependency change is exactly how a test starts being
