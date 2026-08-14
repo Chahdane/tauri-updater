@@ -115,7 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=$(cargo test -p tauri-plugin-updater-delta --test tar_delta_flow --locked -- --nocapture)
+          out=$(cargo test -p tauri-plugin-updater-delta --features test-support \
+                  --test tar_delta_flow --locked -- --nocapture)
           echo "$out"
           grep -q "test a_valid_cache_takes_the_tar_path_and_installs_the_released_bytes ... ok" <<< "$out" \
             || { echo "::error::the tar-delta happy path did not run"; exit 1; }
