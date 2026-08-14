@@ -75,3 +75,9 @@ required-features = ["test-support"]
 name = "public_api"
 path = "tests/public_api.rs"
 required-features = ["test-support"]
+
+# Deliberately NOT gated on test-support: this checks the published
+# compatibility contract, which is a property of the default build.
+[[test]]
+name = "supported_versions"
+path = "tests/supported_versions.rs"
