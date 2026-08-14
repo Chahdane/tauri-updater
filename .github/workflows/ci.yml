@@ -72,7 +72,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         # --nocapture so the measured patch ratio lands in the CI log.
-        run: cargo test --workspace --all-features --locked -- --nocapture
+        shell: bash
+        run: |
+          set +e
+          cargo test --workspace --all-features --locked -- --nocapture 2>&1 \
+            | tee workspace-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            failures=$(awk '
+              /^failures:$/ { in_failures=1; next }
+              in_failures && /^test result:/ { in_failures=0 }
+              in_failures && /^    [[:alnum:]_].*$/ { print }
+            ' workspace-tests.log | sort -u | paste -sd "," -)
+            echo "::error title=workspace test failures::$failures"
+          fi
+          exit "$status"
 
       # The two assertions below are load-bearing, and a green job is not proof
       # they ran: a build-dependency change is exactly how a test starts being
