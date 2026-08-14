@@ -43,6 +43,7 @@ use std::path::Path;
 use base64::Engine as _;
 use minisign_verify::{PublicKey, Signature};
 
+use crate::release_identity::{parse_trusted_comment, ReleaseBinding};
 use crate::{Error, Result};
 
 /// An artifact whose minisign signature has been verified.
@@ -76,12 +77,30 @@ use crate::{Error, Result};
 pub struct VerifiedArtifact {
     /// Private. This is the whole mechanism.
     bytes: Vec<u8>,
+    /// The release identity the signature carried, if it carried one.
+    ///
+    /// Held here rather than returned separately so that the bytes and the
+    /// statement about which release they are cannot be taken apart. The same
+    /// argument as owning the bytes instead of a path: two values that must
+    /// agree are safest when they are one value.
+    binding: ReleaseBinding,
 }
 
 impl VerifiedArtifact {
     /// The verified bytes — exactly those the signature was checked against.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// What the signature says this release *is*.
+    ///
+    /// Authenticated: the trusted comment this was read from is covered by the
+    /// signature's global signature, which [`verify_artifact`] has already
+    /// checked. [`ReleaseBinding::Legacy`] is an authenticated answer too — a
+    /// server cannot strip a binding to force the legacy rules, because doing so
+    /// invalidates the signature.
+    pub fn binding(&self) -> &ReleaseBinding {
+        &self.binding
     }
 
     /// Size of the artifact in bytes.
@@ -124,11 +143,21 @@ pub fn verify_artifact(
     let signature = Signature::decode(&signature_decoded)
         .map_err(|e| Error::Signature(format!("unusable signature: {e}")))?;
 
+    // Verifies the artifact signature AND the global signature over
+    // `artifact_sig || trusted_comment` (minisign-verify 0.2.5, verify_ed25519).
+    // The second is what makes the identity below authenticated rather than
+    // advisory, and it is checked here whether or not anyone reads the comment.
     public_key
         .verify(&bytes, &signature, true)
         .map_err(|e| Error::Signature(e.to_string()))?;
 
-    Ok(VerifiedArtifact { bytes })
+    // Only now, on a signature that has verified. A release whose own signed
+    // description does not parse is a contradiction, not a transport problem, so
+    // it fails closed rather than degrading to "no binding".
+    let binding = parse_trusted_comment(signature.trusted_comment())
+        .map_err(|e| Error::ReleaseIdentity(e.to_string()))?;
+
+    Ok(VerifiedArtifact { bytes, binding })
 }
 
 /// Read `path` and verify it.
@@ -139,6 +168,30 @@ pub fn verify_artifact_file(
 ) -> Result<VerifiedArtifact> {
     let bytes = std::fs::read(path).map_err(|e| Error::io("read", path, e))?;
     verify_artifact(bytes, signature_b64, pubkey_b64)
+}
+
+/// Read the release binding out of a signature **without verifying anything**.
+///
+/// # Why this is safe to have, and where it must not be used
+///
+/// The authoritative read is [`VerifiedArtifact::binding`], which exists only
+/// after the signature verified. This one exists because the client has to
+/// decide whether the delta paths are even worth attempting *before* it has the
+/// bytes to verify — and downloading a patch to discover the release refuses
+/// itself is a waste.
+///
+/// It is safe only because of what callers are allowed to do with it, which is
+/// strictly one direction: **it may cause a refusal or make a path unavailable,
+/// and it may never authorise anything.** The bytes it reads are the same bytes
+/// the authoritative check later verifies, so an early refusal is one the
+/// authoritative check would also have reached; an early *acceptance* would be
+/// trusting an unauthenticated string, and no caller does that.
+pub fn advisory_binding(signature_b64: &str) -> Result<ReleaseBinding> {
+    let decoded = base64_to_string(signature_b64, "signature")?;
+    let signature = Signature::decode(&decoded)
+        .map_err(|e| Error::Signature(format!("unusable signature: {e}")))?;
+    parse_trusted_comment(signature.trusted_comment())
+        .map_err(|e| Error::ReleaseIdentity(e.to_string()))
 }
 
 fn base64_to_string(value: &str, what: &str) -> Result<String> {

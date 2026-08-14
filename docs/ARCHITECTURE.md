@@ -51,7 +51,10 @@ flowchart TD
     B --> P{Version policy:<br/>target newer than installed?}
     P -- "older / uncomparable" --> R([REFUSED — install nothing])
     P -- equal --> U([Up to date])
-    P -- newer --> Q{Delta metadata matches<br/>the target Tauri selected?}
+    P -- newer --> N{Signed release identity<br/>vs the target on offer}
+    N -- contradicts --> R
+    N -- "absent: signed before v1" --> F
+    N -- agrees --> Q{Delta metadata matches<br/>the target Tauri selected?}
     Q -- no --> R
     Q -- "no delta published" --> F[Full download<br/>from Update.download_url]
     Q -- yes --> D[Download patch]
@@ -61,8 +64,10 @@ flowchart TD
     G -- yes --> V
     F --> V{Minisign signature valid?<br/>THE PLUGIN CHECKS THIS}
     V -- no --> R
-    V -- yes --> H[VerifiedArtifact]
-    H --> I[Update::install — installs, verifies nothing]
+    V -- yes --> H[VerifiedArtifact<br/>carries the authenticated identity]
+    H --> W{Identity matches what<br/>is actually being installed?}
+    W -- no --> R
+    W -- yes --> I[Update::install — installs, verifies nothing]
 
     D -. any error .-> F
     E -. any error .-> F
@@ -79,6 +84,13 @@ earlier drafts of this document:
   to the installer; verification lives in `Update::download`, which the delta
   path exists to skip. The signature check in this plugin is therefore the only
   one on this path — see #10.
+
+The identity gate appears twice on purpose. `N` reads the signed comment out of a
+document that is still untrusted, so a contradiction is refused before a single
+byte is downloaded; that read is **advisory** and can only refuse, never
+authorise. `W` is the authoritative one, because it reads
+`VerifiedArtifact::binding()`, which cannot exist until `PublicKey::verify`
+returned. Every install path passes through `W`. See #27.
 
 Four stages, in order:
 
@@ -178,6 +190,21 @@ malformed or hostile input.
   release document is **not signed at all**. Anything in this repository that
   reads as though the manifest were authenticated is a bug in the prose; see
   `docs/DECISIONS.md` #11.
+- **The release identity, however, *is* authenticated — inside the signature.**
+  Minisign blocks carry a trusted comment covered by a second signature over
+  `artifact_sig ‖ trusted_comment`, checked by the same `PublicKey::verify` this
+  plugin already calls. The release process writes
+  `delta-v1 app:… v:… plat:… rep:… b3:… sz:… ts:…` there, and the client compares
+  every field against what it is installing. So "these bytes are ours" became
+  "these bytes are ours, and they are version X of application Y for platform Z".
+  A contradiction fails closed and never falls back; a release signed before this
+  existed keeps working with the delta paths unavailable. See #27.
+- **Authenticity, identity and freshness are three separate properties.** The
+  first two are held. **Freshness is not**: nothing proves the release on offer is
+  the newest published, so a genuine older release carrying its own genuine
+  identity is stopped only by version policy against an existing install, and not
+  at all on a first install. There is no expiry, timestamp authority or role
+  separation here. Do not read this as TUF-style freshness.
 - **The release is bound to the one Tauri checked.** Because a signature says
   nothing about *which* release it covers, and old signatures stay valid
   forever, signature verification alone cannot stop a downgrade to a genuinely

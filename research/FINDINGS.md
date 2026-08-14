@@ -75,6 +75,62 @@ policy refuses it.
 evidence — disabling the downgrade guard makes that test fail with
 `got Ok(InstalledFromFullDownload)`, i.e. the attack succeeding.
 
+*Status:* still true of the manifest, and **no longer decisive**. F27 binds the
+release identity into bytes the key already covers, so the version a client
+compares against is authenticated rather than asserted. The manifest itself
+remains unsigned.
+
+### F27 — The minisign trusted comment is an authenticated channel nobody was reading · **DEMONSTRATED**
+
+A minisign block carries two Ed25519 signatures under the same key, the second
+over `artifact_sig ‖ trusted_comment`. The comment is therefore bound to *that
+specific artifact's signature*, and `PublicKey::verify` — the call
+`tauri-plugin-updater` already makes — checks both halves. Release identity can
+be authenticated at the cost of a parser: no second key, no second signature, no
+second fetch.
+
+Measured on the three tamper cases the design depends on. Editing the version
+inside the comment: **rejected**. Splicing another release's own genuine comment
+onto this artifact's signature: **rejected**. Swapping the whole signature block:
+**rejected**.
+
+Consequence beyond the obvious one: *absence* is authenticated too. Stripping the
+identity from a bound release to force the unrestricted legacy path invalidates
+the global signature, so "this release has no binding" is a property of the
+release rather than a claim by the server — which is what makes a permissive
+migration safe.
+
+*Evidence:* `research/experiments/2026-08-14-minisign-trusted-comment-binding`;
+mechanism read at `minisign-verify-0.2.5/src/lib.rs:334`; DECISIONS #27;
+`crates/plugin/tests/release_identity_flow.rs`, which asserts the same properties
+through the real flow on every CI run. Mutation evidence: removing the
+delta-availability gate makes `a_legacy_signature_makes_a_published_delta_unavailable`
+fail, and rewriting a contradiction into a full download makes
+`an_authenticated_contradiction_never_becomes_a_full_download` fail.
+
+### F28 — Authenticity, identity and freshness are three properties, and only two are held · **DEMONSTRATED**
+
+Conflating them is how this class of bug survives review, so they are separated
+explicitly:
+
+| Property | Claim | Status |
+| --- | --- | --- |
+| Authenticity | these bytes were signed by the key | held, by minisign |
+| Identity | these bytes *are* release X of app Y | held, by F27 |
+| Freshness | release X is the newest published | **not held** |
+
+An attacker controlling the server can still serve a *genuine older release
+carrying its own genuine old identity*. Against an existing install the downgrade
+policy refuses it, and that refusal is now trustworthy because the version it
+reads is signed. Against a **first install** there is no floor, and nothing
+establishes what "latest" means. A stale-but-genuine manifest is equally
+undetectable: the manifest is unsigned and there is no expiry, timestamp
+authority or role separation. This is **not** TUF-style freshness and must not be
+reported as it.
+
+*Evidence:* DECISIONS #27; case 4 of the binding probe, which is *accepted* by
+verification and refused only by version policy.
+
 ### F5 — A capability type can make an unverified install unrepresentable · **DEMONSTRATED**
 
 `VerifiedArtifact` has a private field and no public constructor, so
@@ -147,7 +203,10 @@ Without the mutation pass, three guards would have shipped with tests incapable
 of detecting their removal. This is the strongest methodological result the
 project has.
 
-*Evidence:* `SPRINT.md` mutation tables for Gates A–C.
+*Evidence:* the three tests named above, each of which now fails when its guard
+is removed. The mutation tables that recorded the original Gates A–C pass lived
+in a working document that is no longer part of this repository, so the durable
+evidence is the tests themselves rather than a transcript of the run.
 
 ### F10 — Fake transports hide socket-level failure modes · **STRONG OBSERVATION**
 
@@ -394,6 +453,15 @@ own version — promoted it.
 **Scope.** macOS, one architecture, one bundle format, one ladder, string-only
 source changes, loopback plain HTTP, ad-hoc signing. Integration evidence.
 Closes no Audit #2 blocker except B7, and that only for the tar path.
+
+**Rerun under authenticated identity**
+(`research/experiments/2026-08-14-macos-authenticated-identity-e2e`): rebuilt from
+scratch with every release signed under F27, the same two transitions produce the
+same two outcomes — Full, then a 641,941-byte tar delta against 4,175,538. That
+the second one is a tar delta *is itself* the proof the authenticated path ran: a
+legacy binding makes both delta paths unavailable by construction, so no delta
+outcome is reachable without a parsed, verified, matching identity. The identity
+check did not close the fast path it protects.
 
 ### F25 — The tar layer's saving reproduces on independent pairs · **DEMONSTRATED, for three controlled macOS builds**
 
