@@ -142,6 +142,10 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            // The only harness that serves real HTTP: this builds releases whose
+            // URLs point at a loopback test server. The opt-in accepts 127.0.0.1
+            // and refuses every other host, so it cannot stand in for a release.
+            allow_insecure_urls: true,
         },
         &key,
         None,
