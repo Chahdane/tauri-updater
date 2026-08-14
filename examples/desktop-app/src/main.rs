@@ -33,9 +33,9 @@ fn main() {
         // response Tauri's own check already made.
         .plugin(delta_builder.build());
 
-    let builder = builder.setup(|app| {
+    let builder = builder.setup(|_app| {
         #[cfg(feature = "e2e-control")]
-        control::spawn(app.handle().clone());
+        control::spawn(_app.handle().clone());
 
         Ok(())
     });
