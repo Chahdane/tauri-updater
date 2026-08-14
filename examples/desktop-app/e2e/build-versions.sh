@@ -128,6 +128,7 @@ cargo build -q --release -p tauri-updater-delta-release --manifest-path "$ROOT/C
   --target-version 1.0.1 --from-version 1.0.0 \
   --previous-installer "$OUT/v1.0.0/DeltaUpdaterExample.app.tar.gz" \
   --new-installer      "$OUT/v1.0.1/DeltaUpdaterExample.app.tar.gz" \
+  --dangerously-allow-loopback-http-urls \
   --installer-url "http://127.0.0.1:0/DeltaUpdaterExample.app.tar.gz" \
   --patch-url     "http://127.0.0.1:0/patch.zst" \
   --patch-out     "$OUT/patch.zst" \
