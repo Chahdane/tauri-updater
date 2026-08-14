@@ -15,9 +15,12 @@ security audit and release gate have not happened yet.
   the real Tauri installer.
 - The harness asserts the update source and exact installed binary hashes, so a
   Full fallback cannot masquerade as a delta success.
-- On controlled example-app pairs, a direct compressed-artifact patch was about
-  95–97% of Full while a tar-layer patch was about 15%. These measurements are
-  evidence about those builds, not universal macOS ratios.
+- On controlled example-app pairs, a direct compressed-artifact patch was
+  95.5–96.1% of a Full download while a tar-layer patch was 16.0–16.1%
+  (release-candidate build, 2026-08-14; earlier controlled runs measured
+  15.0–15.4% for the tar layer). These are measurements of those builds, whose
+  only difference is a version string. A real application's ratio depends
+  entirely on what changed between releases and will differ.
 - Final artifact signature verification, authenticated release identity,
   bounded reconstruction, cache re-verification, and release-time patch
   round-trips are enforced and tested.

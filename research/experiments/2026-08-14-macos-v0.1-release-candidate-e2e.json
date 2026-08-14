@@ -1,0 +1,85 @@
+{
+  "experiment_id": "2026-08-14-macos-v0.1-release-candidate-e2e",
+  "date": "2026-08-14T15:22:00+01:00",
+  "source_commit": "793592f775d600b6568744b2db8ef93f733e9c6c",
+  "tree_dirty": true,
+  "platform": "darwin",
+  "os_version": "macOS 26.5.2",
+  "architecture": "aarch64",
+  "rust_version": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+  "tauri_version": "2.11.5",
+  "tauri_plugin_updater_version": "2.10.1",
+  "zstd_version": "zstd 0.13.3",
+  "bundler_versions": {
+    "tauri-cli": "2.10.1",
+    "tauri-bundler": "2.8.1",
+    "tar": "0.4.46",
+    "flate2": "1.1.9",
+    "gzip-backend": "zlib-rs 0.6.7",
+    "minisign": "0.7.9",
+    "minisign-verify": "0.2.5"
+  },
+  "old_version": "1.0.1",
+  "new_version": "1.0.2",
+  "version_distance": "patch",
+  "old_artifact_hash": "cf015525216161ec45a211e6dbf6a18caee4a010a323a6c68889d90ebb30d781",
+  "new_artifact_hash": "ba6f9df783d2f59045c5fe431796f743df793e11e46fb49bdf200951d9762858",
+  "old_artifact_size": 4188404,
+  "new_artifact_size": 4192521,
+  "patch_hash": null,
+  "patch_size": 675776,
+  "patch_ratio": 0.16118958516654,
+  "representation": "app-tar-gz-v1 (tar layer inside .app.tar.gz)",
+  "compression_settings": {
+    "patch_backend": "ZstdBackend",
+    "zstd_level": 19,
+    "recompression": "tauri-app-tar-gz-v1",
+    "gzip_level": "Compression::default() (6)"
+  },
+  "patch_generation_seconds": null,
+  "patch_application_seconds": 0.256,
+  "peak_memory_bytes": null,
+  "disk_usage_bytes": 8391729,
+  "source_change_category": "string-only",
+  "changed_loc": null,
+  "notes": "macOS v0.1 RELEASE-CANDIDATE E2E. Rebuilt from scratch after every P5 fix; no artifact is reused from an earlier run. The application drives the shipping public API -- app.delta_updater().check() then update.install() -- rather than the internal flow, so this exercises the same seam an adopter uses. 34 assertions passed. WHAT IS ASSERTED, not inferred: the three main binaries are pairwise distinct (f9c20ec9..., 9a1daf34..., 8edcea6d...); transition 1 is explicitly a Full download from an empty cache and explicitly NOT a delta; transition 2 is explicitly a TarDelta, the tar patch WAS requested, and the full artifact and direct patch were NOT requested; PENDING is staged and only a relaunch running the new version promotes it to ACTIVE; the installed binary hash is checked after each install. WHY THE AUTHENTICATED PATH IS PROVEN TO HAVE RUN: a signature carrying no delta-v1 binding parses as Legacy, and a Legacy binding makes both delta paths unavailable by construction in plan_update, so a TarDelta outcome is unreachable without a parsed, verified, matching identity. One decoded comment, from manifest-1.0.2.json: 'delta-v1 app:dev.chahdane.delta-updater-example v:1.0.2 plat:darwin-aarch64 rep:app-tar-gz-v1 b3:ba6f9df783d2f59045c5fe431796f743df793e11e46fb49bdf200951d9762858 sz:4192521 ts:1786714950'. The degradation case corrupts the cached base blob and confirms the update still completes via a full download rather than a tar delta. CONFOUNDER, stated again because the ratio is the number most likely to be over-read: the only source difference between these versions is a version string, so 16.1% is a best case for this shape of change and not a general expectation for any application. RATIO DRIFT WORTH RECORDING: this build measured 16.04% and 16.12% for the tar layer where the three earlier controlled runs measured 15.00%, 15.37% and 15.32%. Same recipe, same harness, independently rebuilt binaries -- so the ratio moves with the build even when the source change does not, which is exactly why the README states a range attached to specific builds rather than a single figure.",
+  "raw_log": "logs/2026-08-14-macos-v0.1-release-candidate-e2e.log",
+  "artifact_provenance": "examples/desktop-app/e2e/build-three-versions.sh /private/tmp/delta-rc-e2e, which runs `cargo tauri build --features e2e-control` three times against examples/desktop-app with only the version string changed, then publishes both releases with the delta-release binary built from this tree, passing --app-id from tauri.conf.json's identifier and --require-tar-layer. Replayed by examples/desktop-app/e2e/run-tar-e2e.sh against a local HTTP server; the app under test is the real bundled .app, launched and relaunched between transitions so promotion is licensed by what actually ran. The build script rewrites the example's version, signing key and plain-HTTP opt-in in place; those edits are per-run scratch and were reverted before commit.",
+  "measurements": {
+    "main_binary_sha256": {
+      "1.0.0": "f9c20ec92596903958fa73745d92bd8e73d03bdfde173c9c786970e7fc63460c",
+      "1.0.1": "9a1daf34ab91728d112a960d89fd73b71fc5deaf61439123f2420a33c7b8aef3",
+      "1.0.2": "8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac825f1ca6b4c75aa577e0bb"
+    },
+    "transition_1": {
+      "from": "1.0.0",
+      "to": "1.0.1",
+      "cache_state_before": "EMPTY",
+      "outcome": "installed-from-full-download",
+      "seconds": 0.119
+    },
+    "transition_2": {
+      "from": "1.0.1",
+      "to": "1.0.2",
+      "cache_state_before": "ACTIVE(1.0.1)",
+      "outcome": "installed-from-tar-delta",
+      "downloaded_bytes": 675776,
+      "full_bytes": 4192521,
+      "seconds": 0.256
+    },
+    "degradation_corrupt_cache_blob": {
+      "outcome": "installed-from-full-download"
+    },
+    "direct_vs_tar": {
+      "1.0.0->1.0.1": {
+        "direct_patch_percent": 96.08,
+        "tar_patch_percent": 16.04
+      },
+      "1.0.1->1.0.2": {
+        "direct_patch_percent": 95.51,
+        "tar_patch_percent": 16.12
+      }
+    },
+    "assertions_passed": 34
+  }
+}
