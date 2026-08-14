@@ -77,6 +77,7 @@ fn publish(dir: &Path, pair: &KeyPair) -> Published {
             patch_out: &patch,
             tar_layer: None,
         }),
+        allow_insecure_urls: false,
     };
 
     let (manifest, _) =
@@ -412,6 +413,7 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
                 patch_out: &first_patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         None,
@@ -437,6 +439,7 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
                 patch_out: &second_patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         Some(manifest),
@@ -476,6 +479,7 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
                 patch_out: &dir.path().join("a.zst"),
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         None,
@@ -500,6 +504,7 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
                 patch_out: &dir.path().join("b.zst"),
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         Some(old_manifest),
@@ -537,6 +542,7 @@ fn refuses_to_patch_a_version_to_itself() {
                 patch_out: &dir.path().join("a.zst"),
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,

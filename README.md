@@ -260,6 +260,20 @@ depends on are observations about `tauri-plugin-updater` 2.10.1's implementation
 rather than guarantees of its API. A caret range would let any of them change
 while CI stayed green.
 
+**Pin `=2.10.1` if you want exactly the configuration this release tested.** The
+strongest evidence here is against that one version: its source was read for each
+of the six behaviours, and a test asserts *this repository's* lockfile resolves to
+it. Your project resolves the range independently, so a later 2.10.x is possible
+and untested by us. The consequences of drift are degradation rather than
+compromise — this plugin performs its own signature and identity verification
+regardless of upstream, so a changed upstream behaviour costs the delta path and
+falls back to a full download rather than weakening what gets installed — but if
+you want the tested configuration, pin it:
+
+```toml
+tauri-plugin-updater = "=2.10.1"
+```
+
 **On Intel macOS.** The engine is byte-oriented and architecture-independent, and
 the same engine and release tests run on Linux and Windows x86_64 in CI. The
 recompression recipe depends on `tar` and `flate2` behaviour rather than on the

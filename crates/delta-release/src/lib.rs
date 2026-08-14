@@ -101,6 +101,25 @@ pub struct ReleaseRequest<'a> {
     /// puts that distinction in the type, so "no previous release" produces a
     /// complete, signed, Full-only manifest and cannot silently produce nothing.
     pub predecessor: Option<Predecessor<'a>>,
+
+    /// Permit `http://` URLs in the generated manifest.
+    ///
+    /// **Leave this `false` for anything anyone will download.** It exists for
+    /// this repository's loopback end-to-end harness, which serves from
+    /// `127.0.0.1`, and for nothing else.
+    ///
+    /// # Why the generator has an opinion about URLs at all
+    ///
+    /// The client refuses a non-HTTPS artifact URL in release builds. A manifest
+    /// carrying one is therefore not merely unsafe, it is **unusable** — every
+    /// client rejects it — and the release tool used to emit exactly that and
+    /// report success. The failure then surfaced on users rather than on the
+    /// machine that produced it. See finding A-1 in the v0.1 release audit.
+    ///
+    /// Enabling this narrows to loopback only. It is not a general escape hatch,
+    /// because a general escape hatch is how the safe default gets switched off
+    /// once and left off.
+    pub allow_insecure_urls: bool,
 }
 
 /// The previous release, and where to put the patches generated against it.
@@ -186,6 +205,18 @@ pub fn build_release(
     key: &SigningKey,
     existing: Option<Manifest>,
 ) -> Result<(Manifest, PatchSummary)> {
+    check_url(
+        "the installer URL",
+        req.installer_url,
+        req.allow_insecure_urls,
+    )?;
+    if let Some(pred) = &req.predecessor {
+        check_url("the patch URL", pred.patch_url, req.allow_insecure_urls)?;
+        if let Some(tar) = &pred.tar_layer {
+            check_url("the tar-patch URL", tar.patch_url, req.allow_insecure_urls)?;
+        }
+    }
+
     if !req.new_installer.is_file() {
         return Err(Error::Request(format!(
             "new installer {} does not exist",
@@ -342,6 +373,39 @@ pub fn build_release(
             tar_layer_skipped,
         },
     ))
+}
+
+/// Refuse a URL a production client would not fetch.
+///
+/// The client's transport policy is the authority here and this only mirrors it,
+/// so the two cannot disagree about what "publishable" means. `allow_insecure`
+/// narrows to loopback rather than permitting anything: the harness needs
+/// `127.0.0.1`, and no release needs `http://` to somewhere else.
+fn check_url(what: &str, url: &str, allow_insecure: bool) -> Result<()> {
+    if url.starts_with("https://") {
+        return Ok(());
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or_default();
+        if allow_insecure && matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
+            return Ok(());
+        }
+        if allow_insecure {
+            return Err(Error::Request(format!(
+                "{what} is plain HTTP to {host:?}. The insecure opt-in covers \
+                 loopback only; a release served from anywhere else must use https."
+            )));
+        }
+        return Err(Error::Request(format!(
+            "{what} is plain HTTP ({url}). Production clients refuse a non-HTTPS \
+             artifact URL, so this release would be rejected by every client that \
+             fetched it. Use https, or enable the loopback-only insecure opt-in if \
+             this is the local end-to-end harness."
+        )));
+    }
+    Err(Error::Request(format!(
+        "{what} is not an http(s) URL ({url})"
+    )))
 }
 
 /// Generate the direct patch, then prove it reconstructs the target exactly.
