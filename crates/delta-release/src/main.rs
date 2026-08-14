@@ -27,7 +27,7 @@ const KEY_PASSWORD_ENV: &str = "TAURI_SIGNING_PRIVATE_KEY_PASSWORD";
     version
 )]
 struct Args {
-    /// Tauri platform identifier, e.g. linux-x86_64.
+    /// Tauri platform identifier, e.g. darwin-aarch64.
     #[arg(long)]
     platform: String,
 
