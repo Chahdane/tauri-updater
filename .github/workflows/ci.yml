@@ -70,22 +70,22 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Diagnose plugin package on Windows
+      - name: Diagnose plugin + example features on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta --all-features --locked
-      - name: Diagnose core package on Windows
+        run: cargo test -p tauri-plugin-updater-delta -p delta-updater-example --all-features --locked
+      - name: Diagnose plugin + core features on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-updater-delta-core --all-features --locked
-      - name: Diagnose release package on Windows
+        run: cargo test -p tauri-plugin-updater-delta -p tauri-updater-delta-core --all-features --locked
+      - name: Diagnose plugin + release features on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-updater-delta-release --all-features --locked
-      - name: Diagnose example package on Windows
+        run: cargo test -p tauri-plugin-updater-delta -p tauri-updater-delta-release --all-features --locked
+      - name: Diagnose non-plugin package features on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p delta-updater-example --all-features --locked
+        run: cargo test -p delta-updater-example -p tauri-updater-delta-core -p tauri-updater-delta-release --all-features --locked
       - name: Test
         # --nocapture so the measured patch ratio lands in the CI log.
         run: cargo test --workspace --all-features --locked -- --nocapture
