@@ -40,6 +40,13 @@ jobs:
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      # Every other cargo invocation in this workflow passes --all-features, so
+      # nothing compiled the configuration a consumer actually gets. That became
+      # a real risk when the plugin gained ~15 `cfg(feature = "test-support")`
+      # sites: production code accidentally depending on a gated item would break
+      # every downstream build while CI stayed green.
+      - name: Lint the default feature set consumers get
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build public documentation with warnings denied
         env:
           RUSTDOCFLAGS: -D warnings
