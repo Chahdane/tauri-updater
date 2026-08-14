@@ -30,7 +30,7 @@ use tauri_plugin_updater_delta::Error;
 use tauri_updater_delta_core::client::Fetch;
 use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, ReleaseRequest};
+use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
 const MANIFEST_URL: &str = "https://example.com/manifest.json";
 const PATCH_URL: &str = "https://example.com/patch.zst";
@@ -114,16 +114,18 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         &ReleaseRequest {
             platform: &platform(),
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: INSTALLER_URL,
-            patch_url: PATCH_URL,
-            patch_out: &patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: PATCH_URL,
+                patch_out: &patch,
+                tar_layer: None,
+            }),
         },
         &key,
         None,

@@ -443,7 +443,7 @@ fn a_legacy_signature_makes_a_published_delta_unavailable() {
     // ambiguous: Full would happen anyway because nothing was published.
     use tauri_updater_delta_core::client::{plan_update, PlanContext, UpdateSource};
     use tauri_updater_delta_release::signing::SigningKey;
-    use tauri_updater_delta_release::{build_release, ReleaseRequest};
+    use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
     let dir = tempfile::tempdir().expect("temp dir");
     let fixture = tauri_updater_delta_fixtures::appimage_pair(dir.path());
@@ -459,16 +459,18 @@ fn a_legacy_signature_makes_a_published_delta_unavailable() {
         &ReleaseRequest {
             platform: &current_platform(),
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: INSTALLER_URL,
-            patch_url: "https://example.com/patch.zst",
-            patch_out: &patch,
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: "https://example.com/patch.zst",
+                patch_out: &patch,
+                tar_layer: None,
+            }),
         },
         &key,
         None,

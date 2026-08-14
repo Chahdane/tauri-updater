@@ -218,6 +218,107 @@ is removed, but that a **live sibling survives** a concurrent update's sweep.
 *Evidence:* `abandoned_workspaces_are_swept_and_live_ones_are_not`,
 `creating_a_workspace_does_not_disturb_a_concurrent_one`; DECISIONS #31.
 
+### F33 — A branch nothing executes is a branch that does not work · **DEMONSTRATED**
+
+The release workflow *handled* the no-previous-release case: there is a
+deliberate `::notice::` explaining it. What it actually did was skip the step
+that produces the manifest, so a first release published a bare artifact with no
+updater document and no signature, and the update system stayed inert until a
+second release created one.
+
+Every layer had a reason not to catch it. The type required two installers, so
+the case could not be constructed. The crate's tests all had two installers,
+because that is what the type demanded. The workflow's rehearsal ran
+`delta-release --help`. Nothing anywhere had ever executed the branch.
+
+The generalisation is not "test the first-release case". It is that **a
+conditional whose two sides are exercised unequally is a conditional with an
+untested side**, and the untested side is usually the rare one — which is exactly
+the one nobody notices is broken. Compare F29: the same shape, one layer down.
+
+*Evidence:* DECISIONS #32; `crates/delta-release/tests/release_states.rs`;
+`examples/desktop-app/e2e/rehearse-release.sh`. Mutation: restoring the
+requirement fails states A and B and leaves C green, which is the world B5
+describes.
+
+### F34 — Metadata about an artifact is not evidence about what it does · **DEMONSTRATED**
+
+The release tool recorded a patch's digest and size and published metadata for
+it, having never applied it. The digest proves a client downloads the patch that
+was generated. It says nothing about what that patch produces.
+
+The failure it permits is silent by construction: a delta that does not
+reconstruct falls back to a full download, so no user reports it and every user
+pays full price. The tar layer had round-tripped its output from the start; the
+direct path had not, and the module docs said so plainly, which is its own
+finding — a known gap written down and left.
+
+Second-order result, and the more transferable one: **the guard was untestable
+where it lived**. Inlined in the generator, the only reachable assertion was "the
+honest case still works", and deleting the check failed no tests at all.
+Extracting it as a function that takes a base, a patch and an expected digest is
+what made a real adversarial case expressible — a patch that is genuine, correct,
+and between the wrong pair.
+
+*Evidence:* DECISIONS #33; `prove_patch_reconstructs` and the two tests that
+drive it. Mutation before extraction: 0 tests failed. After: 2.
+
+### F35 — Real transport is one cross-host hop, and the client already fit it · **DEMONSTRATED**
+
+Measured against a public GitHub release, unauthenticated
+(`research/experiments/2026-08-14-github-release-transport`):
+
+```text
+github.com/.../releases/download/...  ->  302
+release-assets.githubusercontent.com  ->  200  (Azure Blob, Content-Length set)
+```
+
+One hop, cross-host, HTTPS throughout, and the CDN URL is signed with about an
+hour's expiry.
+
+Three client properties depend on that shape and all three already held: the
+redirect budget covers it; the hop is cross-**host**, so any same-host policy
+would have broken every real download, and the plugin deliberately has none; and
+the chain never leaves TLS, so the no-downgrade rule is free on the happy path.
+
+Worth recording as a finding rather than a footnote because the measurement
+*corrected* something: the code documented the redirect target as
+`objects.githubusercontent.com`. It is now `release-assets.githubusercontent.com`.
+No code depended on it — nothing pins a host — but a comment stating a fact
+nobody had checked recently is how a host-pinning "optimisation" gets written
+later on a false premise.
+
+*Evidence:* the probe log; `crates/plugin/src/http.rs`.
+
+### F36 — Delta updates are Apple-compatible by construction, and unvalidated · **ENGINEERING DECISION**
+
+`tauri-plugin-updater` 2.10.1's macOS installer (`updater.rs:1209`) takes
+**bytes**, decompresses, and unpacks with the `tar` crate. Everything Gatekeeper
+needs is inside those bytes, so preserving a code signature across an update is a
+question about what the bundler wrote and what `tar` restores.
+
+The delta path does not change that question. It reconstructs an artifact
+bit-identical to the full download, proves it by digest before installing, and
+hands the same `install_inner` the same bytes. So the tar layer is compatible
+with a signed and notarized app **exactly to the degree the stock full-download
+updater is**, and adds no new risk to the code signature.
+
+That is an argument, and its premise — byte-exact reconstruction — is checked
+rather than assumed. Two residual risks are specific and named: GNU long-name
+entries, whose write pattern is inferred from `tar`'s source and never measured
+(#26), and bundle shapes the recipe has not met, since the retained fixture is
+unsigned. Neither can ship a broken update, because `--require-tar-layer` runs
+the client's whole path at release time and fails the release instead.
+
+**Classification is the point.** No notarized end-to-end has been performed,
+because it needs a Developer ID certificate and an App Store Connect key that do
+not exist here. That is an **external validation gap, not a software defect**:
+nothing is known or suspected to be wrong, and no evidence has been gathered that
+it is right. `spctl --assess` on a delta-updated app is the command that would
+settle it.
+
+*Evidence:* `docs/RELEASING.md`; `tauri-plugin-updater` 2.10.1 source, read.
+
 ### F5 — A capability type can make an unverified install unrepresentable · **DEMONSTRATED**
 
 `VerifiedArtifact` has a private field and no public constructor, so

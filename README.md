@@ -42,6 +42,10 @@ blockers in [docs/DECISIONS.md](docs/DECISIONS.md) and the
 | Downgrade, replay and update-identity refusal | **Supported** |
 | Authenticated release identity inside the signature | **Supported** — [F27](research/FINDINGS.md), [DECISIONS #27](docs/DECISIONS.md) |
 | Manifest authenticity and update freshness | **Unproven, and not attempted** — [F28](research/FINDINGS.md) |
+| Every generated patch proves it reconstructs its target | **Supported** — [F34](research/FINDINGS.md), [DECISIONS #33](docs/DECISIONS.md) |
+| A release with no predecessor still publishes a valid updater document | **Supported** — [F33](research/FINDINGS.md), [DECISIONS #32](docs/DECISIONS.md) |
+| GitHub-hosted HTTPS end-to-end | **Unproven** — harness built, needs a release token ([RELEASING.md](docs/RELEASING.md)) |
+| Apple Developer ID signing / notarization | **Not attempted** — external validation gap, [F36](research/FINDINGS.md) |
 | Transport bounds: HTTPS, redirects, timeouts, size caps | **Supported** |
 | Concurrent updates cannot touch each other's files | **Supported** — [F29](research/FINDINGS.md), [DECISIONS #28](docs/DECISIONS.md) |
 | A local ceiling on every stage of the tar pipeline | **Supported** — [F30](research/FINDINGS.md), [DECISIONS #29](docs/DECISIONS.md) |
@@ -206,6 +210,12 @@ delta-unaware client behaves exactly as before.
 
 `--app-id` must match your `tauri.conf.json` identifier. It is bound into the
 signature, so it cannot be guessed from the artifact.
+
+The predecessor flags (`--from-version`, `--previous-installer`, `--patch-url`,
+`--patch-out`) are required together or omitted together. Omit them for a first
+release: you still get a complete signed updater document, just with no patches.
+See [docs/RELEASING.md](docs/RELEASING.md) for the three release states and the
+published asset set.
 
 The signature it records is over the **target installer**, not the patch, so the
 same signature validates whether a user rebuilt the artifact from a patch or
