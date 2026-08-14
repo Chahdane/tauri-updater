@@ -19,6 +19,8 @@ pub mod signing;
 
 pub mod tar_layer;
 
+pub mod verify;
+
 use std::path::Path;
 
 use tauri_updater_delta_core::backend::{PatchBackend, ZstdBackend};
@@ -376,32 +378,8 @@ fn generate_direct_patch(
         }
     }
 
-    let backend = ZstdBackend::new();
-    backend.diff(pred.installer, new_installer, pred.patch_out)?;
-
-    // The client's own path, run here: take the artifact the user has, apply
-    // the patch just written, and require the result to be the artifact being
-    // published — byte for byte, by digest.
-    let scratch = tempfile::Builder::new()
-        .prefix("delta-release-roundtrip-")
-        .tempdir()
-        .map_err(|e| Error::Io(format!("creating a scratch directory: {e}")))?;
-    let rebuilt = scratch.path().join("rebuilt.artifact");
-
-    backend.apply(pred.installer, pred.patch_out, &rebuilt)?;
-
-    let actual = FileHash::of_file(&rebuilt)?;
-    if actual != expected {
-        return Err(Error::Request(format!(
-            "the generated patch does not reconstruct {}: applying it to {} produced \
-             {}, but the release publishes {}. Refusing to describe a patch that \
-             does not work.",
-            new_installer.display(),
-            pred.installer.display(),
-            actual.to_hex(),
-            expected.to_hex(),
-        )));
-    }
+    ZstdBackend::new().diff(pred.installer, new_installer, pred.patch_out)?;
+    prove_patch_reconstructs(pred.installer, pred.patch_out, expected)?;
 
     Ok(Patch {
         backend_id: ZstdBackend::ID.to_owned(),
@@ -409,6 +387,34 @@ fn generate_direct_patch(
         patch_blake3: FileHash::of_file(pred.patch_out)?.to_hex(),
         patch_size: file_size(pred.patch_out)?,
     })
+}
+
+/// Apply `patch` to `base` and require the result to hash to `expected`.
+///
+/// The client's own path, run at release time. Public so it can be driven
+/// directly with a patch that is known not to work — a guard whose only test is
+/// "the honest case still passes" is a guard nothing would notice the loss of.
+pub fn prove_patch_reconstructs(base: &Path, patch: &Path, expected: FileHash) -> Result<()> {
+    let scratch = tempfile::Builder::new()
+        .prefix("delta-release-roundtrip-")
+        .tempdir()
+        .map_err(|e| Error::Io(format!("creating a scratch directory: {e}")))?;
+    let rebuilt = scratch.path().join("rebuilt.artifact");
+
+    ZstdBackend::new().apply(base, patch, &rebuilt)?;
+
+    let actual = FileHash::of_file(&rebuilt)?;
+    if actual != expected {
+        return Err(Error::Request(format!(
+            "the generated patch does not reconstruct the release: applying it to {} \
+             produced {}, but the release publishes {}. Refusing to describe a patch \
+             that does not work.",
+            base.display(),
+            actual.to_hex(),
+            expected.to_hex(),
+        )));
+    }
+    Ok(())
 }
 
 /// Generate the tar layer for one upgrade path, or say why not.
