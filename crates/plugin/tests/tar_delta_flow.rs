@@ -170,9 +170,18 @@ impl World {
 
 /// Run the real release tooling over two real bundles, with a tar layer.
 fn world(dir: &Path, pair: &KeyPair) -> World {
-    let mut old_bin = binary(1, 300_000);
+    world_seeded(dir, pair, 1)
+}
+
+/// [`world`] with the payload varied, so two fixtures can be told apart.
+///
+/// Only the concurrency test needs this: if both sides of a race build
+/// byte-identical artifacts, a transaction installing the *other* one is
+/// indistinguishable from it working.
+fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
+    let mut old_bin = binary(seed, 300_000);
     let mut new_bin = old_bin.clone();
-    new_bin[150_000..150_128].copy_from_slice(&binary(9, 128));
+    new_bin[150_000..150_128].copy_from_slice(&binary(seed.wrapping_add(8), 128));
     old_bin.extend_from_slice(b"version one");
     new_bin.extend_from_slice(b"version two, a bit longer");
 
@@ -1379,5 +1388,229 @@ fn a_failed_install_leaves_no_workspace_and_no_promotion() {
             .version,
         "1.0.0",
         "a failed install must not promote"
+    );
+}
+
+// ---- the Gate P1 chain, under a fallback ---------------------------------
+
+#[test]
+fn a_contradiction_discovered_after_a_delta_falls_back_still_refuses() {
+    // The interaction item the two gates share. Every other contradiction test
+    // refuses at *planning*, before any delta runs, because the advisory read
+    // happens first. This is the case that reaches the authoritative check
+    // instead:
+    //
+    //   tar path attempted -> fails -> Full download -> signature verifies
+    //     -> and only now does the signed identity disagree with the bytes
+    //
+    // Planning cannot catch it. At that point the artifact is not in hand, so
+    // the advisory check compares the signature's declared digest against
+    // itself and learns nothing. Only `check_release_identity`, running on
+    // `VerifiedArtifact::binding()` against the bytes that actually arrived,
+    // can see it.
+    //
+    // The requirement is that falling back does not soften it. A delta failure
+    // is recoverable; an authenticated contradiction is not, and arriving at one
+    // by way of the other must not turn it into a full download that installs.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+
+    // A signature genuinely covering the released bytes, whose trusted comment
+    // describes a *different* artifact. Everything cryptographic about it is
+    // valid; the statement it authenticates is false.
+    let released = w.released_bytes();
+    let lying = tauri_updater_delta_core::release_identity::ReleaseIdentity {
+        app_id: "dev.example.testapp".to_owned(),
+        version: "1.0.1".to_owned(),
+        platform: platform(),
+        representation: REPRESENTATION_APP_TAR_GZ_V1.to_owned(),
+        artifact_blake3: FileHash::of_bytes(b"some other release entirely").to_hex(),
+        artifact_size: released.len() as u64,
+        signed_at: 1_786_637_312,
+    };
+    let signature = base64::engine::general_purpose::STANDARD.encode(
+        minisign::sign(
+            None,
+            &pair.sk,
+            &released[..],
+            Some(&lying.to_trusted_comment()),
+            None,
+        )
+        .expect("sign")
+        .into_string(),
+    );
+
+    // Put it everywhere the flow reads a signature from, then break the tar
+    // patch so the delta path is genuinely entered and genuinely fails.
+    let entry = w
+        .manifest
+        .delta
+        .as_mut()
+        .expect("delta")
+        .platforms
+        .get_mut(&platform())
+        .expect("platform");
+    entry.signature = signature.clone();
+    w.manifest
+        .platforms
+        .get_mut(&platform())
+        .expect("platform")
+        .signature = signature.clone();
+    w.signature = signature;
+    w.manifest_json = w.manifest.to_json().expect("serialise");
+    w.server
+        .replace(TAR_PATCH_URL, b"this is not a zstd frame".to_vec());
+
+    // Planning falls back, as it should -- the contradiction is not visible yet.
+    let source = plan(&w, Some(&cache), &dir.path().join("work"));
+    let UpdateSource::Full { attempted, .. } = &source else {
+        panic!("expected a fallback to Full, got {source:?}");
+    };
+    assert!(
+        attempted.tar_delta,
+        "the tar path must actually have run, or this test proves nothing"
+    );
+    drop(source);
+
+    // Running it for real reaches the authoritative check, which refuses.
+    let handoff = RecordingHandoff::default();
+    let result = run(&w, Some(&cache), &handoff, &dir.path().join("work2"));
+
+    match result {
+        Err(Error::Refused(refusal)) => {
+            let text = refusal.to_string();
+            assert!(
+                text.contains("mismatch on blake3"),
+                "the refusal should name the field that disagreed: {text}"
+            );
+        }
+        other => panic!("a contradiction reached by fallback must refuse, got {other:?}"),
+    }
+    assert!(
+        handoff.installed.borrow().is_empty(),
+        "nothing may reach the installer"
+    );
+
+    // And the cache is untouched: a refusal is not a staging event.
+    assert_eq!(
+        cache
+            .active(&w.pubkey)
+            .expect("active")
+            .expect("base")
+            .entry
+            .version,
+        "1.0.0"
+    );
+    assert!(
+        cache.state().expect("state").pending.is_none(),
+        "a refused release must not be staged as PENDING"
+    );
+}
+
+#[test]
+fn a_full_and_a_tar_delta_running_at_once_do_not_interfere() {
+    // B4 was about two Full downloads racing. The other paths are isolated by
+    // the same mechanism, but "the same mechanism" is an argument rather than a
+    // result, and the combination that actually ships is mixed: one installation
+    // falling back to a full download while another takes the tar path, both
+    // writing under one `work_dir`.
+    //
+    // Each side builds a *different* release, so a collision shows up as the
+    // wrong artifact reaching an installer rather than as an intermittent
+    // signature error somebody retries away. The two fixtures share nothing but
+    // the directory -- which is the thing under test.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).expect("mkdir");
+
+    let outcomes = std::thread::scope(|scope| {
+        let tar = {
+            let root = dir.path().join("tar-side");
+            let work = work.clone();
+            scope.spawn(move || {
+                std::fs::create_dir_all(&root).expect("mkdir");
+                let pair = keypair();
+                let w = world_seeded(&root, &pair, 1);
+                let cache = open_cache(&root.join("cache"), &w.pubkey);
+                seed_active(&cache, &w, &pair);
+
+                let handoff = RecordingHandoff::default();
+                let outcome = run(&w, Some(&cache), &handoff, &work);
+                let installed = handoff.installed.borrow().clone();
+                (
+                    outcome.map(|o| o.path_name()),
+                    installed,
+                    w.released_bytes(),
+                )
+            })
+        };
+
+        let full = {
+            let root = dir.path().join("full-side");
+            let work = work.clone();
+            scope.spawn(move || {
+                std::fs::create_dir_all(&root).expect("mkdir");
+                let pair = keypair();
+                // A genuinely different release, and no cache at all -- which is
+                // what a cold installation looks like, and the case that lands
+                // on the full path.
+                let w = world_seeded(&root, &pair, 77);
+
+                let handoff = RecordingHandoff::default();
+                let outcome = run(&w, None, &handoff, &work);
+                let installed = handoff.installed.borrow().clone();
+                (
+                    outcome.map(|o| o.path_name()),
+                    installed,
+                    w.released_bytes(),
+                )
+            })
+        };
+
+        (
+            tar.join().expect("tar thread"),
+            full.join().expect("full thread"),
+        )
+    });
+
+    let (tar_path, tar_installed, tar_expected) = outcomes.0;
+    assert_eq!(tar_path.expect("the tar side must succeed"), "tar-delta");
+    assert_eq!(
+        tar_installed.len(),
+        1,
+        "the tar side must install exactly once"
+    );
+    assert_eq!(
+        tar_installed[0], tar_expected,
+        "the tar side installed another transaction's artifact"
+    );
+
+    let (full_path, full_installed, full_expected) = outcomes.1;
+    assert_eq!(full_path.expect("the full side must succeed"), "full");
+    assert_eq!(
+        full_installed.len(),
+        1,
+        "the full side must install exactly once"
+    );
+    assert_eq!(
+        full_installed[0], full_expected,
+        "the full side installed another transaction's artifact"
+    );
+
+    assert_ne!(
+        tar_expected, full_expected,
+        "the fixture is vacuous unless the two releases actually differ"
+    );
+
+    let leftovers: Vec<_> = std::fs::read_dir(&work)
+        .expect("read work dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "neither transaction may leak a workspace: {leftovers:?}"
     );
 }
