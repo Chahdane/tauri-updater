@@ -70,22 +70,22 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: Diagnose P4 plugin unit tests on Windows
+      - name: Diagnose plugin package on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta --lib --all-features --locked
-      - name: Diagnose P4 public API test on Windows
+        run: cargo test -p tauri-plugin-updater-delta --all-features --locked
+      - name: Diagnose core package on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta --test public_api --all-features --locked
-      - name: Diagnose P4 transport tests on Windows
+        run: cargo test -p tauri-updater-delta-core --all-features --locked
+      - name: Diagnose release package on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta --test real_transport --all-features --locked
-      - name: Diagnose P4 update-flow tests on Windows
+        run: cargo test -p tauri-updater-delta-release --all-features --locked
+      - name: Diagnose example package on Windows
         if: runner.os == 'Windows'
         continue-on-error: true
-        run: cargo test -p tauri-plugin-updater-delta --test update_flow --all-features --locked
+        run: cargo test -p delta-updater-example --all-features --locked
       - name: Test
         # --nocapture so the measured patch ratio lands in the CI log.
         run: cargo test --workspace --all-features --locked -- --nocapture
