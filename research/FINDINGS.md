@@ -550,6 +550,19 @@ legacy binding makes both delta paths unavailable by construction, so no delta
 outcome is reachable without a parsed, verified, matching identity. The identity
 check did not close the fast path it protects.
 
+**Rerun under runtime hardening**
+(`research/experiments/2026-08-14-macos-runtime-hardening-e2e`): rebuilt from
+scratch after the full path moved into a per-transaction workspace, the tar
+pipeline gained a ceiling on every stage, the blob store stopped inferring a blob
+from an occupied path, and abandoned workspaces became collectable. Same two
+outcomes, and a 640,153-byte tar delta against 4,177,582.
+
+What that is evidence *for* is narrow and worth stating: the hardening did not
+close the fast path it protects. It is **not** independent evidence for the
+guards themselves. A happy-path E2E cannot exercise a ceiling nothing approaches
+or a race that does not occur, so those rest on the unit and flow tests and on
+five mutations — which is the right division of labour, not a gap.
+
 ### F25 — The tar layer's saving reproduces on independent pairs · **DEMONSTRATED, for three controlled macOS builds**
 
 | Pair | Direct patch | Tar patch | Fewer patch bytes |
