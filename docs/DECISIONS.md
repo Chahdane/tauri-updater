@@ -1537,3 +1537,74 @@ Cost: one patch application per upgrade path, at release time, on CI.
 
 **Revisit when:** a backend is added whose apply step is expensive enough that
 this matters. The answer would be to keep the check and accept the time.
+
+---
+
+## 34. The plugin owns the ordinary update flow
+
+**Decided:** 2026-08-14 · **Status:** active · **Gate:** P4
+
+**Decision:** the v0.1 application API is Rust-first and plugin-managed:
+
+```text
+Builder::new().build()
+app.delta_updater().check().await
+checked_update.install().await
+```
+
+The plugin derives app identity, updater public key, platform, architecture,
+cache namespace, cache/work locations, transport policy, and local ceilings from
+Tauri plus safe defaults. Applications see an opaque checked `Update`, distinct
+successful source outcomes, non-fatal cache diagnostics, and coarse progress
+phases. Engine context, transport, cache lifecycle, release identity,
+`VerifiedArtifact`, and the install handoff are private in normal builds.
+
+### Alternatives considered
+
+- **An extension directly on upstream `Update`.** This was the P1 seam and kept
+  the same-Update binding, but every application still had to assemble cache,
+  paths, public key, transport, limits, and reconciliation. Those are plugin
+  policy, not product decisions.
+- **A thin wrapper around a caller-owned updater check.** Smaller internally,
+  but it leaves duplicate ways to check and invites configuration drift. The
+  plugin handle delegates to the official updater once and retains its result.
+- **A public updater state object applications construct.** Testable, but turns
+  cache namespace and security context back into caller-supplied parts.
+- **A full JS/TS plugin API.** Frontends often own an update button, but a normal
+  Tauri command is sufficient to trigger the Rust flow. A second public API
+  would add serialization, permissions, commands, and long-term compatibility
+  surface without improving the trust boundary.
+- **Keeping the low-level exports as an advanced API.** Useful to this
+  repository's tests and dangerous as a default application seam. They remain
+  available only under the non-default, explicitly unsupported `test-support`
+  feature that also contains localhost transport controls.
+
+### Why the opaque checked update matters
+
+The high-level `Update` owns the exact `tauri_plugin_updater::Update` returned by
+the one authoritative `check()`. Identity is derived from that object inside
+`install()`, and verified bytes are installed through that same object. There is
+no public identity constructor, installer parameter, or second release-document
+fetch. P1's structural guarantee survives the ergonomic wrapper rather than
+being replaced by a convention.
+
+### Why cache failure is a diagnostic
+
+Persisting the verified artifact prepares a future optimization. It has no
+bearing on whether the current artifact is authentic or installable. A staging
+failure therefore remains a successful `Outcome` with a `Diagnostic`, and is
+also logged. Turning it into `Err` would make cache availability a dependency;
+swallowing it completely would make a permanently Full installation
+undebuggable.
+
+### Why progress has phases, not percentages
+
+The official check, HTTP downloads, zstd application, exact recompression, and
+platform installer do not share reliable byte totals. The API reports truthful
+phase boundaries and lets `Result::Err` represent failure. Invented percentages
+would be a UI promise the implementation cannot keep.
+
+**Revisit when:** real application integrations show that Rust commands cannot
+support their frontend UX, or upstream exposes stable progress primitives that
+permit accurate totals. Neither condition licenses exposing identity or install
+handoff construction.

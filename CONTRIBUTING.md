@@ -1,18 +1,19 @@
 # Contributing
 
-Thanks for taking a look. This is an early-stage project, so the most valuable
-contributions right now are testing on platforms the maintainer cannot reach and
-arguing with the design before it hardens.
+Thanks for taking a look. This is an early-stage project whose current v0.1
+client scope is macOS. Engine tests compile and run elsewhere, but Linux and
+Windows application support is later roadmap work rather than an implied claim.
 
 ## What would help most
 
-- **Windows and Linux testing.** Development happens on macOS with no Windows
-  machine available. Anything that exercises the real install path on those
-  platforms is worth more than a feature.
-- **Real-world artifacts.** Patch ratios depend enormously on how an app is
-  built. Measurements from actual Tauri apps sharpen the benchmarks.
-- **Design review.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). If the
-  wrap-don't-replace approach has a hole in it, that is better found now.
+- **Adoption review.** Follow the README from a clean Tauri v2 macOS app and
+  report any undocumented decision or step.
+- **Credential-backed validation.** A real GitHub-hosted HTTPS flow and an Apple
+  Developer ID/notarized flow remain explicit external gaps. Coordinate before
+  creating tags, releases, or consuming credentials.
+- **Design review.** Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
+  linked decisions. Security-boundary findings are more valuable than API
+  expansion before v0.1.
 
 ## Getting set up
 
@@ -40,9 +41,9 @@ macOS and Windows need nothing extra. (This section previously claimed the
 project had no system dependencies at all. That stopped being true when the
 plugin crate gained its `tauri` dependency.)
 
-No network access is required. Test fixtures are generated deterministically
-rather than downloaded, so everything runs offline and produces identical
-results on every machine.
+After Cargo dependencies are fetched, the test fixtures and test servers require
+no external network. A genuinely fresh clone still needs normal Cargo registry
+access unless those dependencies are already cached.
 
 ## Before opening a PR
 
@@ -53,7 +54,8 @@ on all five at once.
 ```sh
 cargo fmt --all --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-features --locked
+cargo test --workspace --all-features --locked -- --nocapture
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 ```
 
 CI additionally re-runs two assertions **by name** and fails if they did not
@@ -121,8 +123,13 @@ trusted.
   abstractions.
 - Every core piece has tests. The round-trip test is the flagship and must never
   be weakened to make something else pass.
-- Errors on the delta path are always recoverable: they fall back to a full
-  download. Nothing there may panic on malformed or hostile input.
+- Availability failures on a delta path fall back to Full. Authenticated
+  contradictions, downgrade policy, and final signature failures deliberately
+  do not. Nothing may turn those refusals into fallback or panic on malformed
+  input.
+- Normal application examples must use the high-level `DeltaUpdaterExt` API.
+  Low-level engine/transport seams and insecure localhost controls belong only
+  behind `test-support`/`e2e-control`.
 - No telemetry, ever. Offline-first is part of the pitch.
 - Explain non-obvious decisions in the PR description rather than in inline
   comments.

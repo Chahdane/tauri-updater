@@ -16,11 +16,18 @@ real" is the same class of hazard as a test-only HTTP surface that ships: safe
 by intent, dangerous by accident, and impossible to notice once it is old. Not
 committing it makes the hazard structurally absent rather than documented.
 
-## Why the example enables `dangerousInsecureTransportProtocol`
+## Why the E2E harness enables insecure transport
 
-`tauri.conf.json` sets `"dangerousInsecureTransportProtocol": true`.
+The normal `tauri.conf.json` uses an HTTPS placeholder and does **not** set
+`dangerousInsecureTransportProtocol`. The example's default feature set also
+does not include `e2e-control` or the plugin's `test-support` feature.
 
-**This is a localhost test harness. Never copy that flag into a real app.**
+The build scripts temporarily add Tauri's insecure flag while building with
+`--features e2e-control`. That feature also makes the delta plugin's localhost
+opt-in and endpoint override methods exist. The scripts restore the checked-in
+configuration when they exit.
+
+**This is a localhost test harness. Never copy those flags into a real app.**
 
 The harness serves the manifest and artifacts from `http://127.0.0.1` on an
 ephemeral port, and both layers refuse plain HTTP in a release build:
@@ -28,7 +35,6 @@ ephemeral port, and both layers refuse plain HTTP in a release build:
 refuses it in `HttpFetch`. `cargo tauri build` produces a release binary, so
 without the flag the harness cannot run at all.
 
-The flag was always required — it is not a new weakening. Before it was written
-down, the harness depended on upstream tolerating `http://` endpoints, which was
-already going to fail the moment it ran in release. Making the dependency
-explicit is the change; the exposure is the same. See `docs/DECISIONS.md` #19.
+Neither relaxation is merely set to false in a shipping build: the methods and
+control server are absent from the default compilation. See
+`docs/DECISIONS.md` #19 and #34.
