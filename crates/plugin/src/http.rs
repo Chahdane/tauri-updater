@@ -181,28 +181,18 @@ impl HttpFetchBuilder {
         let max_redirects = self.max_redirects;
 
         let policy = reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= max_redirects {
-                return attempt.error(format!("more than {max_redirects} redirects"));
+            let previous_scheme = attempt.previous().last().map(|url| url.scheme().to_owned());
+            match redirect_verdict(
+                previous_scheme.as_deref(),
+                attempt.url().scheme(),
+                attempt.url().as_str(),
+                attempt.previous().len(),
+                max_redirects,
+                insecure,
+            ) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
             }
-
-            // A downgrade is refused even when plain HTTP is otherwise allowed.
-            // Starting on HTTP is a choice the app made; being moved off HTTPS
-            // part-way through is a choice the server made.
-            let came_from_https = attempt
-                .previous()
-                .last()
-                .is_some_and(|url| url.scheme() == "https");
-            let scheme = attempt.url().scheme().to_owned();
-            if came_from_https && scheme != "https" {
-                return attempt.error(format!("refusing an HTTPS to {scheme} redirect"));
-            }
-
-            let target = attempt.url().as_str().to_owned();
-            if let Err(reason) = scheme_allowed(&target, insecure) {
-                return attempt.error(reason);
-            }
-
-            attempt.follow()
         });
 
         let mut client = reqwest::blocking::Client::builder()
@@ -273,6 +263,45 @@ fn is_timeout(error: &std::io::Error) -> bool {
 /// HTTP" would be to run the suite twice under two profiles, and in practice
 /// that means the refusal is never actually exercised — which is the same
 /// failure mode as a test that silently stops running.
+/// Decide whether one redirect hop may be followed.
+///
+/// # Why this is a function rather than the closure that uses it
+///
+/// The policy it implements is a documented security guarantee — the module
+/// header promises "no HTTPS→HTTP" and
+/// [`dangerous_insecure_transport_protocol`](HttpFetchBuilder::dangerous_insecure_transport_protocol)
+/// promises that the opt-in does not re-enable it. Inside a
+/// `reqwest::redirect::Policy` closure that promise cannot be tested without an
+/// HTTPS server, so it was asserted in three documents and exercised by nothing.
+///
+/// Pulled out here it is four unit tests, and the closure becomes a translation
+/// between reqwest's `Attempt` and this decision.
+///
+/// Order matters and is preserved: the budget is checked before anything about
+/// schemes, so a redirect loop is refused for being a loop rather than for
+/// whatever the last hop happened to look like.
+fn redirect_verdict(
+    previous_scheme: Option<&str>,
+    target_scheme: &str,
+    target_url: &str,
+    hops: usize,
+    max_redirects: usize,
+    insecure: bool,
+) -> std::result::Result<(), String> {
+    if hops >= max_redirects {
+        return Err(format!("more than {max_redirects} redirects"));
+    }
+
+    // A downgrade is refused even when plain HTTP is otherwise allowed.
+    // Starting on HTTP is a choice the app made; being moved off HTTPS
+    // part-way through is a choice the server made.
+    if previous_scheme == Some("https") && target_scheme != "https" {
+        return Err(format!("refusing an HTTPS to {target_scheme} redirect"));
+    }
+
+    scheme_allowed(target_url, insecure)
+}
+
 fn scheme_verdict(url: &str, insecure: bool, strict: bool) -> std::result::Result<(), String> {
     if insecure {
         return Ok(());
@@ -406,6 +435,67 @@ impl HttpFetch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- the redirect policy, which used to be untestable ---------------
+    //
+    // Every case below is a claim the module header or the opt-in's own
+    // documentation makes. Before `redirect_verdict` was extracted, all four
+    // lived inside a `reqwest` closure and were exercised by nothing.
+
+    #[test]
+    fn an_https_to_http_redirect_is_refused() {
+        let verdict = redirect_verdict(Some("https"), "http", "http://evil.example/a", 0, 5, false);
+        let reason = verdict.expect_err("a downgrade must be refused");
+        assert!(
+            reason.contains("refusing an HTTPS to http redirect"),
+            "got: {reason}"
+        );
+    }
+
+    #[test]
+    fn the_insecure_opt_in_does_not_re_enable_a_downgrade() {
+        // The documented promise: starting on plain HTTP is the application's
+        // choice, being moved off HTTPS mid-chain is the server's. The opt-in
+        // covers the first and must not cover the second.
+        let verdict = redirect_verdict(Some("https"), "http", "http://evil.example/a", 0, 5, true);
+        assert!(
+            verdict.is_err(),
+            "the opt-in must not permit an HTTPS to HTTP redirect"
+        );
+    }
+
+    #[test]
+    fn a_cross_host_https_redirect_is_allowed() {
+        // Measured against GitHub Releases: the artifact URL answers 302 with a
+        // Location on a different host. A policy keyed on the host would break
+        // every real download, so this must stay permitted.
+        redirect_verdict(
+            Some("https"),
+            "https",
+            "https://release-assets.githubusercontent.com/x",
+            0,
+            5,
+            false,
+        )
+        .expect("a cross-host HTTPS hop is ordinary");
+    }
+
+    #[test]
+    fn the_budget_is_checked_before_the_scheme() {
+        // A loop is refused for being a loop. Reporting it as a scheme problem
+        // would send someone debugging the wrong thing.
+        let reason = redirect_verdict(Some("https"), "http", "http://evil.example/a", 5, 5, false)
+            .expect_err("over budget");
+        assert!(reason.contains("more than 5 redirects"), "got: {reason}");
+    }
+
+    #[test]
+    fn plain_http_hops_are_still_governed_by_the_scheme_policy() {
+        // No HTTPS in the chain, so the downgrade rule does not apply and the
+        // ordinary scheme policy decides.
+        redirect_verdict(Some("http"), "http", "http://127.0.0.1:8080/a", 0, 5, true)
+            .expect("the opt-in permits an all-HTTP chain");
+    }
 
     #[test]
     fn https_is_always_allowed() {

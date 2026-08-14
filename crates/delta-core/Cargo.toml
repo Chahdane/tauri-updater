@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords = ["tauri", "updater", "delta", "binary-diff", "zstd"]
+categories = ["development-tools", "compression"]
 
 [dependencies]
 base64.workspace = true

@@ -15,9 +15,12 @@ security audit and release gate have not happened yet.
   the real Tauri installer.
 - The harness asserts the update source and exact installed binary hashes, so a
   Full fallback cannot masquerade as a delta success.
-- On controlled example-app pairs, a direct compressed-artifact patch was about
-  95–97% of Full while a tar-layer patch was about 15%. These measurements are
-  evidence about those builds, not universal macOS ratios.
+- On controlled example-app pairs, a direct compressed-artifact patch was
+  95.5–96.1% of a Full download while a tar-layer patch was 16.0–16.1%
+  (release-candidate build, 2026-08-14; earlier controlled runs measured
+  15.0–15.4% for the tar layer). These are measurements of those builds, whose
+  only difference is a version string. A real application's ratio depends
+  entirely on what changed between releases and will differ.
 - Final artifact signature verification, authenticated release identity,
   bounded reconstruction, cache re-verification, and release-time patch
   round-trips are enforced and tested.
@@ -152,6 +155,12 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat /secure/path/my-app.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="your-real-password"
 ```
 
+> **The password must be a real one.** A key generated with
+> `tauri signer generate --password ""` cannot be read by this tool at all:
+> Tauri's key generation encrypts even with an empty password, and the `minisign`
+> crate used here does not. The failure is reported clearly, but it is easier to
+> avoid than to diagnose — generate the key with a password you actually keep.
+
 For the first published updater release, omit predecessor flags. This produces a
 valid signed Full-only `manifest.json`:
 
@@ -226,6 +235,38 @@ download limits, timeouts, redirect count, reconstruction `Limits`, and
 Plain HTTP and explicit endpoint/base overrides exist only under the non-default
 `test-support` feature used by this repository's E2E harness. They are absent
 from a normal build.
+
+## Supported versions (v0.1)
+
+Everything below is a constraint the code actually enforces.
+`crates/plugin/tests/supported_versions.rs` checks this table against the
+dependency constraints, workspace fields, pinned CI environment and engine
+constants, so it fails rather than drifts.
+
+| | v0.1 |
+| --- | --- |
+| Client platform | macOS, `.app.tar.gz` artifacts |
+| Architecture | `aarch64` **demonstrated**; `x86_64` expected but not demonstrated (see below) |
+| Rust | 1.88 or newer |
+| `tauri` | 2 |
+| `tauri-plugin-updater` | `>=2.10.1, <2.11.0` |
+| Release bundler | tauri-cli 2.10.1 (exact), for the archive the tar layer must reproduce |
+| Artifact representation | `app-tar-gz-v1` |
+| Recompression recipe | `tauri-app-tar-gz-v1` (`tar` 0.4.x into `flate2` with the zlib-rs backend) |
+| Delta backend | `zstd` |
+
+The updater range is narrow on purpose: six behaviours this plugin's safety
+depends on are observations about `tauri-plugin-updater` 2.10.1's implementation
+rather than guarantees of its API. A caret range would let any of them change
+while CI stayed green.
+
+**On Intel macOS.** The engine is byte-oriented and architecture-independent, and
+the same engine and release tests run on Linux and Windows x86_64 in CI. The
+recompression recipe depends on `tar` and `flate2` behaviour rather than on the
+CPU. So `x86_64` macOS is *expected* to work — but no real application install
+has been performed there, so it is not claimed as demonstrated. A client that
+meets a representation or recipe it does not implement declines the tar layer and
+downloads in full rather than guessing.
 
 ## Compatibility and security scope
 
