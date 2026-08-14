@@ -31,9 +31,14 @@
 //! half does not.
 //!
 //! Publication still uses `hard_link` rather than `rename`: a blob that already
-//! exists is already correct, so the right answer to a collision is to keep what
-//! is there, and `rename` would instead replace a complete file with another
-//! complete file for no reason. `AlreadyExists` here is success.
+//! exists is already the same bytes, so the right answer to a collision is to
+//! keep what is there, and `rename` would instead replace a complete file with
+//! another complete file for no reason.
+//!
+//! `AlreadyExists` is therefore *usually* success — but only after confirming
+//! that what occupies the path is a regular file of the right length. The
+//! directory is writable by anything running as this user, so the name alone
+//! proves the path is taken, not that a blob is there.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -104,9 +109,40 @@ impl BlobStore {
         let _ = std::fs::remove_file(&temp);
         match linked {
             Ok(()) => Ok(digest),
-            // Already stored. Content addressing makes that the same bytes, so
-            // there is nothing to reconcile and nothing to overwrite.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(digest),
+            // Something is already at the content address. Usually that is the
+            // same artifact stored earlier, and there is genuinely nothing to
+            // do — but "usually" is not what this store gets to assume. The
+            // directory is writable by anything running as this user, so the
+            // name proves only that the path is taken, not that a blob is
+            // there. Reporting success on that basis would let a planted
+            // directory, symlink or device be recorded as a staged artifact.
+            //
+            // Nothing unsafe would be *installed* — `get` re-checks kind, size,
+            // digest and signature on every read, so the entry becomes a cache
+            // miss. But a miss recorded as a success can be promoted over a
+            // good ACTIVE, which turns a working cache into a permanently empty
+            // one. Availability, cheaply, by anyone who can create a file.
+            //
+            // So the no-op path is confirmed rather than believed. Kind and
+            // size only: re-hashing every dedup hit would read the whole
+            // artifact to re-derive something `get` checks anyway.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let meta = std::fs::symlink_metadata(&target)
+                    .map_err(|e| Error::io("stat", &target, e))?;
+                if !meta.is_file() {
+                    return Err(Error::Manifest(format!(
+                        "cache entry {} is not a regular file",
+                        target.display()
+                    )));
+                }
+                if meta.len() != artifact.len() as u64 {
+                    return Err(Error::UnexpectedOutputSize {
+                        expected: artifact.len() as u64,
+                        actual: meta.len(),
+                    });
+                }
+                Ok(digest)
+            }
             Err(e) => Err(Error::io("publish", &target, e)),
         }
     }

@@ -1285,3 +1285,163 @@ is implemented. This is not TUF-style freshness and must not be described as it.
 
 **Revisit when:** freshness is in scope — that needs signed, expiring metadata,
 which is a `delta-v2` comment or a second document, not a patch to this one.
+
+## 28. The full download gets a workspace too
+
+**Decided:** 2026-08-14 · **Status:** active · **Closes blocker B4 · Extends #18**
+
+#18 named three shared filenames — `update.patch`, `update.artifact` and
+`full.artifact` — argued that a per-update `tempdir_in` beats a lock, and then
+applied it to two of them. The full-download path kept writing to
+`work_dir/full.artifact`, a fixed name under a directory the only real caller
+sets to one shared location.
+
+### Why the one left out was the one that mattered
+
+The delta paths are the *conditional* ones. Falling back to a full download is
+what happens with a cold cache, a legacy signature, no published patch, or any
+delta failure at all — so the isolated paths were the rare ones and the shared
+path was the common one. Two windows of "check for updates" on a first run is
+enough.
+
+The exposure is worse than #18's analysis of the delta case, too. `HttpFetch`
+streams into `out.with_extension("part")` and renames onto the target, so a
+shared `full.artifact` implies a shared `full.part`: one transaction can rename
+another's partial file out from under it. The observed failures under a restored
+shared path are seven transactions losing their `.part` to someone else's rename,
+and one reading a **different release's artifact** into its own signature check.
+
+That last one is still not an integrity failure — `VerifiedArtifact` owns the
+bytes it authenticated (#10), so the mismatch surfaces as a refusal rather than a
+bad install — but #11 makes `Error::Signature` deliberately non-recoverable, so
+the race converts a routine update into a loud permanent-looking abort.
+
+### The fix, and why it is a function
+
+`transaction_workspace(work_dir)` is now called by both the planner and the full
+path. The rule was already written down; what failed was applying it three times
+from one paragraph of prose. A function is applied by being called, so the next
+path added gets isolation by using the same door rather than by its author
+remembering a decision record.
+
+No lock, for the reasons #18 gives, and they have not changed: unique names
+remove the sharing instead of coordinating it, and there is no contention left to
+serialise.
+
+**Revisit when:** #18's condition, unchanged — automatic frequent update checks,
+or a shared location two processes write at once.
+
+## 29. Every stage of the tar pipeline gets its own ceiling
+
+**Decided:** 2026-08-14 · **Status:** active · **Extends #19**
+
+#19 established the shape: a manifest's declared size is a *request*, so a local
+ceiling has to sit above it.
+
+```text
+bytes written  ≤  declared size  ≤  local cap
+```
+
+It was applied to one quantity, `target_installer_size`, because at the time
+there was one quantity. The tar layer then put a pipeline in front of it:
+
+```text
+cached .app.tar.gz  ->  base tar  ->  + patch  ->  target tar  ->  installer
+  max_blob_bytes      max_tar_bytes                  ???          max_target_bytes
+```
+
+Three of the four arrows already had a cap. `target_tar_size` had none, and it is
+not a passive number: it becomes zstd's window and its output bound. A manifest
+declaring 500 GB there was asking the client to reserve and write 500 GB, and no
+digest or signature check helps, because the resources are spent long before
+either runs. Removing the new check makes the test reconstruct the tar and
+*then* notice the declaration — which is the attack having already happened.
+
+### Why independent dials rather than one and a ratio
+
+Every arrow above can expand without bound. gzip's ratio is unbounded in
+principle — a small blob can describe an arbitrarily large tar — and so is a
+patch's. A cap derived from an earlier stage inherits exactly the unboundedness
+it was introduced to remove, so the stages are capped independently.
+
+That means two fields spelled `max_tar_bytes`, on `Limits` and on `CacheLimits`.
+They are not duplicates. One bounds *expanding a blob this client already
+verified*; the other bounds *reconstructing a tar a server described*. Same unit,
+different question, different provenance, and a host that tightened one has said
+nothing about the other. Merging them would make one policy answer two.
+
+**Revisit when:** a new representation adds a stage. The rule is that a stage
+with a server-declared size and no local ceiling is a bug, not that this
+particular list is complete.
+
+---
+
+## 30. Occupying a path is not the same as storing a blob
+
+**Decided:** 2026-08-14 · **Status:** active
+
+`BlobStore::put` publishes with `hard_link` and treated `AlreadyExists` as
+success, reasoning that content addressing makes an existing file the same
+bytes. That is true of a file *this store wrote*. It is not true of a *path*.
+
+The blob directory is writable by the user, by other processes, and by anything
+that has ever run as this user — the module says so itself, and `get` acts on it
+by re-checking kind, size, digest and signature on every read. `put` did not: it
+inferred a blob from a name.
+
+Plant a directory at the content address and staging reported success, recording
+a PENDING entry naming it.
+
+### Severity, stated precisely
+
+**Not** unauthorised installation. `get` rejects the entry on reuse, so it
+becomes a cache miss and the update falls back to a full download — the
+degradation the design promises.
+
+It is availability. A miss recorded as a success is promoted on the next launch,
+replacing a good ACTIVE with one that can never be read, so the cache is
+permanently empty and every future update pays full price. Cost to cause: create
+one directory.
+
+The fix confirms kind and size before reporting the no-op. Not the digest:
+re-hashing every deduplicated write would read the whole artifact to re-derive
+something `get` checks anyway, and the goal is only to refuse to *record* an
+entry naming something that plainly is not a blob.
+
+**Revisit when:** blobs stop being content-addressed, which would remove the
+reason `AlreadyExists` is ever benign.
+
+---
+
+## 31. Wreckage is collected, because only crashes leave it
+
+**Decided:** 2026-08-14 · **Status:** active · **Completes #18 and #28**
+
+`TempDir` removes a workspace on every path a process actually takes — the error
+paths included, since the drop runs however the scope is left. It cannot cover
+the process ceasing to exist: a crash, a `SIGKILL`, a power cut. The directory
+survives with a full copy of the artifact in it.
+
+This is not a correctness problem, and saying why matters. The names come from OS
+randomness, so no later transaction can find, read, or be confused by one; the
+isolation that closed B4 also makes the wreckage inert. It is a disk problem, and
+an unbounded one — one artifact per crash, kept forever — and it was the only
+temporary state with no collection at all, since orphaned cache blobs already
+have `blob::retain`.
+
+### Why the threshold is a day and the cache's is a minute
+
+They are not the same risk, and copying the number would have been wrong.
+
+| | blob | workspace |
+| --- | --- | --- |
+| What it is | immutable, re-derivable | a running transaction's working state |
+| Cost of collecting a live one | one re-download | **the update breaks** |
+| Grace | 60s | 24h |
+
+So the workspace threshold has to exceed the slowest plausible download on the
+worst plausible connection, and the test that matters is not the one proving
+wreckage goes — it is the one proving a live sibling stays.
+
+**Revisit when:** updates can legitimately run longer than a day, which would
+mean the threshold is no longer safely above them.

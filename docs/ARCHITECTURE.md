@@ -234,6 +234,35 @@ malformed or hostile input.
   would otherwise be obeyed because it asked. `Limits::max_target_bytes` is the
   host's own ceiling, checked before any download, and it is the only one of the
   two the update server cannot influence. See `docs/DECISIONS.md` #19.
+- **And so is every other stage.** The tar layer is a pipeline, and each arrow in
+  it has a server-declared size that goes on to bound real work:
+
+  ```text
+  cached .app.tar.gz -> base tar -> + patch -> target tar -> installer
+    max_blob_bytes    max_tar_bytes  max_response  max_tar_bytes  max_target_bytes
+     (CacheLimits)     (CacheLimits)  (HttpFetch)    (Limits)       (Limits)
+  ```
+
+  The ceilings are **independent dials rather than one number and a ratio**,
+  because gzip and patch application both expand without bound, so a cap derived
+  from an earlier stage inherits the unboundedness it was meant to remove. A
+  declared size may only ever *lower* the effective bound, never raise it. See
+  #29.
+- **The cache is hostile input in both directions.** Reading re-checks kind,
+  size, digest and signature against the key configured *now*. Writing confirms
+  that an already-occupied content address holds a regular file of the right
+  length, rather than inferring a stored blob from a taken name — see #30 for
+  why that distinction is worth a syscall.
+- **Concurrent updates share nothing but a directory name.** Every path — full,
+  delta and tar-delta — works inside a `tempfile` workspace whose name comes from
+  OS randomness, so two updates cannot reach each other's files even mid-write.
+  Workspaces abandoned by a crashed process are swept after a day. See #18, #28
+  and #31.
+- **Untrusted tar structure is walked, never extracted.** Recompression reads
+  entry headers to replay write boundaries, using a fixed 512-byte header buffer
+  and an 8 KB payload buffer, with every entry bounded by the bytes the archive
+  has left. Nothing is written to a path the archive names, so the tar cannot
+  address anything outside the file being rebuilt.
 - **No new network surface.** The plugin fetches from the update server the app
   already configures, and sends no telemetry.
 
