@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The release identity is now authenticated.** Minisign signature blocks carry
+  a *trusted comment* covered by a second Ed25519 signature over
+  `artifact_sig ‖ trusted_comment`, which `PublicKey::verify` — the call Tauri
+  already makes — has always checked and nobody read. `delta-release` now writes
+  a canonical identity there:
+
+  ```text
+  delta-v1 app:<id> v:<semver> plat:<os>-<arch> rep:<rep-id> b3:<64 hex> sz:<u64> ts:<unix>
+  ```
+
+  and the client checks every field against what it is actually installing. A
+  signed artifact relabelled as a different version, platform, application or
+  representation is now refused where before every cryptographic check passed.
+  No second key, no second signature, no extra request. See
+  `docs/DECISIONS.md` #27.
+
+- **A contradicted identity fails closed and never falls back.** A release whose
+  signed description disagrees with what it is being presented as is refused
+  outright — it is not a transport problem, and treating it as one would let an
+  attacker *choose* the full-download path.
+
+- **Releases signed before this feature keep working, without the delta paths.**
+  A signature carrying no `delta-v1` comment is a compatibility state, not an
+  attack: the full download proceeds and only the delta paths are unavailable.
+  This is safe because the comment lives inside signed bytes, so stripping an
+  identity to force the legacy path invalidates the signature.
+
+- **Not fixed, and stated plainly:** the manifest is still unsigned and freshness
+  is still unproven. A genuine older release carrying its own genuine identity is
+  refused for an existing installation by version policy, and nothing here
+  establishes what "latest" means for a first install. This is not TUF-style
+  freshness. See `research/FINDINGS.md` F28.
+
+### Changed
+
+- **BREAKING: the update flow is entered through `UpdateSession`.**
+  `update.delta_session().install(&ctx, &fetch)` replaces constructing an
+  identity and an installer separately. The session derives the identity from the
+  checked `Update` and installs through *that same* `Update`, so the two cannot
+  disagree. `UpdateIdentity` and `TauriInstall` are no longer part of the plugin's
+  public API, which makes the previously expressible unsafe pairings fail to
+  compile rather than fail review. Guarded by `compile_fail` doctests.
+- **BREAKING: `delta-release` requires `--app-id`.** It is bound into the
+  signature, so it cannot be inferred; the digest and size in the identity are
+  derived from the artifact the tool just wrote, never from separately supplied
+  values.
+
+### Removed
+
+- **BREAKING: `Builder::manifest_url`, and `Builder` configuration entirely.**
+  Nothing had read that value since the flow started taking the release document
+  from `Update::raw_json`. A required, security-adjacent knob that does nothing
+  is worse than no knob. Use `Builder::new().build()`; point Tauri's updater at
+  your manifest as you already do.
+
 ### Added
 
 - **Tar-layer patching for macOS `.app.tar.gz`.** An optional `tar_layer` block
@@ -43,8 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downgrade would have crashed the updater — and `load` fell back to the newest
   generation it could *parse*, resurrecting state the compare-and-set had
   already replaced and permanently wedging the store.
-- `SPRINT.md` was being ignored by a `sprint.md` gitignore rule, because git
-  matches ignore patterns case-insensitively where `core.ignorecase` is set.
+- A file was being ignored by a lowercase gitignore rule that differed from it
+  only in case, because git matches ignore patterns case-insensitively where
+  `core.ignorecase` is set. The rule is gone; the trap is worth remembering.
 
 - Corrected the declared minimum supported Rust version from 1.77 to 1.85. The
   1.77 claim was wrong and CI's `msrv` job failed on it: `blake3` pulls in

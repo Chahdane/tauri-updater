@@ -199,8 +199,11 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
           patch="dist/${previous_version}-to-${version}.zst"
 
+          app_id="$(python3 -c 'import json;print(json.load(open("examples/desktop-app/tauri.conf.json"))["identifier"])')"
+
           ./target/release/delta-release \
             --platform "$PLATFORM" \
+            --app-id "$app_id" \
             --target-version "$version" \
             --from-version "$previous_version" \
             --previous-installer "$previous_installer" \

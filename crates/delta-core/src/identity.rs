@@ -199,6 +199,21 @@ pub enum Refusal {
         matches: usize,
     },
 
+    /// The signature carries an authenticated release identity, and it
+    /// contradicts the release being installed.
+    ///
+    /// Not a delta failure and **never** a fallback. A delta failure says a
+    /// transfer went wrong; this says the release process signed a statement
+    /// that does not describe what we are being handed. The full-download path
+    /// is pointed at that same artifact by that same document, so retrying it
+    /// there would run the contradiction down the other branch — the argument
+    /// in `docs/DECISIONS.md` #11, now applying to something that *is*
+    /// authenticated.
+    ReleaseIdentity {
+        /// What went wrong, from `release_identity::IdentityError`.
+        reason: String,
+    },
+
     /// A version relevant to that decision could not be parsed as semver.
     ///
     /// Refused rather than fallen back on: an unorderable version means the
@@ -232,6 +247,11 @@ impl fmt::Display for Refusal {
                 f,
                 "{matches} platform entries match the artifact Tauri selected and they \
                  disagree about the target; refusing rather than choosing one"
+            ),
+            Self::ReleaseIdentity { reason } => write!(
+                f,
+                "the signature authenticates a release identity that does not match \
+                 what is being installed: {reason}"
             ),
             Self::UncomparableVersion { which, value } => write!(
                 f,

@@ -15,6 +15,11 @@ use std::path::Path;
 use base64::Engine as _;
 use minisign::{PublicKeyBox, SecretKey, SecretKeyBox};
 
+use tauri_updater_delta_core::release_identity::{
+    parse_trusted_comment, ReleaseBinding, ReleaseIdentity,
+};
+use tauri_updater_delta_core::FileHash;
+
 use crate::{Error, Result};
 
 /// A minisign secret key, ready to sign release artifacts.
@@ -81,15 +86,85 @@ impl SigningKey {
     ///
     /// The signature is over the artifact's bytes, so it stays valid however the
     /// artifact reached the user — downloaded whole, or rebuilt from a patch.
+    ///
+    /// Produces a **legacy** signature: no authenticated release identity. Kept
+    /// for the compatibility tests that pin what an older toolchain emits; the
+    /// release path uses [`sign_release`].
     pub fn sign_file(&self, path: &Path) -> Result<String> {
+        self.sign_with_comment(path, None)
+    }
+
+    /// Sign a released artifact, binding its identity into the signature.
+    ///
+    /// The identity is **derived here from the file being signed** — its BLAKE3
+    /// and its length are read off the artifact, not accepted from the caller —
+    /// so the signed statement cannot disagree with the bytes it covers. The
+    /// caller supplies only what the file cannot know about itself: which
+    /// application, version, platform and representation it is.
+    ///
+    /// This is one signature, not two. The identity rides in minisign's trusted
+    /// comment, which the global signature already covers, so no second key and
+    /// no second signing operation enter the release process.
+    pub fn sign_release(&self, path: &Path, release: &ReleaseFacts<'_>) -> Result<String> {
+        let identity = ReleaseIdentity {
+            app_id: release.app_id.to_owned(),
+            version: release.version.to_owned(),
+            platform: release.platform.to_owned(),
+            representation: release.representation.to_owned(),
+            artifact_blake3: FileHash::of_file(path)?.to_hex(),
+            artifact_size: std::fs::metadata(path)
+                .map_err(|e| Error::Io(format!("stat {}: {e}", path.display())))?
+                .len(),
+            signed_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+
+        let comment = identity.to_trusted_comment();
+        // Refuse to sign something this build could not itself read back. A
+        // release that emits an identity its own parser rejects would fail
+        // closed on every client, and finding that out at release time is far
+        // cheaper than finding it out from users.
+        match parse_trusted_comment(&comment) {
+            Ok(ReleaseBinding::Authenticated(parsed)) if *parsed == identity => {}
+            other => {
+                return Err(Error::Sign(format!(
+                    "refusing to sign: the generated release identity does not round-trip \
+                     through its own parser ({comment:?} -> {other:?})"
+                )))
+            }
+        }
+
+        self.sign_with_comment(path, Some(&comment))
+    }
+
+    fn sign_with_comment(&self, path: &Path, trusted_comment: Option<&str>) -> Result<String> {
         let file = std::fs::File::open(path)
             .map_err(|e| Error::Io(format!("opening {} to sign: {e}", path.display())))?;
 
-        let signature = minisign::sign(None, &self.secret, file, None, None)
+        let signature = minisign::sign(None, &self.secret, file, trusted_comment, None)
             .map_err(|e| Error::Sign(format!("signing {}: {e}", path.display())))?;
 
         Ok(base64::engine::general_purpose::STANDARD.encode(signature.into_string()))
     }
+}
+
+/// What a released artifact cannot tell you about itself.
+///
+/// Everything else in the authenticated identity — digest, size — is read off
+/// the file by [`SigningKey::sign_release`], so there is no way for the caller
+/// to describe bytes other than the ones being signed.
+#[derive(Debug, Clone)]
+pub struct ReleaseFacts<'a> {
+    /// Application bundle identifier, e.g. `dev.example.app`.
+    pub app_id: &'a str,
+    /// Release version, canonical semver.
+    pub version: &'a str,
+    /// Canonical `{os}-{arch}`.
+    pub platform: &'a str,
+    /// What the artifact is, e.g. `app-tar-gz-v1`.
+    pub representation: &'a str,
 }
 
 /// Decode a Tauri-style base64 public key into its raw minisign form.
