@@ -318,15 +318,13 @@ impl RuntimeConfig {
             }
         };
 
-        let mut transport = HttpFetchBuilder::default()
+        let transport = HttpFetchBuilder::default()
             .max_response_bytes(builder.max_response_bytes)
             .connect_timeout(builder.connect_timeout)
             .request_timeout(builder.request_timeout)
             .max_redirects(builder.max_redirects);
         #[cfg(feature = "test-support")]
-        {
-            transport = transport.dangerous_insecure_transport_protocol(builder.insecure);
-        }
+        let transport = transport.dangerous_insecure_transport_protocol(builder.insecure);
 
         Ok(Self {
             app_id,

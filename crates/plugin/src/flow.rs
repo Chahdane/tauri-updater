@@ -116,6 +116,7 @@ pub enum Outcome {
 impl Outcome {
     /// A short, stable name for the path taken, matching
     /// [`UpdateSource::path_name`].
+    #[cfg(feature = "test-support")]
     pub fn path_name(&self) -> &'static str {
         match self {
             Self::InstalledFromTarDelta { .. } => "tar-delta",
@@ -162,6 +163,7 @@ pub struct Context<'a> {
 /// the full download the official updater would have performed anyway. A
 /// downgrade or an identity mismatch is refused outright instead — see
 /// [`Error::Refused`].
+#[cfg(any(test, feature = "test-support"))]
 pub fn run_update(
     identity: &UpdateIdentity,
     ctx: &Context<'_>,
