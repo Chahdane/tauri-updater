@@ -363,6 +363,19 @@ pub trait DeltaUpdaterExt<R: Runtime> {
     ///
     /// The official `tauri-plugin-updater` and this plugin must both be
     /// registered before this method is used.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this plugin was not registered on the Tauri builder, because
+    /// its managed state does not exist. This deliberately matches
+    /// `tauri-plugin-updater`'s own `UpdaterExt`, which resolves its state the
+    /// same way: a plugin accessor that a caller reaches without registering the
+    /// plugin is a programming error, and the two paired plugins should fail the
+    /// same way rather than one returning an error the other does not.
+    ///
+    /// A missing `tauri-plugin-updater`, by contrast, is *not* a panic — it
+    /// surfaces as [`Error::Updater`] from [`DeltaUpdater::check`], because that
+    /// is a runtime configuration question rather than a registration mistake.
     fn delta_updater(&self) -> DeltaUpdater<R>;
 }
 
