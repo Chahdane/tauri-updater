@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Prepared as the **macOS v0.1 release candidate**. Not tagged or published: the
+version is left at `0.1.0` for an independent audit to run against.
+
+### v0.1 scope
+
+**Supported.** macOS `.app.tar.gz` artifacts, Rust 1.88+, `tauri` 2,
+`tauri-plugin-updater` `>=2.10.1, <2.11.0`, releases generated with tauri-cli
+2.10.1, `app-tar-gz-v1` artifacts rebuilt by the `tauri-app-tar-gz-v1` recipe,
+zstd patches. The README carries the full table and a test keeps it honest.
+
+**Demonstrated.** A real macOS `aarch64` application completing Full then
+TarDelta through the public API and the real Tauri installer, with asserted
+update sources and exact installed binary hashes.
+
+**Not demonstrated, and stated as such.** GitHub-hosted HTTPS end-to-end and
+Apple Developer ID/notarized end-to-end are credential-bound; Intel macOS has no
+real-app run; Linux and Windows client support is not claimed. Release freshness
+is not proven and this is not a TUF-style framework.
+
 ### Added
 
 - **A managed Rust-first plugin API.** Register `Builder::new().build()`, call

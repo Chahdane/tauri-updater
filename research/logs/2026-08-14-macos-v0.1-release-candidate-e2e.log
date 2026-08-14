@@ -1,0 +1,147 @@
+# macOS v0.1 release-candidate E2E, through the public P4 API
+# date: 2026-08-14T14:43:21+0100
+# host: Darwin 25.5.0 arm64  macOS 26.5.2
+# source_commit: 793592f775d600b6568744b2db8ef93f733e9c6c
+#
+# Rebuilt from scratch after every P5 fix. The app drives
+# app.delta_updater().check() / update.install() -- the shipping public API --
+# not the internal flow.
+#   trusted comment: delta-v1 app:dev.chahdane.delta-updater-example v:1.0.2 plat:darwin-aarch64 rep:app-tar-gz-v1 b3:ba6f9df783d2f59045c5fe431796f743df793e11e46fb49bdf200951d9762858 sz:4192521 ts:1786714950
+
+== run ==
+
+     ok   starting installation is the 1.0.0 build       f9c20ec92596903958fa73745d92bd8e73d03bdfde17
+three distinct main binaries:
+   1.0.0  f9c20ec92596903958fa73745d92bd8e73d03bdfde173c9c786970e7fc63460c
+   1.0.1  9a1daf34ab91728d112a960d89fd73b71fc5deaf61439123f2420a33c7b8aef3
+   1.0.2  8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac825f1ca6b4c75aa577e0bb
+
+== transition 1: 1.0.0 -> 1.0.1, cache EMPTY ==
+     ok   running version                                1.0.0
+     ok   installed binary is the signed 1.0.0           3e96ccacd38aadec6ee47b9cf1f2798023e4bda86bb7
+     ok   starting binary is not 1.0.1                  
+     ok   starting binary is not 1.0.2                  
+     ok   cache starts empty                             active=none pending=none bytes=0
+     ok   outcome is a FULL download                     ok installed-from-full-download
+     ok   outcome is not a delta                        
+     ok   outcome is not a tar delta                    
+     ok   1.0.1 staged as PENDING                        active=none pending=1.0.1@cf015525216161ec45
+     ok   nothing promoted yet                           active=none pending=1.0.1@cf015525216161ec45
+     ok   installed binary is now 1.0.1                  9a1daf34ab91728d112a960d89fd73b71fc5deaf6143
+   -- relaunch as 1.0.1, which is what licenses the promotion --
+     ok   running version                                1.0.1
+     ok   1.0.1 promoted to ACTIVE                       active=1.0.1@cf015525216161ec45a211e6dbf6a18
+     ok   PENDING cleared                                active=1.0.1@cf015525216161ec45a211e6dbf6a18
+
+== transition 2: 1.0.1 -> 1.0.2, cache ACTIVE(1.0.1) ==
+     ok   running version                                1.0.1
+     ok   outcome is a TAR DELTA                         ok installed-from-tar-delta downloaded=67577
+     ok   outcome is not a full download                
+     ok   tar patch was downloaded                       /manifest-1.0.2.served.json
+/tar-1.0.1-1.0.2
+     ok   full artifact was NOT downloaded              
+     ok   direct patch was NOT downloaded               
+     ok   1.0.2 staged as PENDING                        active=1.0.1@cf015525216161ec45a211e6dbf6a18
+     ok   1.0.1 still ACTIVE                             active=1.0.1@cf015525216161ec45a211e6dbf6a18
+     ok   installed binary is now 1.0.2                  8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac82
+   -- relaunch as 1.0.2 --
+     ok   running version                                1.0.2
+     ok   1.0.2 promoted to ACTIVE                       active=1.0.2@ba6f9df783d2f59045c5fe431796f74
+     ok   PENDING cleared                                active=1.0.2@ba6f9df783d2f59045c5fe431796f74
+
+== degradation: 1.0.1 -> 1.0.2 with a corrupted cache blob ==
+     ok   running version                                1.0.1
+     ok   seeded via a full download                     ok installed-from-full-download
+     ok   1.0.1 is ACTIVE                                active=1.0.1@cf015525216161ec45a211e6dbf6a18
+     (corrupted cf015525216161ec45a211e6dbf6a18caee4a010a323a6c68889d90ebb30d781.tar.gz)
+     ok   a corrupt cache degrades to FULL               ok installed-from-full-download
+     ok   and not to a tar delta                        
+     ok   the full artifact was downloaded               /manifest-1.0.2.served.json
+/v1.0.2/DeltaUpd
+     ok   and 1.0.2 still installed correctly            8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac82
+
+report written to /private/tmp/delta-rc-e2e/e2e-report.json
+
+ALL ASSERTIONS PASSED
+   transition 1: ok installed-from-full-download
+   transition 2: ok installed-from-tar-delta downloaded=675776 full=4192521
+
+== report ==
+{
+  "main_binary_sha256": {
+    "1.0.0": "f9c20ec92596903958fa73745d92bd8e73d03bdfde173c9c786970e7fc63460c",
+    "1.0.1": "9a1daf34ab91728d112a960d89fd73b71fc5deaf61439123f2420a33c7b8aef3",
+    "1.0.2": "8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac825f1ca6b4c75aa577e0bb"
+  },
+  "transition_1": {
+    "from": "1.0.0",
+    "to": "1.0.1",
+    "cache_state_before": "EMPTY",
+    "outcome": "ok installed-from-full-download",
+    "seconds": 0.114
+  },
+  "transition_2": {
+    "from": "1.0.1",
+    "to": "1.0.2",
+    "cache_state_before": "ACTIVE(1.0.1)",
+    "outcome": "ok installed-from-tar-delta downloaded=675776 full=4192521",
+    "seconds": 0.258
+  },
+  "degradation_corrupt_cache_blob": {
+    "outcome": "ok installed-from-full-download"
+  },
+  "cache_bytes_on_disk": 8391729,
+  "build": {
+    "platform": "darwin-aarch64",
+    "versions": {
+      "1.0.0": {
+        "main_binary_sha256": "f9c20ec92596903958fa73745d92bd8e73d03bdfde173c9c786970e7fc63460c",
+        "artifact_size": 4190434,
+        "artifact_sha256": "045bea0dc8f543a18469d11f5cbc2f708e933ca89170f78e3d6c09133545c44c",
+        "tar_size": 9717760
+      },
+      "1.0.1": {
+        "main_binary_sha256": "9a1daf34ab91728d112a960d89fd73b71fc5deaf61439123f2420a33c7b8aef3",
+        "artifact_size": 4194584,
+        "artifact_sha256": "605084f4be07857677278e1c62fc2b1e4c1a371709e1f179721f77d4ba6ea7f0",
+        "tar_size": 9717760
+      },
+      "1.0.2": {
+        "main_binary_sha256": "8edcea6d1e3cccf41c466ee08732c5bfc3dd6109ac825f1ca6b4c75aa577e0bb",
+        "artifact_size": 4192521,
+        "artifact_sha256": "da4fa32567a47d703ecef2dc88a7fcebd48aa8f40e0cfa07fc6a2cc4855c2b88",
+        "tar_size": 9717760
+      }
+    },
+    "releases": {
+      "1.0.0->1.0.1": {
+        "installer_size": 4194584,
+        "direct_patch_size": 4030360,
+        "direct_patch_percent": 96.0849,
+        "tar_patch_size": 672801,
+        "tar_patch_percent": 16.0398,
+        "reduction_percent": 83.3067,
+        "target_tar_size": 9717760,
+        "target_tar_blake3": "be8596358aebe4d2a389ecc8a5fef4c7a00d7a08766ce6bcaf70a2fc76d8770b",
+        "target_installer_blake3": "cf015525216161ec45a211e6dbf6a18caee4a010a323a6c68889d90ebb30d781",
+        "base_tar_blake3": "599e35161ff61d4983daa565d12e5e981a146b71bd14208f088d43de4a462b7c",
+        "representation": "app-tar-gz-v1",
+        "recompression": "tauri-app-tar-gz-v1"
+      },
+      "1.0.1->1.0.2": {
+        "installer_size": 4192521,
+        "direct_patch_size": 4004408,
+        "direct_patch_percent": 95.5131,
+        "tar_patch_size": 675776,
+        "tar_patch_percent": 16.1186,
+        "reduction_percent": 83.1242,
+        "target_tar_size": 9717760,
+        "target_tar_blake3": "f8d537674c5c58ee8e54e306dd149c2ae039f034ad90ef73847aa84ad6e83524",
+        "target_installer_blake3": "ba6f9df783d2f59045c5fe431796f743df793e11e46fb49bdf200951d9762858",
+        "base_tar_blake3": "be8596358aebe4d2a389ecc8a5fef4c7a00d7a08766ce6bcaf70a2fc76d8770b",
+        "representation": "app-tar-gz-v1",
+        "recompression": "tauri-app-tar-gz-v1"
+      }
+    }
+  }
+}
