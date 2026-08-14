@@ -33,9 +33,12 @@ fn platform() -> String {
 }
 
 use minisign::KeyPair;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use support::server::{read, Route, TestServer};
-use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
-use tauri_plugin_updater_delta::{Error, HttpFetch, HttpFetchBuilder};
+use tauri_plugin_updater_delta::test_support::{
+    run_update, Context, HttpFetch, HttpFetchBuilder, InstallHandoff, Outcome,
+};
+use tauri_plugin_updater_delta::Error;
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
@@ -231,6 +234,43 @@ fn a_full_download_over_real_http_installs_the_released_bytes() {
 
     assert_eq!(outcome, Outcome::InstalledFromFullDownload);
     handoff.assert_installed_exactly(&w.released_hash);
+}
+
+#[test]
+fn full_artifact_credentials_are_never_forwarded_to_patch_urls() {
+    let server = TestServer::start();
+    server.serve("/full", b"full".to_vec());
+    server.serve("/patch", b"patch".to_vec());
+    let full_url = server.url("/full");
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer app-secret"));
+    let fetch = test_fetch()
+        .headers_for_url(headers, &full_url)
+        .build()
+        .expect("build client");
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    fetch
+        .fetch(&server.url("/patch"), &dir.path().join("patch"))
+        .expect("fetch patch");
+    fetch
+        .fetch(&full_url, &dir.path().join("full"))
+        .expect("fetch full");
+
+    assert!(
+        server
+            .headers_for("/patch")
+            .iter()
+            .all(|line| !line.to_ascii_lowercase().starts_with("authorization:")),
+        "unauthenticated patch metadata must not choose where credentials go"
+    );
+    assert!(
+        server
+            .headers_for("/full")
+            .iter()
+            .any(|line| line == "authorization: Bearer app-secret"),
+        "the authoritative artifact request keeps Tauri's configured header"
+    );
 }
 
 #[test]

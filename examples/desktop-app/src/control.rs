@@ -27,16 +27,35 @@
 //! - `GET /outcome` — the last outcome, or `none`.
 //! - `GET /version` — the running app's version.
 //! - `GET /cache` — the artifact cache's ACTIVE and PENDING entries.
-//! - `GET /reconcile` — re-run launch reconciliation and report what it did.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
+use tauri_plugin_updater_delta::DeltaUpdaterExt;
 
 /// Grep target for the "did this ship?" check. Deliberately distinctive.
 const CONTROL_MARKER: &str = "DELTA_E2E_CONTROL_SURFACE_PRESENT";
+
+/// Add the harness-only endpoint, cache path, and localhost transport opt-in.
+///
+/// None of these methods exists in the example's normal path. This whole module
+/// is absent unless `e2e-control` is explicitly enabled.
+pub fn configure_delta(
+    mut builder: tauri_plugin_updater_delta::Builder,
+) -> tauri_plugin_updater_delta::Builder {
+    if let Ok(endpoint) = std::env::var("DELTA_E2E_MANIFEST_URL") {
+        builder = builder.endpoint_for_tests(endpoint);
+    }
+    if let Ok(cache_dir) = std::env::var("DELTA_E2E_CACHE_DIR") {
+        builder = builder.cache_dir(cache_dir);
+    }
+    if let Ok(base) = std::env::var("DELTA_E2E_BASE_ARTIFACT") {
+        builder = builder.direct_base_artifact_for_tests(base);
+    }
+    builder.dangerous_insecure_transport_protocol_for_tests(true)
+}
 
 /// Start the control surface on the port in `DELTA_E2E_CONTROL_PORT`.
 ///
@@ -97,7 +116,7 @@ fn handle<R: Runtime>(
 
     let body = match path {
         "/trigger" => {
-            let result = crate::update::run(app);
+            let result = tauri::async_runtime::block_on(crate::update::run(app));
             let text = match result {
                 Ok(outcome) => format!("ok {outcome}"),
                 // Reported, not swallowed: the harness asserts on loud failures
@@ -111,8 +130,7 @@ fn handle<R: Runtime>(
         "/version" => app.package_info().version.to_string(),
         // The cache is state the harness must be able to see: "did the install
         // work" and "did the cache promote" are different questions.
-        "/cache" => crate::update::cache_state(app),
-        "/reconcile" => crate::update::reconcile_on_launch(app),
+        "/cache" => app.delta_updater().cache_state_for_tests(),
         _ => "unknown".to_owned(),
     };
 

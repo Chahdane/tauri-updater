@@ -30,6 +30,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use reqwest::header::HeaderMap;
 use tauri_updater_delta_core::client::Fetch;
 
 /// Largest response this will accept by default, in bytes.
@@ -70,12 +71,19 @@ pub const DEFAULT_MAX_REDIRECTS: usize = 5;
 /// quantity bounded.
 pub struct HttpFetch {
     client: reqwest::blocking::Client,
+    headers: HeaderMap,
+    headers_url: Option<String>,
     insecure: bool,
     max_response_bytes: u64,
 }
 
 /// Configures an [`HttpFetch`].
+#[derive(Clone)]
 pub struct HttpFetchBuilder {
+    headers: HeaderMap,
+    headers_url: Option<String>,
+    proxy: Option<String>,
+    no_proxy: bool,
     insecure: bool,
     max_response_bytes: u64,
     connect_timeout: Duration,
@@ -86,6 +94,10 @@ pub struct HttpFetchBuilder {
 impl Default for HttpFetchBuilder {
     fn default() -> Self {
         Self {
+            headers: HeaderMap::new(),
+            headers_url: None,
+            proxy: None,
+            no_proxy: false,
             insecure: false,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
@@ -96,6 +108,30 @@ impl Default for HttpFetchBuilder {
 }
 
 impl HttpFetchBuilder {
+    /// Use Tauri's request headers for its authoritative full-artifact URL.
+    ///
+    /// They are deliberately not sent to patch URLs. Patch locations are extra
+    /// unauthenticated metadata, so forwarding an `Authorization` header to
+    /// them would let a modified manifest choose where application credentials
+    /// are disclosed.
+    pub fn headers_for_url(mut self, headers: HeaderMap, url: impl Into<String>) -> Self {
+        self.headers = headers;
+        self.headers_url = Some(url.into());
+        self
+    }
+
+    /// Use the same proxy as the authoritative Tauri update.
+    pub fn proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.proxy = Some(proxy.into());
+        self
+    }
+
+    /// Disable system proxies, matching the authoritative Tauri update.
+    pub fn no_proxy(mut self, no_proxy: bool) -> Self {
+        self.no_proxy = no_proxy;
+        self
+    }
+
     /// Allow non-HTTPS URLs.
     ///
     /// **Named to match `tauri-plugin-updater`'s own
@@ -168,7 +204,7 @@ impl HttpFetchBuilder {
             attempt.follow()
         });
 
-        let client = reqwest::blocking::Client::builder()
+        let mut client = reqwest::blocking::Client::builder()
             .user_agent(concat!(
                 "tauri-plugin-updater-delta/",
                 env!("CARGO_PKG_VERSION")
@@ -177,12 +213,20 @@ impl HttpFetchBuilder {
             // Bounds the whole request, which is the only thing that catches a
             // server accepting the connection and then never sending a byte.
             .timeout(self.request_timeout)
-            .redirect(policy)
-            .build()
-            .map_err(|e| e.to_string())?;
+            .redirect(policy);
+
+        if self.no_proxy {
+            client = client.no_proxy();
+        } else if let Some(proxy) = self.proxy {
+            client = client.proxy(reqwest::Proxy::all(proxy).map_err(|e| e.to_string())?);
+        }
+
+        let client = client.build().map_err(|e| e.to_string())?;
 
         Ok(HttpFetch {
             client,
+            headers: self.headers,
+            headers_url: self.headers_url,
             insecure,
             max_response_bytes: self.max_response_bytes,
         })
@@ -265,11 +309,13 @@ impl Fetch for HttpFetch {
     fn fetch(&self, url: &str, out: &Path) -> std::result::Result<(), String> {
         scheme_allowed(url, self.insecure)?;
 
-        let mut response = self
-            .client
-            .get(url)
-            .send()
-            .map_err(|e| format!("request failed: {e}"))?;
+        let request = self.client.get(url);
+        let request = if self.headers_url.as_deref() == Some(url) {
+            request.headers(self.headers.clone())
+        } else {
+            request
+        };
+        let mut response = request.send().map_err(|e| format!("request failed: {e}"))?;
 
         if !response.status().is_success() {
             return Err(format!("server returned {}", response.status()));
