@@ -152,6 +152,12 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat /secure/path/my-app.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="your-real-password"
 ```
 
+> **The password must be a real one.** A key generated with
+> `tauri signer generate --password ""` cannot be read by this tool at all:
+> Tauri's key generation encrypts even with an empty password, and the `minisign`
+> crate used here does not. The failure is reported clearly, but it is easier to
+> avoid than to diagnose — generate the key with a password you actually keep.
+
 For the first published updater release, omit predecessor flags. This produces a
 valid signed Full-only `manifest.json`:
 
