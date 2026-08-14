@@ -227,6 +227,38 @@ Plain HTTP and explicit endpoint/base overrides exist only under the non-default
 `test-support` feature used by this repository's E2E harness. They are absent
 from a normal build.
 
+## Supported versions (v0.1)
+
+Everything below is a constraint the code actually enforces.
+`crates/plugin/tests/supported_versions.rs` checks this table against the
+dependency constraints, workspace fields, pinned CI environment and engine
+constants, so it fails rather than drifts.
+
+| | v0.1 |
+| --- | --- |
+| Client platform | macOS, `.app.tar.gz` artifacts |
+| Architecture | `aarch64` **demonstrated**; `x86_64` expected but not demonstrated (see below) |
+| Rust | 1.88 or newer |
+| `tauri` | 2 |
+| `tauri-plugin-updater` | `>=2.10.1, <2.11.0` |
+| Release bundler | tauri-cli 2.10.1 (exact), for the archive the tar layer must reproduce |
+| Artifact representation | `app-tar-gz-v1` |
+| Recompression recipe | `tauri-app-tar-gz-v1` (`tar` 0.4.x into `flate2` with the zlib-rs backend) |
+| Delta backend | `zstd` |
+
+The updater range is narrow on purpose: six behaviours this plugin's safety
+depends on are observations about `tauri-plugin-updater` 2.10.1's implementation
+rather than guarantees of its API. A caret range would let any of them change
+while CI stayed green.
+
+**On Intel macOS.** The engine is byte-oriented and architecture-independent, and
+the same engine and release tests run on Linux and Windows x86_64 in CI. The
+recompression recipe depends on `tar` and `flate2` behaviour rather than on the
+CPU. So `x86_64` macOS is *expected* to work — but no real application install
+has been performed there, so it is not claimed as demonstrated. A client that
+meets a representation or recipe it does not implement declines the tar layer and
+downloads in full rather than guessing.
+
 ## Compatibility and security scope
 
 - The plugin always installs through the exact Tauri `Update` returned by the
