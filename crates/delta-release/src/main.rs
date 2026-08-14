@@ -10,7 +10,8 @@ use std::process::ExitCode;
 use clap::Parser;
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{
-    build_release, load_manifest, write_manifest, ReleaseRequest, Result, TarLayerOptions,
+    build_release, load_manifest, write_manifest, Predecessor, ReleaseRequest, Result,
+    TarLayerOptions,
 };
 
 /// Environment variable Tauri uses for the signing key, reused here so a project
@@ -40,8 +41,16 @@ struct Args {
     target_version: String,
 
     /// Version this patch upgrades from.
-    #[arg(long)]
-    from_version: String,
+    ///
+    /// Omit on a first release. All four predecessor flags — this,
+    /// `--previous-installer`, `--patch-url` and `--patch-out` — are required
+    /// together or not at all, so a release either describes a complete upgrade
+    /// path or describes none. See `docs/DECISIONS.md` #32.
+    #[arg(
+        long,
+        requires_all = ["previous_installer", "patch_url", "patch_out"]
+    )]
+    from_version: Option<String>,
 
     /// Application bundle identifier, as in `tauri.conf.json`'s `identifier`.
     ///
@@ -53,8 +62,8 @@ struct Args {
     app_id: String,
 
     /// Installer that users on --from-version already have.
-    #[arg(long)]
-    previous_installer: PathBuf,
+    #[arg(long, requires = "from_version")]
+    previous_installer: Option<PathBuf>,
 
     /// Installer being released.
     #[arg(long)]
@@ -65,16 +74,25 @@ struct Args {
     installer_url: String,
 
     /// Public URL the patch will be served from.
-    #[arg(long)]
-    patch_url: String,
+    #[arg(long, requires = "from_version")]
+    patch_url: Option<String>,
 
     /// Where to write the generated patch.
-    #[arg(long)]
-    patch_out: PathBuf,
+    #[arg(long, requires = "from_version")]
+    patch_out: Option<PathBuf>,
 
     /// Manifest to create or update.
     #[arg(long, default_value = "manifest.json")]
     manifest: PathBuf,
+
+    /// Also write the signature to this file, as `tauri build` does.
+    ///
+    /// The updater reads signatures out of the manifest, so this is not required
+    /// for updates to work. It is published because the `.sig` beside the
+    /// artifact is what the rest of the Tauri ecosystem expects to find, and a
+    /// release that omits it looks broken to every tool that is not this one.
+    #[arg(long)]
+    signature_out: Option<PathBuf>,
 
     /// Release notes.
     #[arg(long)]
@@ -94,7 +112,7 @@ struct Args {
     /// Only meaningful for gzipped tarball artifacts such as macOS
     /// `.app.tar.gz`. The direct patch is generated either way, so a release
     /// that cannot produce a tar layer still publishes normally.
-    #[arg(long, requires = "tar_patch_url")]
+    #[arg(long, requires_all = ["tar_patch_url", "from_version"])]
     tar_patch_out: Option<PathBuf>,
 
     /// Public URL the tar-layer patch will be served from.
@@ -144,34 +162,82 @@ fn run() -> Result<()> {
         _ => None,
     };
 
+    // clap's `requires_all` has already established that these are all present
+    // or all absent, so the four `zip`s below cannot disagree.
+    let predecessor = match (
+        &args.from_version,
+        &args.previous_installer,
+        &args.patch_url,
+        &args.patch_out,
+    ) {
+        (Some(from_version), Some(installer), Some(patch_url), Some(patch_out)) => {
+            Some(Predecessor {
+                from_version,
+                installer,
+                patch_url,
+                patch_out,
+                tar_layer,
+            })
+        }
+        _ => None,
+    };
+
     let request = ReleaseRequest {
         platform: &args.platform,
         version: &args.target_version,
-        from_version: &args.from_version,
-        previous_installer: &args.previous_installer,
         new_installer: &args.new_installer,
         installer_url: &args.installer_url,
-        patch_url: &args.patch_url,
-        patch_out: &args.patch_out,
         notes: args.notes.as_deref(),
         pub_date: args.pub_date.as_deref(),
         app_id: &args.app_id,
-        tar_layer,
+        predecessor,
     };
 
     let existing = load_manifest(&args.manifest)?;
     let (manifest, summary) = build_release(&request, &key, existing)?;
 
-    println!(
-        "{} -> {} on {}: patch {} bytes, installer {} bytes ({:.2}% of a full download)",
-        args.from_version,
-        args.target_version,
-        args.platform,
-        summary.patch_size,
-        summary.installer_size,
-        summary.ratio_percent(),
-    );
-    println!("patch written to {}", args.patch_out.display());
+    if let Some(path) = &args.signature_out {
+        // Taken from the manifest rather than re-signed: minisign includes
+        // randomness, so signing twice produces two different valid signatures
+        // and the `.sig` file would not be the one the manifest published.
+        let signature = &manifest
+            .platforms
+            .get(&args.platform)
+            .expect("build_release always writes the platform it was asked for")
+            .signature;
+        std::fs::write(path, signature).map_err(|e| {
+            tauri_updater_delta_release::Error::Io(format!("writing {}: {e}", path.display()))
+        })?;
+        println!("signature written to {}", path.display());
+    }
+
+    match (summary.patch_size, summary.ratio_percent()) {
+        (Some(patch), Some(percent)) => {
+            println!(
+                "{} -> {} on {}: patch {} bytes, installer {} bytes ({:.2}% of a full download)",
+                args.from_version.as_deref().unwrap_or("?"),
+                args.target_version,
+                args.platform,
+                patch,
+                summary.installer_size,
+                percent,
+            );
+            if let Some(path) = &args.patch_out {
+                println!("patch written to {}", path.display());
+            }
+        }
+        // A first release, or any release with no predecessor supplied. Said
+        // plainly, because this used to be the case that produced nothing at
+        // all -- see docs/DECISIONS.md #32.
+        _ => {
+            println!(
+                "{} on {}: no predecessor, so no patches. Publishing a complete \
+                 full-download release: installer {} bytes, signed, with an \
+                 authenticated release identity.",
+                args.target_version, args.platform, summary.installer_size,
+            );
+        }
+    }
 
     match (&summary.tar_patch_size, &summary.tar_layer_skipped) {
         (Some(size), _) => {

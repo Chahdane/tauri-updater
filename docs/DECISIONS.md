@@ -1445,3 +1445,95 @@ wreckage goes — it is the one proving a live sibling stays.
 
 **Revisit when:** updates can legitimately run longer than a day, which would
 mean the threshold is no longer safely above them.
+
+## 32. The updater document is not the optional part of a release
+
+**Decided:** 2026-08-14 · **Status:** active · **Closes blocker B5**
+
+`ReleaseRequest` required `from_version`, `previous_installer`, `patch_url` and
+`patch_out`. A release with nothing to patch from could not be *expressed*, so
+the workflow gated the entire generate step on `has_previous` — and skipping it
+skipped the manifest, and the signature with it.
+
+A first release therefore published a bare artifact. Tauri's `check()` had no
+document to read, so the update system was inert until a second release happened
+to bring one into existence.
+
+### The shape of the mistake
+
+Not "we forgot the first-release case". The case was *handled* — there is a
+`::notice::` about it, written deliberately. What was wrong is that two different
+things went down one branch:
+
+| | Optional? |
+| --- | --- |
+| The delta layer | **yes** — it is an optimisation |
+| The updater document | **no** — it is the product |
+
+The gate was correct about the first and applied to both. So the fix is not a
+new branch, it is a type: `Option<Predecessor>` groups the four fields, absence
+is representable, and the manifest is produced unconditionally.
+
+`TarLayerOptions` moves inside `Predecessor` for the same reason. A tar patch is
+a patch between two artifacts; it cannot exist without a predecessor, and the
+type now says so rather than a comment.
+
+### What made this survivable for so long
+
+Nothing ever ran it. The workflow's rehearsal job ran `delta-release --help`, and
+later the crate's own tests — all of which had two artifacts, because that is
+what the type demanded. The first-release path had no execution anywhere.
+
+That is now three tests and a shell rehearsal against real bundles, and restoring
+the old requirement fails all of them while leaving state C green — which is
+exactly the world B5 describes.
+
+**Revisit when:** a release gains another optional component. The question to ask
+is whether its absence should be able to remove anything a client depends on.
+
+---
+
+## 33. A patch is described only after it has been applied
+
+**Decided:** 2026-08-14 · **Status:** active · **Closes blocker B7**
+
+The tar layer had round-tripped its own output since it was written: apply,
+recompress, require byte-identity with the published artifact, refuse to emit
+metadata otherwise. `tar_layer.rs` said so in its module docs, and said in the
+same breath that the direct-patch generator did not.
+
+So the release tool shipped one path that proved itself and one that asserted
+itself. The direct generator ran `diff`, hashed the patch file, recorded its
+size, and emitted metadata. Every one of those numbers was correct **about the
+patch file**, and none of them was evidence that applying it produced anything in
+particular.
+
+### Why the digests do not cover it
+
+`patch_blake3` proves the client downloads the patch we generated. It says
+nothing about what that patch *does*. A backend whose `diff` and `apply`
+disagree, a compression setting the client will not accept, a truncated write
+that still hashes consistently — all produce a well-formed manifest describing a
+patch that fails on every client.
+
+And that failure is invisible. A failed delta falls back to a full download, so
+nobody reports a bug; every user just quietly pays full price. It is
+`DECISIONS.md` #22's failure mode arriving from the release side.
+
+### Why it is a separate public function
+
+`prove_patch_reconstructs` is public and takes a base, a patch and an expected
+digest. The honest path cannot produce a broken patch on demand, so a test that
+only drives `build_release` can assert nothing more than "the good case still
+works" — which is precisely the test that would not notice this guard being
+deleted. It was: removing the check while it was inlined failed **no** tests.
+
+Driven directly, it is fed a patch that is real, correct, and between the wrong
+pair. That is what a mismatched predecessor actually looks like — a flaky
+download, a wrong tag resolved, an asset replaced in place — and nothing about
+the patch file is detectably wrong about it.
+
+Cost: one patch application per upgrade path, at release time, on CI.
+
+**Revisit when:** a backend is added whose apply step is expensive enough that
+this matters. The answer would be to keep the check and accept the time.
