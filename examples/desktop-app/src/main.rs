@@ -1,20 +1,7 @@
-//! Minimal Tauri app used to prove a real updater accepts a delta-rebuilt artifact.
+//! Minimal, normal Rust-first integration for the delta updater.
 //!
-//! This exists for one reason: `tauri_plugin_updater::Update` has private
-//! fields, so no test can construct one. Only `Updater::check()` inside a
-//! running app can produce the handle that `install` needs. A real app is
-//! therefore the only way to exercise the real seam — see `docs/DECISIONS.md`.
-//!
-//! The update it performs is the genuine integration:
-//!
-//! 1. Tauri's own `Updater::check()` reads the manifest — which works precisely
-//!    because our manifest is a *superset* of Tauri's (decision #5), so the
-//!    official updater parses it without knowing deltas exist.
-//! 2. That yields an `Update`, which is the only thing that can install.
-//! 3. Our flow then substitutes the download step: patch, reconstruct, verify.
-//! 4. The verified artifact goes to `Update::install` through `TauriInstall`.
-//!
-//! Step 3 is the whole project. Steps 1, 2 and 4 are stock Tauri.
+//! The `e2e-control` feature adds the repository's localhost harness around this
+//! same path. It is absent from default builds.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -29,12 +16,14 @@ mod update;
 /// same function, so the tested path and the shipped path are the same code.
 #[tauri::command]
 async fn check_for_updates(app: tauri::AppHandle) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || update::run(&app))
-        .await
-        .map_err(|e| format!("update task panicked: {e}"))?
+    update::run(&app).await
 }
 
 fn main() {
+    let delta_builder = tauri_plugin_updater_delta::Builder::new();
+    #[cfg(feature = "e2e-control")]
+    let delta_builder = control::configure_delta(delta_builder);
+
     let builder = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![check_for_updates])
         // The official updater still owns checking and installing.
@@ -42,21 +31,11 @@ fn main() {
         // Ours makes the download smaller when it can.
         // No configuration: the flow reads the release document out of the
         // response Tauri's own check already made.
-        .plugin(
-            tauri_plugin_updater_delta::Builder::new()
-                .build()
-                .expect("registering the delta plugin"),
-        );
+        .plugin(delta_builder.build());
 
-    // Reconciliation runs on every launch, feature or not: it is how the cache
-    // learns which version actually came back up, and that is the app's job
-    // rather than the harness's. See `update::reconcile_on_launch`.
-    let builder = builder.setup(|app| {
-        let verdict = update::reconcile_on_launch(app.handle());
-        eprintln!("delta: cache reconciliation: {verdict}");
-
+    let builder = builder.setup(|_app| {
         #[cfg(feature = "e2e-control")]
-        control::spawn(app.handle().clone());
+        control::spawn(_app.handle().clone());
 
         Ok(())
     });

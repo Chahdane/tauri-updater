@@ -89,7 +89,7 @@ impl SigningKey {
     ///
     /// Produces a **legacy** signature: no authenticated release identity. Kept
     /// for the compatibility tests that pin what an older toolchain emits; the
-    /// release path uses [`sign_release`].
+    /// release path uses [`Self::sign_release`].
     pub fn sign_file(&self, path: &Path) -> Result<String> {
         self.sign_with_comment(path, None)
     }

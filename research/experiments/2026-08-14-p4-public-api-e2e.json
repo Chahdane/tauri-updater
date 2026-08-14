@@ -1,0 +1,89 @@
+{
+  "experiment_id": "2026-08-14-p4-public-api-e2e",
+  "date": "2026-08-14T13:04:11+01:00",
+  "source_commit": "165ea71eb41473c6a1502e903287df30781bad64",
+  "tree_dirty": false,
+  "platform": "darwin",
+  "os_version": "macOS 26.5.2",
+  "architecture": "aarch64",
+  "rust_version": "rustc 1.91.1 (ed61e7d7e 2025-11-07)",
+  "tauri_version": "2.11.5",
+  "tauri_plugin_updater_version": "2.10.1",
+  "zstd_version": "zstd 0.13.3",
+  "bundler_versions": {
+    "tauri-cli": "2.10.1",
+    "tauri-bundler": "2.8.1",
+    "tar": "0.4.46",
+    "flate2": "1.1.9",
+    "gzip-backend": "zlib-rs 0.6.7"
+  },
+  "old_version": "1.0.1",
+  "new_version": "1.0.2",
+  "version_distance": "patch",
+  "old_artifact_hash": "e6be08ddd4fbb67b512d95288ff549d1fc69439279199167d67ce28763a67e49",
+  "new_artifact_hash": "0cd785ffaf89bf9cb06d24348a31efba4207f914c32a1185ae34a296bdf2ee73",
+  "old_artifact_size": 4194817,
+  "new_artifact_size": 4192787,
+  "patch_hash": "b80669e600a7e80c251ad912cf25107e59b67d24dd29fbaea5a326a7e8ce7167",
+  "patch_size": 676126,
+  "patch_ratio": 0.161259,
+  "representation": "app-tar-gz-v1 (tar layer inside .app.tar.gz)",
+  "compression_settings": {
+    "patch_backend": "ZstdBackend",
+    "zstd_level": 19,
+    "recompression": "tauri-app-tar-gz-v1",
+    "gzip_level": "Compression::default() (6)"
+  },
+  "patch_generation_seconds": null,
+  "patch_application_seconds": 0.278,
+  "peak_memory_bytes": null,
+  "disk_usage_bytes": 8392228,
+  "source_change_category": "string-only",
+  "changed_loc": null,
+  "notes": "GATE P4 PUBLIC-API REGRESSION. The normal Rust-first API drove the same real Tauri updater check and install used by consumers. Transition 1 selected Full from an empty cache, staged 1.0.1 as PENDING, and promoted it only after the 1.0.1 app launched. Transition 2 selected TarDelta from ACTIVE(1.0.1), requested the tar patch but neither the direct patch nor the full 1.0.2 artifact, reconstructed the exact signed target, and installed the exact expected 1.0.2 binary. A deliberately corrupted cache blob then degraded safely to Full and still installed the exact target. The three main binaries were asserted pairwise distinct. Both direct and tar patches self-round-tripped before publication. Ratios are controlled example-app measurements, not a general macOS claim. The companion onboarding rehearsal used a new clone of this commit: `cargo check --workspace --all-targets --locked` with warnings denied completed in 38.41 seconds and included the normal example. The documented path has five integration steps after prerequisites: add two dependencies, register two plugins, configure the existing updater endpoint/public key/artifact creation, call check/install, and run the release tool. The release CLI help reached the documented artifact/signing credential boundary. No undocumented local files or environment variables were required. The rehearsal found one stale Linux platform example in CLI help; it was corrected before this final clone and run.",
+  "raw_log": null,
+  "artifact_provenance": "`examples/desktop-app/e2e/build-three-versions.sh` built three real macOS application bundles with `cargo tauri build --features e2e-control` in a fresh per-run directory outside the repository, using only version-string changes and a generated per-run test signing key. The release tool built from this clean tree generated authenticated manifests plus direct and tar patches with `--require-tar-layer`. `examples/desktop-app/e2e/run-tar-e2e.sh` launched the bundled application, exercised the public updater API against an explicit loopback test server, and relaunched between transitions so cache promotion depended on the version that actually ran.",
+  "measurements": {
+    "main_binary_sha256": {
+      "1.0.0": "b78cc310f71ee5d228daadf00f21c5915308c95a067699097b9219a000599864",
+      "1.0.1": "74164bd87b2e8b636bcc2fbe60b5ceef539d0f273fc8aaaef9b6b3e1edf4e1b7",
+      "1.0.2": "97db672190cc845786979e77771bab8dc9f7864771968c09b8bad841bbb8fca7"
+    },
+    "transition_1": {
+      "from": "1.0.0",
+      "to": "1.0.1",
+      "cache_state_before": "EMPTY",
+      "outcome": "installed-from-full-download",
+      "seconds": 0.129
+    },
+    "transition_2": {
+      "from": "1.0.1",
+      "to": "1.0.2",
+      "cache_state_before": "ACTIVE(1.0.1)",
+      "outcome": "installed-from-tar-delta",
+      "downloaded_bytes": 676126,
+      "full_bytes": 4192787,
+      "seconds": 0.278
+    },
+    "degradation_corrupt_cache_blob": {
+      "outcome": "installed-from-full-download"
+    },
+    "direct_vs_tar": {
+      "1.0.0->1.0.1": {
+        "direct_patch_percent": 96.0771,
+        "tar_patch_percent": 16.0473
+      },
+      "1.0.1->1.0.2": {
+        "direct_patch_percent": 95.1909,
+        "tar_patch_percent": 16.1259
+      }
+    },
+    "fresh_clone": {
+      "documented_integration_steps": 5,
+      "verification_actions": 7,
+      "workspace_check_seconds": 38.41,
+      "undocumented_assumptions": 0
+    },
+    "assertions_passed": 34
+  }
+}

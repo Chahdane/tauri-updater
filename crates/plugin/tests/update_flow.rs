@@ -25,10 +25,16 @@ fn platform() -> String {
 }
 
 use minisign::KeyPair;
-use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
+use tauri_plugin_updater_delta::test_support::{
+    run_update, run_update_with_cache_diagnostic, Context, InstallHandoff, Outcome,
+};
 use tauri_plugin_updater_delta::Error;
+use tauri_updater_delta_core::cache::{ArtifactCache, CacheLimits, Namespace};
 use tauri_updater_delta_core::client::Fetch;
-use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity, VerifiedArtifact};
+use tauri_updater_delta_core::manifest::{
+    RECOMPRESSION_TAURI_APP_TAR_GZ_V1, REPRESENTATION_APP_TAR_GZ_V1,
+};
+use tauri_updater_delta_core::{FileHash, Limits, Refusal, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
@@ -232,6 +238,55 @@ fn installs_from_a_full_download_when_there_is_no_base() {
     let installed = handoff.installed.borrow();
     assert_eq!(
         installed[0],
+        std::fs::read(&w.released).expect("read released")
+    );
+}
+
+#[test]
+fn cache_persistence_failure_is_reported_without_failing_the_install() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let handoff = RecordingHandoff::default();
+    let cache = ArtifactCache::open(
+        dir.path().join("cache"),
+        Namespace {
+            bundle_id: "dev.example.testapp".to_owned(),
+            platform: platform(),
+            arch: std::env::consts::ARCH.to_owned(),
+            pubkey_fingerprint: FileHash::of_bytes(w.pubkey.as_bytes()).to_hex(),
+            representation: REPRESENTATION_APP_TAR_GZ_V1.to_owned(),
+            recompression: RECOMPRESSION_TAURI_APP_TAR_GZ_V1.to_owned(),
+        },
+        CacheLimits::default(),
+    )
+    .expect("open cache");
+
+    // The controlled fixture is an opaque AppImage rather than a .app.tar.gz.
+    // It installs correctly, but cannot be expanded into the tar metadata the
+    // macOS cache requires, giving a deterministic cache staging failure.
+    let (outcome, cache_diagnostic) = run_update_with_cache_diagnostic(
+        &w.identity("1.0.0"),
+        &Context {
+            pubkey: &w.pubkey,
+            base: None,
+            cache: Some(&cache),
+            app_id: "dev.example.testapp",
+            work_dir: &dir.path().join("work"),
+            limits: Limits::default(),
+        },
+        &w.server,
+        &handoff,
+    )
+    .expect("cache persistence is not update correctness");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert!(
+        cache_diagnostic.is_some(),
+        "the cache failure must be visible"
+    );
+    assert_eq!(
+        handoff.installed.borrow()[0],
         std::fs::read(&w.released).expect("read released")
     );
 }
