@@ -1,5 +1,12 @@
 //! Tests the application-facing seam instead of assembling the internal flow.
 
+// The supported v0.1 application path is macOS. Under a unified Windows
+// workspace build, Tauri's mock-test feature produces a test executable that
+// the runner cannot load (STATUS_ENTRYPOINT_NOT_FOUND) before any assertion
+// runs. Keep the API proof on macOS and Linux; Windows continues to run every
+// engine, transport, release, and compile test without claiming an app path.
+#![cfg(not(target_os = "windows"))]
+
 #[allow(dead_code)]
 mod support;
 
