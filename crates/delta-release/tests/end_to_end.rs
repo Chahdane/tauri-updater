@@ -20,7 +20,7 @@ use minisign::KeyPair;
 use tauri_updater_delta_core::manifest::Manifest;
 use tauri_updater_delta_core::{try_reconstruct, FileHash, Reconstruction, TargetSpec};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, ReleaseRequest};
+use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
 const PLATFORM: &str = "linux-x86_64";
 
@@ -65,16 +65,18 @@ fn publish(dir: &Path, pair: &KeyPair) -> Published {
     let request = ReleaseRequest {
         platform: PLATFORM,
         version: tauri_updater_delta_fixtures::NEW_VERSION,
-        from_version: tauri_updater_delta_fixtures::OLD_VERSION,
-        previous_installer: &fixture.old,
         new_installer: &fixture.new,
         installer_url: "https://releases.example.com/app_1.0.1.AppImage",
-        patch_url: "https://releases.example.com/1.0.0-to-1.0.1.zst",
-        patch_out: &patch,
         notes: Some("Phase 2 end-to-end"),
         pub_date: Some("2026-08-12T10:00:00Z"),
         app_id: "dev.example.testapp",
-        tar_layer: None,
+        predecessor: Some(Predecessor {
+            from_version: tauri_updater_delta_fixtures::OLD_VERSION,
+            installer: &fixture.old,
+            patch_url: "https://releases.example.com/1.0.0-to-1.0.1.zst",
+            patch_out: &patch,
+            tar_layer: None,
+        }),
     };
 
     let (manifest, _) =
@@ -398,16 +400,18 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app.AppImage",
-            patch_url: "https://example.com/from-1.0.0.zst",
-            patch_out: &first_patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: "https://example.com/from-1.0.0.zst",
+                patch_out: &first_patch,
+                tar_layer: None,
+            }),
         },
         &key,
         None,
@@ -421,16 +425,18 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "0.9.0",
-            previous_installer: &older,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app.AppImage",
-            patch_url: "https://example.com/from-0.9.0.zst",
-            patch_out: &second_patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "0.9.0",
+                installer: &older,
+                patch_url: "https://example.com/from-0.9.0.zst",
+                patch_out: &second_patch,
+                tar_layer: None,
+            }),
         },
         &key,
         Some(manifest),
@@ -458,16 +464,18 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app.AppImage",
-            patch_url: "https://example.com/a.zst",
-            patch_out: &dir.path().join("a.zst"),
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: "https://example.com/a.zst",
+                patch_out: &dir.path().join("a.zst"),
+                tar_layer: None,
+            }),
         },
         &key,
         None,
@@ -480,16 +488,18 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.2",
-            from_version: "1.0.1",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app.AppImage",
-            patch_url: "https://example.com/b.zst",
-            patch_out: &dir.path().join("b.zst"),
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.1",
+                installer: &fixture.old,
+                patch_url: "https://example.com/b.zst",
+                patch_out: &dir.path().join("b.zst"),
+                tar_layer: None,
+            }),
         },
         &key,
         Some(old_manifest),
@@ -515,16 +525,18 @@ fn refuses_to_patch_a_version_to_itself() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "1.0.1",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app.AppImage",
-            patch_url: "https://example.com/a.zst",
-            patch_out: &dir.path().join("a.zst"),
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.1",
+                installer: &fixture.old,
+                patch_url: "https://example.com/a.zst",
+                patch_out: &dir.path().join("a.zst"),
+                tar_layer: None,
+            }),
         },
         &signing_key(&pair),
         None,

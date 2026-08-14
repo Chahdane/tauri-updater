@@ -47,7 +47,7 @@ use tauri_updater_delta_core::manifest::{
 };
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, ReleaseRequest, TarLayerOptions};
+use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest, TarLayerOptions};
 
 const INSTALLER_URL: &str = "https://example.com/App.app.tar.gz";
 const PATCH_URL: &str = "https://example.com/direct.zst";
@@ -198,23 +198,25 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
         &ReleaseRequest {
             platform: &platform(),
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &old,
             new_installer: &new,
             installer_url: INSTALLER_URL,
-            patch_url: PATCH_URL,
-            patch_out: &direct_patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: Some(TarLayerOptions {
-                patch_url: TAR_PATCH_URL,
-                patch_out: &tar_patch,
-                work_dir: None,
-                max_tar_bytes: 64 * 1024 * 1024,
-                // The whole fixture is pointless if the layer silently did not
-                // get built, so make that a failure rather than a surprise.
-                required: true,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &old,
+                patch_url: PATCH_URL,
+                patch_out: &direct_patch,
+                tar_layer: Some(TarLayerOptions {
+                    patch_url: TAR_PATCH_URL,
+                    patch_out: &tar_patch,
+                    work_dir: None,
+                    max_tar_bytes: 64 * 1024 * 1024,
+                    // The whole fixture is pointless if the layer silently did not
+                    // get built, so make that a failure rather than a surprise.
+                    required: true,
+                }),
             }),
         },
         &key,
