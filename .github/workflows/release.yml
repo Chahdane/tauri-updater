@@ -336,5 +336,18 @@ jobs:
             dist/manifest.json
             dist/*.zst
           )
+
+          # `gh release upload` fails if the release does not exist, and pushing
+          # a tag does not create one. On the very first release there is
+          # nothing to upload to -- the same state-A blindness as B5, one step
+          # further along.
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "::notice::creating release ${GITHUB_REF_NAME}"
+            gh release create "${GITHUB_REF_NAME}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes \
+              --verify-tag
+          fi
+
           echo "Uploading: ${assets[*]}"
           gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber

@@ -51,8 +51,19 @@ pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default redirect budget.
 ///
-/// Enough for the hop patterns real hosting uses — GitHub Releases answers with
-/// a 302 to `objects.githubusercontent.com` — and far short of a loop.
+/// Enough for the hop patterns real hosting uses, and far short of a loop.
+///
+/// Measured against GitHub Releases on 2026-08-14
+/// (`research/experiments/2026-08-14-github-release-transport`): a request to
+/// `github.com/<owner>/<repo>/releases/download/<tag>/<asset>` answers **302**
+/// with a cross-host `Location` on `release-assets.githubusercontent.com`,
+/// which serves **200** from Azure Blob storage with a `Content-Length` and a
+/// signed URL that expires in about an hour. One hop, HTTPS throughout.
+///
+/// Two properties of that chain matter here and both are already enforced: the
+/// hop is cross-*host*, so a policy keyed on the original host would break real
+/// downloads, and it is HTTPS→HTTPS, so the no-downgrade rule costs nothing on
+/// the happy path while still refusing a redirect that leaves TLS.
 pub const DEFAULT_MAX_REDIRECTS: usize = 5;
 
 /// Downloads over HTTPS, streaming to disk, with every server-controlled
