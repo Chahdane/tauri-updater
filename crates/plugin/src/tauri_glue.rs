@@ -20,7 +20,7 @@ use tauri_updater_delta_core::release_identity::current_platform;
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 
 use crate::flow::{
-    run_update_detailed, Context, FlowPhase, InstallHandoff, Outcome as FlowOutcome,
+    run_update_detailed, Context, FlowPhase, InstallHandoff, Outcome as FlowOutcome, RunReport,
 };
 use crate::http::{
     HttpFetchBuilder, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_REDIRECTS, DEFAULT_MAX_RESPONSE_BYTES,
@@ -615,36 +615,56 @@ impl Update {
             &progress,
         )?;
 
+        let mut report = report;
         let mut diagnostics = self.config.diagnostics.clone();
-        if let Some(message) = report.cache_write_error {
+        if let Some(message) = report.cache_write_error.take() {
             let diagnostic = Diagnostic::CacheNotPersisted { message };
             log::warn!("{diagnostic}");
             diagnostics.push(diagnostic);
         }
 
-        Ok(match report.outcome {
-            FlowOutcome::InstalledFromTarDelta {
-                downloaded,
-                saved_against,
-            } => Outcome::InstalledFromTarDelta {
-                downloaded,
-                full_download_size: saved_against,
-                diagnostics,
-            },
-            FlowOutcome::InstalledFromDelta {
-                downloaded,
-                saved_against,
-            } => Outcome::InstalledFromDirectDelta {
-                downloaded,
-                full_download_size: saved_against,
-                diagnostics,
-            },
-            FlowOutcome::InstalledFromFullDownload => Outcome::InstalledFromFullDownload {
-                downloaded: report.full_downloaded.unwrap_or(0),
-                diagnostics,
-            },
-            FlowOutcome::UpToDate => Outcome::UpToDate { diagnostics },
-        })
+        Ok(public_outcome(report, diagnostics))
+    }
+}
+
+/// Translate the internal flow result into the public [`Outcome`].
+///
+/// # Why this is a function
+///
+/// It is the only thing that decides which source an application is told about,
+/// and P4's own contract is that Full, DirectDelta and TarDelta stay
+/// distinguishable. Inlined in `install_blocking` it needed a real Tauri
+/// `Update` to reach, so no `cargo test` covered it: swapping TarDelta for
+/// InstalledFromFullDownload here left the whole suite green, and only the
+/// manual macOS E2E would have noticed. A mislabelled outcome installs the right
+/// bytes and tells the application the wrong story, which is exactly the failure
+/// `docs/DECISIONS.md` #22 is about.
+fn public_outcome(report: RunReport, diagnostics: Vec<Diagnostic>) -> Outcome {
+    match report.outcome {
+        FlowOutcome::InstalledFromTarDelta {
+            downloaded,
+            saved_against,
+        } => Outcome::InstalledFromTarDelta {
+            downloaded,
+            full_download_size: saved_against,
+            diagnostics,
+        },
+        FlowOutcome::InstalledFromDelta {
+            downloaded,
+            saved_against,
+        } => Outcome::InstalledFromDirectDelta {
+            downloaded,
+            full_download_size: saved_against,
+            diagnostics,
+        },
+        FlowOutcome::InstalledFromFullDownload => Outcome::InstalledFromFullDownload {
+            // `run_update_detailed` always records this on the full path; the
+            // fallback exists so a future variant cannot silently report a
+            // download of zero bytes as if it were measured.
+            downloaded: report.full_downloaded.unwrap_or(0),
+            diagnostics,
+        },
+        FlowOutcome::UpToDate => Outcome::UpToDate { diagnostics },
     }
 }
 
@@ -685,6 +705,107 @@ impl InstallHandoff for TauriInstall<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(outcome: FlowOutcome, full_downloaded: Option<u64>) -> RunReport {
+        RunReport {
+            outcome,
+            cache_write_error: None,
+            full_downloaded,
+        }
+    }
+
+    // ---- the public outcome mapping -------------------------------------
+    //
+    // This is what an application is told about its own update, and until it
+    // was extracted nothing in `cargo test` reached it: replacing TarDelta with
+    // InstalledFromFullDownload here left the entire suite green, and only the
+    // manual macOS E2E would have caught it.
+
+    #[test]
+    fn each_internal_source_maps_to_its_own_public_outcome() {
+        let tar = public_outcome(
+            report(
+                FlowOutcome::InstalledFromTarDelta {
+                    downloaded: 40,
+                    saved_against: 300,
+                },
+                None,
+            ),
+            Vec::new(),
+        );
+        let direct = public_outcome(
+            report(
+                FlowOutcome::InstalledFromDelta {
+                    downloaded: 80,
+                    saved_against: 300,
+                },
+                None,
+            ),
+            Vec::new(),
+        );
+        let full = public_outcome(
+            report(FlowOutcome::InstalledFromFullDownload, Some(300)),
+            Vec::new(),
+        );
+        let up_to_date = public_outcome(report(FlowOutcome::UpToDate, None), Vec::new());
+
+        assert_eq!(tar.source(), Some(crate::UpdateSource::TarDelta));
+        assert_eq!(direct.source(), Some(crate::UpdateSource::DirectDelta));
+        assert_eq!(full.source(), Some(crate::UpdateSource::Full));
+        assert_eq!(up_to_date.source(), None);
+
+        // The three install sources must stay pairwise distinct, or an
+        // application cannot tell whether the fast path ran.
+        assert_ne!(tar.source(), direct.source());
+        assert_ne!(tar.source(), full.source());
+        assert_ne!(direct.source(), full.source());
+    }
+
+    #[test]
+    fn the_mapping_carries_the_measured_byte_counts() {
+        let tar = public_outcome(
+            report(
+                FlowOutcome::InstalledFromTarDelta {
+                    downloaded: 40,
+                    saved_against: 300,
+                },
+                None,
+            ),
+            Vec::new(),
+        );
+        assert_eq!(tar.downloaded_bytes(), Some(40));
+        assert_eq!(tar.full_download_size(), Some(300));
+
+        let full = public_outcome(
+            report(FlowOutcome::InstalledFromFullDownload, Some(4_192_780)),
+            Vec::new(),
+        );
+        assert_eq!(
+            full.downloaded_bytes(),
+            Some(4_192_780),
+            "a full download must report what it actually transferred"
+        );
+        assert_eq!(full.full_download_size(), None);
+    }
+
+    #[test]
+    fn diagnostics_travel_with_every_outcome_without_changing_it() {
+        let noted = vec![Diagnostic::CacheNotPersisted {
+            message: "read-only".to_owned(),
+        }];
+        let outcome = public_outcome(
+            report(
+                FlowOutcome::InstalledFromTarDelta {
+                    downloaded: 40,
+                    saved_against: 300,
+                },
+                None,
+            ),
+            noted.clone(),
+        );
+        assert_eq!(outcome.source(), Some(crate::UpdateSource::TarDelta));
+        assert_eq!(outcome.diagnostics(), noted.as_slice());
+    }
 
     #[test]
     fn default_paths_stay_inside_tauris_per_app_cache_directory() {
