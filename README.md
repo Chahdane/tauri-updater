@@ -43,6 +43,8 @@ blockers in [docs/DECISIONS.md](docs/DECISIONS.md) and the
 | Authenticated release identity inside the signature | **Supported** — [F27](research/FINDINGS.md), [DECISIONS #27](docs/DECISIONS.md) |
 | Manifest authenticity and update freshness | **Unproven, and not attempted** — [F28](research/FINDINGS.md) |
 | Transport bounds: HTTPS, redirects, timeouts, size caps | **Supported** |
+| Concurrent updates cannot touch each other's files | **Supported** — [F29](research/FINDINGS.md), [DECISIONS #28](docs/DECISIONS.md) |
+| A local ceiling on every stage of the tar pipeline | **Supported** — [F30](research/FINDINGS.md), [DECISIONS #29](docs/DECISIONS.md) |
 | A real running Tauri app installing a delta update | **Supported** — demonstrated on macOS, [F19](research/FINDINGS.md) |
 | Exact in-process rebuild of a published macOS `.app.tar.gz` | **Supported** — [F22](research/FINDINGS.md), [DECISIONS #26](docs/DECISIONS.md) |
 | Cache-backed tar-layer updates on macOS | **Supported** — two real transitions, [F24](research/FINDINGS.md) |

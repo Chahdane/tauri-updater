@@ -2,7 +2,7 @@
 name = "delta-updater-example"
 description = "Minimal Tauri app used to prove a real updater accepts a delta-rebuilt artifact."
 publish = false
-version = "1.0.0"
+version = "1.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
