@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A managed Rust-first plugin API.** Register `Builder::new().build()`, call
+  `app.delta_updater().check().await`, then install the opaque checked update.
+  The plugin derives cache/work paths, cache namespace, public key, app identity,
+  transport policy and local ceilings from Tauri plus safe defaults.
+- Public Full, DirectDelta and TarDelta outcomes, coarse progress phases, and
+  non-fatal cache diagnostics. A cache persistence error remains a successful
+  install but no longer remains invisible.
+- API-behavior coverage for one authoritative updater request, derived paths,
+  distinguishable outcomes, cache-write diagnostics, and the normal example's
+  HTTPS/default-feature posture.
+
+### Changed
+
+- **BREAKING: `UpdateSession` is now internal to an opaque checked `Update`.**
+  The same-Update security binding is preserved structurally while applications
+  no longer assemble `Context`, transport, cache state, identities, or install
+  handoffs.
+- `Builder::build()` is infallible at registration and validates/derives runtime
+  configuration during Tauri setup. Advanced resource and storage overrides
+  remain available; localhost HTTP and explicit endpoint/base overrides exist
+  only under the non-default `test-support` feature.
+- The desktop example is now the normal integration guide. Its localhost
+  control server and insecure transport opt-in remain isolated behind
+  `e2e-control`, which is absent from default builds.
+
+### Removed
+
+- Low-level flow, HTTP transport, cache lifecycle, and install-handoff exports
+  from the shipping API. They remain only in a hidden feature-gated module for
+  this repository's tests. `manifest_url` remains absent.
+
 ### Fixed
 
 - **A first release published no updater document.** `delta-release` required a
