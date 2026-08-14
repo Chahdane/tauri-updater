@@ -131,6 +131,16 @@ struct Args {
     #[arg(long, default_value_t = 8 * 1024 * 1024 * 1024)]
     max_tar_bytes: u64,
 
+    /// Permit `http://` URLs pointing at loopback, for this repository's
+    /// end-to-end harness.
+    ///
+    /// Production clients refuse a non-HTTPS artifact URL, so a manifest
+    /// carrying one is rejected by every client that fetches it. This flag
+    /// exists so the loopback harness can still run; it accepts `127.0.0.1`,
+    /// `localhost` and `[::1]` and refuses every other host.
+    #[arg(long)]
+    dangerously_allow_loopback_http_urls: bool,
+
     /// Do everything except write the manifest — generate the patch, sign, and
     /// print what would be published.
     #[arg(long)]
@@ -191,6 +201,7 @@ fn run() -> Result<()> {
         pub_date: args.pub_date.as_deref(),
         app_id: &args.app_id,
         predecessor,
+        allow_insecure_urls: args.dangerously_allow_loopback_http_urls,
     };
 
     let existing = load_manifest(&args.manifest)?;

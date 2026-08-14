@@ -133,6 +133,7 @@ publish() {
     --installer-url "http://127.0.0.1:0/v$to/$APP_NAME.tar.gz" \
     --patch-url     "http://127.0.0.1:0/patch-$from-$to.zst" \
     --patch-out     "$OUT/patch-$from-$to.zst" \
+    --dangerously-allow-loopback-http-urls \
     --tar-patch-url "http://127.0.0.1:0/tar-$from-$to.zst" \
     --tar-patch-out "$OUT/tar-$from-$to.zst" \
     --require-tar-layer \

@@ -471,6 +471,7 @@ fn a_legacy_signature_makes_a_published_delta_unavailable() {
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         None,
