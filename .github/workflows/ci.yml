@@ -82,10 +82,16 @@ jobs:
             Tee-Object -FilePath workspace-tests.log
           $status = $LASTEXITCODE
           if ($status -ne 0) {
-            $failureLines = Get-Content workspace-tests.log |
-              Select-String -Pattern 'FAILED|panicked|failures:' |
-              Select-Object -Last 30
-            $message = (($failureLines | ForEach-Object { $_.Line.Trim() }) -join ' | ')
+            $contents = Get-Content workspace-tests.log
+            $failureStart = $contents | Select-String -Pattern '^failures:$' |
+              Select-Object -First 1
+            if ($null -ne $failureStart) {
+              $failureLines = $contents |
+                Select-Object -Skip ($failureStart.LineNumber - 1) -First 80
+            } else {
+              $failureLines = $contents | Select-Object -Last 80
+            }
+            $message = (($failureLines | ForEach-Object { $_.Trim() }) -join ' | ')
             Write-Output "::error title=workspace test failures::$message"
           }
           exit $status
