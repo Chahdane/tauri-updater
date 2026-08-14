@@ -1,127 +1,78 @@
 # Roadmap
 
-Phases are ordered so that each one is provable before the next begins. The
-guiding constraint: development is happening on macOS with no Windows or Linux
-machine available, so early phases are chosen to be fully verifiable here.
+The current v0.1 target is the demonstrated macOS `.app.tar.gz` path. Engine
+tests run on all three desktop CI platforms, but that is not a Linux or Windows
+client-support claim.
 
-Platform order is **Linux (AppImage) → Windows → macOS end-to-end**, which is
-deliberately not the development machine's own platform. AppImage is a single
-self-contained file with no installer step and no code signature to preserve, so
-the diff/apply engine can be proven against it with nothing but file I/O — which
-runs anywhere, including here. macOS is last because `.app.tar.gz` is the hardest
-artifact to delta well.
+## Foundation — complete
 
----
+- Platform-independent BLAKE3 verification and zstd patch backend.
+- Tauri-superset static update manifest.
+- Release CLI, patch generation, signature generation, and publish checks.
+- One authoritative Tauri updater check and the real Tauri install handoff.
+- Persistent content-addressed cache and exact macOS tar recompression.
+- Real macOS `1.0.0 → Full → 1.0.1 → TarDelta → 1.0.2` evidence.
 
-## Phase 1 — The engine ✅
+## Gate P1 — release identity security — merged
 
-Prove that a patch can rebuild an artifact exactly, on this machine, offline.
+- Authenticated `delta-v1` release identity in minisign's trusted comment.
+- Legacy signatures remain Full-only.
+- Authenticated contradictions fail closed.
+- Opaque update session binds identity and installation to the same Tauri
+  `Update`.
 
-- Workspace, project hygiene, docs, CI.
-- `PatchBackend` trait; zstd as backend #1.
-- Content hashing and verification.
-- **Flagship test:** AppImage-shaped round-trip — two versions of a file, diff,
-  apply, assert `hash(rebuilt) == hash(new)`. Must pass in CI.
-- First real patch-size numbers for the README.
+## Gate P2 — runtime hardening — merged
 
-*Exit criteria:* round-trip test green in CI; patch measurably smaller than a full
-artifact; corrupt and mismatched inputs fail loudly rather than silently.
+- Per-transaction workspaces and abandoned-workspace collection.
+- Local resource ceilings for every tar stage.
+- Cache corruption handling, generation compare-and-set, and immutable blob
+  publication.
+- PENDING/ACTIVE launch reconciliation and exact verified install handoff.
 
-*Delivered:* 6,815,744 byte artifact → 393,782 byte patch (5.78%), reproduced
-byte-identically on Linux, macOS and Windows and asserted in CI.
+## Gate P3 — release correctness — merged
 
-## Phase 2 — Release tooling and CI ✅
+- First and unusable-predecessor releases produce valid signed Full-only updater
+  documents.
+- Direct and tar patches self-round-trip before publication.
+- The workflow targets the demonstrated macOS artifact and pins Tauri CLI
+  2.10.1.
 
-Make patches producible by a real release pipeline.
+## Gate P4 — developer experience/public API — under review
 
-- Patch manifest format (versions, backend id, patch URL, sizes, artifact hash).
-- CLI to generate patches and a manifest from a set of released artifacts.
-- Retention policy — how many previous versions get a patch path.
-- A reusable GitHub Actions workflow other projects can call.
+- Small Rust-first plugin API with managed updater state.
+- Safe path, cache, transport, and limit defaults.
+- Explicit Full, DirectDelta, and TarDelta outcomes.
+- Non-fatal cache diagnostics and coarse progress phases.
+- Normal example separated from the feature-gated localhost E2E harness.
+- Compiling quickstart and fresh-clone onboarding rehearsal.
+- Real macOS regression through the same public API applications use.
 
-*Exit criteria:* a tagged release produces patches and a valid manifest without
-manual steps.
+No full JS/TS SDK is planned for v0.1. A frontend can trigger one ordinary Rust
+Tauri command; adding a second updater API would increase maintenance and attack
+surface without improving the security boundary.
 
-*Delivered:* `delta-release` (patch + digests + signature + manifest),
-the Tauri-superset manifest, a dry-runnable `release.yml`, and an end-to-end test
-where a client reaches a verified artifact from the generated manifest alone.
-Wiring the workflow to real bundler output waits for the Phase 3 example app.
+## Remaining before v0.1
 
-## Phase 3 — Client happy path — mostly built, exit criteria NOT met
+- Gate P5/final independent security and release-readiness audit.
+- Decide how the two credential-bound validation gaps affect release readiness:
+  real GitHub-hosted HTTPS Full→TarDelta and Apple Developer ID/notarized E2E.
+- Package metadata, publication rehearsal, and crates.io release.
 
-- [x] Tauri plugin crate wrapping `tauri-plugin-updater`.
-- [x] Patch selection, download, apply, verify. **Manifest fetch was removed
-      rather than built**: the release document now comes from Tauri's own check
-      (DECISIONS #13), which is a stronger position than the one planned here.
-- [ ] Base-artifact caching after a successful update. Still supplied by the
-      harness rather than by the plugin.
-- [x] Install handoff adapter, via `TauriInstall` over `Update::install`.
-- [x] Example app, in `examples/desktop-app`.
+P4 does not perform any of these steps.
 
-*Exit criteria:* **not met.** An AppImage app updating itself from a patch has
-never been observed. Every test to date uses a recording handoff by design, so
-nothing green so far substitutes for it. This is the project's single largest
-open claim.
+## After macOS v0.1
 
-## Phase 4 — Robustness and security — largely delivered by the hardening sprint
-
-Most of this was brought forward by the post-Codex audit; the resulting
-decisions are in `DECISIONS.md` and the evidence in `../research/`.
-
-- [x] Full-download fallback wired into every failure path, with tests forcing
-      each failure.
-- [x] Bounded decompression, and a **local** ceiling on the declared target size
-      that the update server cannot influence (DECISIONS #19).
-- [x] Concurrency: one workspace per update (DECISIONS #18).
-- [x] Interrupted-update handling: downloads and reconstructions build into
-      `.part` files promoted by rename only after passing their checks.
-- [x] Transport bounds: HTTPS policy, redirect budget, request deadline,
-      response-size caps.
-- [x] Update identity, downgrade and replay policy (DECISIONS #13, #14) — not
-      originally planned for this phase, and the most important thing in it.
-- [ ] Resume and retry for interrupted patch downloads. Not built; a failed
-      patch download falls back to a full download instead.
-- [ ] Fuzzing the apply path against malformed patches. Assessed and deferred —
-      see the research ledger for why ordinary unit tests are not a substitute.
-- [ ] Disk-space checks before writing.
-
-*Exit criteria:* partially met. Every error variant has a test proving the update
-still completes via full download, **except** the two that deliberately refuse
-rather than fall back: a signature failure (#11) and a version-policy or identity
-violation (#14).
-
-## Phase 5 — Developer experience
-
-Make it pleasant to adopt.
-
-- TypeScript bindings and JS API.
-- Progress events distinguishing patch download from full download.
-- Configuration ergonomics and sensible defaults.
-- Documented migration from plain `tauri-plugin-updater` — ideally two lines.
-
-## Phase 6 — Windows
-
-- NSIS/MSI artifact handling and install handoff.
-- CI coverage on Windows runners.
-- Needs a real Windows tester.
-
-## Phase 7 — macOS end-to-end
-
-- `.app.tar.gz` handling, likely deltaing the uncompressed tar with
-  deterministic recompression.
-- Verify code signature and notarization survive intact.
-
-## Phase 8 — Ship
-
-- crates.io and npm publication.
-- Benchmarks across a few real-world app sizes.
-- Upstream: report back on tauri-apps/tauri#11863.
-
----
+- Linux client integration and real AppImage install evidence.
+- Windows artifact handling and real NSIS/MSI install evidence.
+- Resume/retry policy and disk-space preflight if evidence justifies them.
+- Additional patch backends only when measured artifacts justify their cost.
+- A JS/TS wrapper only if real application integrations show Rust commands are
+  insufficient.
 
 ## Deliberately out of scope
 
 - Patching installed binaries in place.
 - Forking or vendoring `tauri-plugin-updater`.
-- Hosting patches — the manifest is a static file; bring your own storage.
-- Telemetry of any kind.
+- Hosting update assets.
+- Telemetry.
+- Claiming manifest freshness or TUF-style metadata security.
