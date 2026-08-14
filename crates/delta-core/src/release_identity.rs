@@ -478,6 +478,173 @@ fn check_decimal(what: &str, value: &str) -> Result<u64, IdentityError> {
 }
 
 #[cfg(test)]
+mod robustness {
+    //! Bounded randomised robustness for the one parser that reads attacker
+    //! input **before** authentication.
+    //!
+    //! # Why this exists and what it is not
+    //!
+    //! [`parse_trusted_comment`] runs during planning, on a signature block
+    //! taken from an unauthenticated release document, before anything has been
+    //! verified. A panic here is a denial of service on every update check, and
+    //! an unbounded allocation is worse. The hand-written cases above cover the
+    //! spellings we thought of; this covers the ones we did not.
+    //!
+    //! **This is not fuzzing.** There is no coverage guidance and no corpus
+    //! minimisation, so it must not be described as proving the parser safe.
+    //! `cargo-fuzz` needs a nightly toolchain, which this project does not
+    //! otherwise require, so it is recorded as post-v0.1 work rather than forced
+    //! into a stable workspace. What this does give is a deterministic,
+    //! dependency-free, CI-runnable check that the parser is total: every input
+    //! returns, none panics, and none is permitted to allocate without bound.
+    //!
+    //! Deterministic on purpose. A randomised test that cannot be replayed
+    //! reports failures nobody can reproduce.
+    use super::*;
+
+    /// xorshift64*, so the sequence is fixed and reproducible from the seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    fn valid() -> String {
+        ReleaseIdentity {
+            app_id: "dev.example.app".to_owned(),
+            version: "1.2.3".to_owned(),
+            platform: "darwin-aarch64".to_owned(),
+            representation: REPRESENTATION_OPAQUE_V1.to_owned(),
+            artifact_blake3: "a".repeat(64),
+            artifact_size: 4_192_780,
+            signed_at: 1_786_668_567,
+        }
+        .to_trusted_comment()
+    }
+
+    /// Every outcome the parser is allowed to have: it returned.
+    fn must_be_total(input: &str) {
+        match parse_trusted_comment(input) {
+            Ok(ReleaseBinding::Legacy) => {}
+            Ok(ReleaseBinding::Authenticated(identity)) => {
+                // An accepted identity must round-trip, or the parser accepted
+                // something it cannot itself express.
+                let rendered = identity.to_trusted_comment();
+                assert_eq!(
+                    parse_trusted_comment(&rendered)
+                        .ok()
+                        .and_then(|b| b.identity().map(ReleaseIdentity::to_trusted_comment)),
+                    Some(rendered.clone()),
+                    "accepted input did not round-trip: {input:?}"
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn mutations_of_a_valid_comment_never_panic() {
+        let base = valid();
+        let mut rng = Rng(0x5EED_1234_ABCD_0001);
+        for _ in 0..20_000 {
+            let mut bytes = base.clone().into_bytes();
+            for _ in 0..1 + rng.below(4) {
+                if bytes.is_empty() {
+                    break;
+                }
+                match rng.below(4) {
+                    0 => {
+                        let i = rng.below(bytes.len());
+                        bytes[i] = rng.below(256) as u8;
+                    }
+                    1 => {
+                        let i = rng.below(bytes.len());
+                        bytes.remove(i);
+                    }
+                    2 => {
+                        let i = rng.below(bytes.len());
+                        bytes.insert(i, rng.below(256) as u8);
+                    }
+                    _ => {
+                        let i = rng.below(bytes.len());
+                        bytes.truncate(i);
+                    }
+                }
+            }
+            // Non-UTF-8 cannot reach the parser: it is handed a `&str` decoded
+            // from the signature block. Lossy conversion keeps the test honest
+            // about the real input domain.
+            must_be_total(&String::from_utf8_lossy(&bytes));
+        }
+    }
+
+    #[test]
+    fn arbitrary_input_never_panics() {
+        let mut rng = Rng(0x5EED_1234_ABCD_0002);
+        for _ in 0..20_000 {
+            let len = rng.below(600);
+            let mut s = String::with_capacity(len);
+            for _ in 0..len {
+                // Weighted towards the alphabet the format actually uses, so
+                // the generator spends its time near the accept boundary rather
+                // than far outside it.
+                let c = match rng.below(8) {
+                    0..=4 => b"delta-v1 app:.0123456789abcdefx-_"[rng.below(33)] as char,
+                    5 => char::from(rng.below(128) as u8),
+                    6 => char::from_u32(rng.below(0x1_0000) as u32).unwrap_or('\u{fffd}'),
+                    _ => ' ',
+                };
+                s.push(c);
+            }
+            must_be_total(&s);
+        }
+    }
+
+    #[test]
+    fn our_family_prefix_with_hostile_payloads_never_panics() {
+        // The branch that matters. Anything not starting with the family prefix
+        // exits immediately as Legacy, so a generator that rarely produces the
+        // prefix would spend its whole budget on the trivial path.
+        let mut rng = Rng(0x5EED_1234_ABCD_0003);
+        for _ in 0..20_000 {
+            let len = rng.below(600);
+            let mut s = String::from(PROTOCOL_FAMILY);
+            for _ in 0..len {
+                let c = match rng.below(6) {
+                    0..=3 => b"1 app:v:plat:rep:b3:sz:ts:0123456789abcdef.-"[rng.below(44)] as char,
+                    4 => char::from(rng.below(128) as u8),
+                    _ => ' ',
+                };
+                s.push(c);
+            }
+            must_be_total(&s);
+        }
+    }
+
+    #[test]
+    fn an_oversized_comment_is_refused_rather_than_processed() {
+        // The resource boundary: a megabyte of our own family prefix must be
+        // rejected on length, not parsed.
+        let huge = format!("{PROTOCOL_V1} {}", "a".repeat(1_000_000));
+        let err = parse_trusted_comment(&huge).expect_err("over the byte limit");
+        assert!(
+            matches!(err, IdentityError::Malformed(ref m) if m.contains("byte limit")),
+            "expected a length refusal, got {err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
