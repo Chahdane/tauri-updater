@@ -1285,3 +1285,48 @@ is implemented. This is not TUF-style freshness and must not be described as it.
 
 **Revisit when:** freshness is in scope — that needs signed, expiring metadata,
 which is a `delta-v2` comment or a second document, not a patch to this one.
+
+## 28. The full download gets a workspace too
+
+**Decided:** 2026-08-14 · **Status:** active · **Closes blocker B4 · Extends #18**
+
+#18 named three shared filenames — `update.patch`, `update.artifact` and
+`full.artifact` — argued that a per-update `tempdir_in` beats a lock, and then
+applied it to two of them. The full-download path kept writing to
+`work_dir/full.artifact`, a fixed name under a directory the only real caller
+sets to one shared location.
+
+### Why the one left out was the one that mattered
+
+The delta paths are the *conditional* ones. Falling back to a full download is
+what happens with a cold cache, a legacy signature, no published patch, or any
+delta failure at all — so the isolated paths were the rare ones and the shared
+path was the common one. Two windows of "check for updates" on a first run is
+enough.
+
+The exposure is worse than #18's analysis of the delta case, too. `HttpFetch`
+streams into `out.with_extension("part")` and renames onto the target, so a
+shared `full.artifact` implies a shared `full.part`: one transaction can rename
+another's partial file out from under it. The observed failures under a restored
+shared path are seven transactions losing their `.part` to someone else's rename,
+and one reading a **different release's artifact** into its own signature check.
+
+That last one is still not an integrity failure — `VerifiedArtifact` owns the
+bytes it authenticated (#10), so the mismatch surfaces as a refusal rather than a
+bad install — but #11 makes `Error::Signature` deliberately non-recoverable, so
+the race converts a routine update into a loud permanent-looking abort.
+
+### The fix, and why it is a function
+
+`transaction_workspace(work_dir)` is now called by both the planner and the full
+path. The rule was already written down; what failed was applying it three times
+from one paragraph of prose. A function is applied by being called, so the next
+path added gets isolation by using the same door rather than by its author
+remembering a decision record.
+
+No lock, for the reasons #18 gives, and they have not changed: unique names
+remove the sharing instead of coordinating it, and there is no contention left to
+serialise.
+
+**Revisit when:** #18's condition, unchanged — automatic frequent update checks,
+or a shared location two processes write at once.

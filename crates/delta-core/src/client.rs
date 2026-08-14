@@ -218,6 +218,32 @@ impl UpdateSource {
     }
 }
 
+/// A private scratch directory for one update, removed when the value drops.
+///
+/// # Why this is a function and not four call sites
+///
+/// `docs/DECISIONS.md` #18 named three shared filenames — `update.patch`,
+/// `update.artifact` and `full.artifact` — and replaced the first two with a
+/// per-update `tempdir_in`. **It did not replace the third.** The full-download
+/// path kept writing to a fixed name in the shared `work_dir`, so two concurrent
+/// updates falling back to a full download raced on one file: blocker B4.
+///
+/// The rule was stated once and applied twice, which is how the third case
+/// survived a decision written specifically about it. It is now applied by
+/// calling this, so a future path gets isolation by using the same door rather
+/// than by remembering to.
+///
+/// `tempfile` generates the name from OS randomness and creates the directory
+/// with `O_EXCL`, so two callers cannot receive the same path even if they ask at
+/// the same instant.
+pub fn transaction_workspace(work_dir: &Path) -> Result<tempfile::TempDir, Error> {
+    std::fs::create_dir_all(work_dir).map_err(|e| Error::io("create", work_dir, e))?;
+    tempfile::Builder::new()
+        .prefix("update-")
+        .tempdir_in(work_dir)
+        .map_err(|e| Error::io("create", work_dir, e))
+}
+
 /// Decide how to obtain the release `identity` points at, and if a patch can be
 /// used, fetch and apply it.
 ///
@@ -325,19 +351,11 @@ pub fn plan_update(
 
     let workspace = |reason: &mut Option<Error>| -> Option<tempfile::TempDir> {
         // One workspace per update, so two concurrent runs cannot consume or
-        // overwrite each other's files. Cheaper and simpler than locking, and
-        // it covers the realistic exposure — see docs/DECISIONS.md #18.
-        if let Err(e) = std::fs::create_dir_all(ctx.work_dir) {
-            *reason = Some(Error::io("create", ctx.work_dir, e));
-            return None;
-        }
-        match tempfile::Builder::new()
-            .prefix("update-")
-            .tempdir_in(ctx.work_dir)
-        {
+        // overwrite each other's files — see docs/DECISIONS.md #18 and #28.
+        match transaction_workspace(ctx.work_dir) {
             Ok(dir) => Some(dir),
             Err(e) => {
-                *reason = Some(Error::io("create", ctx.work_dir, e));
+                *reason = Some(e);
                 None
             }
         }
