@@ -38,7 +38,7 @@ use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outc
 use tauri_plugin_updater_delta::{Error, HttpFetch, HttpFetchBuilder};
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, ReleaseRequest};
+use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
 #[derive(Default)]
 struct RecordingHandoff {
@@ -127,16 +127,18 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         &ReleaseRequest {
             platform: &platform(),
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: &server.url("/app_1.0.1.AppImage"),
-            patch_url: &server.url("/patch.zst"),
-            patch_out: &patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: &server.url("/patch.zst"),
+                patch_out: &patch,
+                tar_layer: None,
+            }),
         },
         &key,
         None,

@@ -52,7 +52,7 @@ use minisign::KeyPair;
 use minisign_verify::{PublicKey, Signature};
 use tauri_updater_delta_core::manifest::Manifest;
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, ReleaseRequest};
+use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
 
 const PLATFORM: &str = "linux-x86_64";
 
@@ -112,16 +112,18 @@ fn publish(dir: &Path, pair: &KeyPair) -> (Manifest, std::path::PathBuf) {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app_1.0.1.AppImage",
-            patch_url: "https://example.com/patch.zst",
-            patch_out: &patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: "https://example.com/patch.zst",
+                patch_out: &patch,
+                tar_layer: None,
+            }),
         },
         &signing_key(pair),
         None,
@@ -256,16 +258,18 @@ fn a_rebuilt_artifact_satisfies_the_same_signature() {
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
-            from_version: "1.0.0",
-            previous_installer: &fixture.old,
             new_installer: &fixture.new,
             installer_url: "https://example.com/app_1.0.1.AppImage",
-            patch_url: "https://example.com/patch.zst",
-            patch_out: &patch,
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            tar_layer: None,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &fixture.old,
+                patch_url: "https://example.com/patch.zst",
+                patch_out: &patch,
+                tar_layer: None,
+            }),
         },
         &signing_key(&pair),
         None,

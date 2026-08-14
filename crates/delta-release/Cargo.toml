@@ -19,11 +19,15 @@ clap.workspace = true
 minisign.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Runtime, not dev: the direct-patch self-check needs somewhere private to
+# rebuild the artifact. Already a runtime dependency of delta-core, which this
+# crate depends on, so nothing new enters the tree -- the same reasoning as
+# docs/DECISIONS.md #18.
+tempfile.workspace = true
 
 [dev-dependencies]
 tauri-updater-delta-fixtures.workspace = true
 minisign-verify.workspace = true
-tempfile.workspace = true
 # Building real .app.tar.gz fixtures the way tauri-bundler does, so the
 # tar-layer tests exercise artifacts of the shape they will meet.
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
