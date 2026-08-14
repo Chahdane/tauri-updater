@@ -133,6 +133,7 @@ fn state_a_no_predecessor_still_publishes_a_complete_updater_release() {
             pub_date: Some("2026-08-14T00:00:00Z"),
             app_id: APP_ID,
             predecessor: None,
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -179,6 +180,7 @@ fn state_a_survives_a_round_trip_through_json() {
             pub_date: None,
             app_id: APP_ID,
             predecessor: None,
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -214,6 +216,7 @@ fn state_b_an_unusable_predecessor_still_publishes_a_complete_updater_release() 
             pub_date: None,
             app_id: APP_ID,
             predecessor: None,
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -252,6 +255,7 @@ fn state_b_a_predecessor_that_does_not_exist_is_a_loud_failure_not_a_silent_one(
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -289,6 +293,7 @@ fn state_c_a_usable_predecessor_publishes_full_and_delta() {
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -393,6 +398,7 @@ fn publishable() -> Publishable {
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &signing_key(&pair),
         None,
@@ -710,4 +716,167 @@ fn a_corrupted_patch_is_refused_before_it_is_described() {
         err.to_string().contains("refus") || err.to_string().contains("does not reconstruct"),
         "got: {err}"
     );
+}
+
+// ---- the URL policy, finding A-1 ----------------------------------------
+//
+// The client refuses a non-HTTPS artifact URL in release builds, so a manifest
+// carrying one is not merely unsafe -- it is unusable, and every client that
+// fetches it rejects the release. The generator used to emit exactly that and
+// report success, leaving the failure to surface on users rather than on the
+// machine that produced it. `release-check` caught it, but only for someone who
+// ran `release-check`.
+
+/// Build a release with `installer`/`patch`/`tar` URLs and the given policy.
+fn build_with_urls(
+    installer_url: &str,
+    patch_url: &str,
+    tar_patch_url: Option<&str>,
+    allow_insecure_urls: bool,
+) -> tauri_updater_delta_release::Result<()> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (old, new) = artifacts(dir.path());
+    let pair = keypair();
+    let patch = dir.path().join("p.zst");
+    let tar_patch = dir.path().join("p.tar.zst");
+
+    let tar_layer = tar_patch_url.map(|url| TarLayerOptions {
+        patch_url: url,
+        patch_out: &tar_patch,
+        work_dir: None,
+        max_tar_bytes: 64 * 1024 * 1024,
+        required: false,
+    });
+
+    build_release(
+        &ReleaseRequest {
+            platform: PLATFORM,
+            version: "1.0.1",
+            new_installer: &new,
+            installer_url,
+            notes: None,
+            pub_date: None,
+            app_id: APP_ID,
+            predecessor: Some(Predecessor {
+                from_version: "1.0.0",
+                installer: &old,
+                patch_url,
+                patch_out: &patch,
+                tar_layer,
+            }),
+            allow_insecure_urls,
+        },
+        &signing_key(&pair),
+        None,
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn an_http_installer_url_is_refused_by_default() {
+    let err = build_with_urls(
+        "http://releases.example.com/app.bin",
+        &format!("{BASE}/p.zst"),
+        None,
+        false,
+    )
+    .expect_err("a plain-HTTP installer URL must not be publishable");
+    assert!(
+        err.to_string().contains("the installer URL is plain HTTP"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn an_http_direct_patch_url_is_refused_by_default() {
+    // The one most likely to be forgotten: the installer URL is the obvious
+    // field and the patch URLs are the ones a template gets wrong.
+    let err = build_with_urls(
+        &format!("{BASE}/app.bin"),
+        "http://releases.example.com/p.zst",
+        None,
+        false,
+    )
+    .expect_err("a plain-HTTP patch URL must not be publishable");
+    assert!(
+        err.to_string().contains("the patch URL is plain HTTP"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn an_http_tar_patch_url_is_refused_by_default() {
+    let err = build_with_urls(
+        &format!("{BASE}/app.bin"),
+        &format!("{BASE}/p.zst"),
+        Some("http://releases.example.com/p.tar.zst"),
+        false,
+    )
+    .expect_err("a plain-HTTP tar-patch URL must not be publishable");
+    assert!(
+        err.to_string().contains("the tar-patch URL is plain HTTP"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn https_urls_are_accepted() {
+    // The fixture is not a tarball, so no tar layer is produced; the URL is
+    // still checked before that is discovered.
+    build_with_urls(
+        &format!("{BASE}/app.bin"),
+        &format!("{BASE}/p.zst"),
+        Some(&format!("{BASE}/p.tar.zst")),
+        false,
+    )
+    .expect("https must remain publishable");
+}
+
+#[test]
+fn the_dangerous_opt_in_permits_the_loopback_harness() {
+    // Exactly what examples/desktop-app/e2e serves, and the only reason the
+    // opt-in exists.
+    build_with_urls(
+        "http://127.0.0.1:8080/v1.0.1/app.bin",
+        "http://127.0.0.1:8080/p.zst",
+        Some("http://127.0.0.1:8080/p.tar.zst"),
+        true,
+    )
+    .expect("the loopback harness must still be able to build releases");
+}
+
+#[test]
+fn the_dangerous_opt_in_does_not_permit_arbitrary_insecure_urls() {
+    // The property that makes this an escape hatch rather than an off switch.
+    // A flag that turns the policy off entirely gets set once in a script and
+    // then never reconsidered.
+    for host in [
+        "http://releases.example.com/app.bin",
+        "http://192.168.1.10/app.bin",
+        "http://127.0.0.1.evil.example.com/app.bin",
+        "http://evil.example.com/127.0.0.1/app.bin",
+    ] {
+        let err = build_with_urls(host, &format!("{BASE}/p.zst"), None, true)
+            .expect_err("the opt-in must not reach beyond loopback");
+        assert!(
+            err.to_string().contains("loopback only"),
+            "{host} should be refused as non-loopback, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_non_http_url_scheme_is_refused() {
+    for url in [
+        "file:///tmp/app.bin",
+        "ftp://example.com/app.bin",
+        "app.bin",
+    ] {
+        let err = build_with_urls(url, &format!("{BASE}/p.zst"), None, false)
+            .expect_err("only http(s) URLs are publishable");
+        assert!(
+            err.to_string().contains("is not an http(s) URL"),
+            "got: {err}"
+        );
+    }
 }

@@ -132,6 +132,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
                 patch_out: &patch,
                 tar_layer: None,
             }),
+            allow_insecure_urls: false,
         },
         &key,
         None,
