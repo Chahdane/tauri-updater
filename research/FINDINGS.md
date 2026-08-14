@@ -203,7 +203,10 @@ Without the mutation pass, three guards would have shipped with tests incapable
 of detecting their removal. This is the strongest methodological result the
 project has.
 
-*Evidence:* `SPRINT.md` mutation tables for Gates A–C.
+*Evidence:* the three tests named above, each of which now fails when its guard
+is removed. The mutation tables that recorded the original Gates A–C pass lived
+in a working document that is no longer part of this repository, so the durable
+evidence is the tests themselves rather than a transcript of the run.
 
 ### F10 — Fake transports hide socket-level failure modes · **STRONG OBSERVATION**
 
