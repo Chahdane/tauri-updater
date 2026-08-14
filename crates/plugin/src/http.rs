@@ -145,6 +145,7 @@ impl HttpFetchBuilder {
     /// This does **not** re-enable an HTTPS→HTTP redirect. Starting on plain
     /// HTTP is a development choice; being moved off HTTPS mid-chain is someone
     /// else's choice, and that stays refused.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn dangerous_insecure_transport_protocol(mut self, allow: bool) -> Self {
         self.insecure = allow;
         self
@@ -235,11 +236,13 @@ impl HttpFetchBuilder {
 
 impl HttpFetch {
     /// Build a fetcher with the default policy: HTTPS only, bounded everything.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new() -> std::result::Result<Self, String> {
         HttpFetchBuilder::default().build()
     }
 
     /// Start configuring a fetcher.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn builder() -> HttpFetchBuilder {
         HttpFetchBuilder::default()
     }
