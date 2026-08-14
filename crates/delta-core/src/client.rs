@@ -33,7 +33,7 @@ use crate::cache::ArtifactCache;
 use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 use crate::limits::Limits;
 use crate::manifest::{DeltaPlatform, Manifest, TarLayer, TarPatch, TarSupport};
-use crate::recompress::recompress_app_tar_gz;
+use crate::recompress::recompress_with_limit;
 use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 
 /// Fetches a URL into a local file.
@@ -407,6 +407,7 @@ pub fn plan_update(
                         cache,
                         ctx.pubkey,
                         space.path(),
+                        ctx.limits,
                         fetch,
                     ) {
                         Ok(artifact) => {
@@ -593,8 +594,21 @@ fn attempt_tar_delta(
     cache: &ArtifactCache,
     pubkey: &str,
     work_dir: &Path,
+    limits: Limits,
     fetch: &dyn Fetch,
 ) -> Result<PathBuf, Error> {
+    // Both uncompressed sizes are declared by the same unauthenticated document
+    // as everything else, and both go on to bound real work: `base_tar_size`
+    // sizes the expansion of the cached blob, and `target_tar_size` becomes
+    // zstd's window and output bound below. Checked here, first, because a
+    // comparison against a local ceiling is the cheapest possible rejection —
+    // nothing has been read, expanded or downloaded yet.
+    //
+    // Gate B checked only the compressed installer, which predates this pipeline
+    // existing. See crate::limits.
+    limits.check_tar_size(layer.target_tar_size)?;
+    limits.check_tar_size(patch.base_tar_size)?;
+
     // The cached base, re-hashed and re-verified against the key configured
     // now. Being in the cache establishes nothing.
     let Some(base) = cache.active(pubkey)? else {
@@ -671,7 +685,11 @@ fn attempt_tar_delta(
     // the same discipline `try_reconstruct` applies to the tar.
     let artifact = work_dir.join("update.artifact");
     let building = artifact.with_extension("part");
-    recompress_app_tar_gz(&target_tar, &building)?;
+    // The host's ceiling, not the module's own default. Recompression reads the
+    // whole reconstructed tar, so it is the last stage that can be asked to
+    // process an unreasonable amount, and the dial a host set for the others
+    // should govern it too.
+    recompress_with_limit(&target_tar, &building, limits.max_tar_bytes)?;
     let _ = std::fs::remove_file(&target_tar);
 
     let expected = FileHash::from_hex(&entry.target_installer_blake3)?;
@@ -1813,6 +1831,7 @@ mod tests {
             &f.server,
             Limits {
                 max_target_bytes: declared - 1,
+                ..Limits::default()
             },
         );
         assert!(matches!(
