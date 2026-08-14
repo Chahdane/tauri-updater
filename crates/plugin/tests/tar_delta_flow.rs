@@ -218,6 +218,7 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
                     required: true,
                 }),
             }),
+            allow_insecure_urls: false,
         },
         &key,
         None,
