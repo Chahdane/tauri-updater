@@ -724,12 +724,12 @@ dependencies = [
 name = "delta-updater-example"
 version = "1.0.0"
 dependencies = [
+ "log",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
  "tauri-plugin-updater-delta",
- "tauri-updater-delta-core",
 ]
 
 [[package]]
@@ -3949,6 +3949,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
+ "log",
  "minisign",
  "reqwest 0.12.28",
  "semver",

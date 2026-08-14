@@ -38,7 +38,7 @@ fn platform() -> String {
 }
 
 use minisign::KeyPair;
-use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
+use tauri_plugin_updater_delta::test_support::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::Error;
 use tauri_updater_delta_core::cache::{ArtifactCache, CacheLimits, Namespace, Reconciliation};
 use tauri_updater_delta_core::client::{plan_update, Fetch, PlanContext, UpdateSource};

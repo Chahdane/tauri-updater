@@ -8,12 +8,12 @@
 //! No dependencies, and it binds port 0 so parallel tests cannot collide.
 //!
 //! [`Fetch`]: tauri_updater_delta_core::client::Fetch
-//! [`HttpFetch`]: tauri_plugin_updater_delta::HttpFetch
+//! [`HttpFetch`]: tauri_plugin_updater_delta::test_support::HttpFetch
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -48,12 +48,17 @@ pub enum Route {
 }
 
 type Routes = Arc<Mutex<HashMap<String, Route>>>;
+type Requests = Arc<Mutex<Vec<(String, Vec<String>)>>>;
 
 /// A test HTTP server on a background thread.
 pub struct TestServer {
     addr: SocketAddr,
     routes: Routes,
     shutdown: Arc<AtomicBool>,
+    #[allow(dead_code)]
+    requests: Arc<AtomicUsize>,
+    #[allow(dead_code)]
+    request_headers: Requests,
 }
 
 impl TestServer {
@@ -63,9 +68,13 @@ impl TestServer {
         let addr = listener.local_addr().expect("local addr");
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let request_headers: Requests = Arc::new(Mutex::new(Vec::new()));
 
         let thread_routes = Arc::clone(&routes);
         let thread_shutdown = Arc::clone(&shutdown);
+        let thread_requests = Arc::clone(&requests);
+        let thread_request_headers = Arc::clone(&request_headers);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 if thread_shutdown.load(Ordering::Relaxed) {
@@ -73,8 +82,11 @@ impl TestServer {
                 }
                 let Ok(stream) = stream else { continue };
                 let routes = Arc::clone(&thread_routes);
+                let requests = Arc::clone(&thread_requests);
+                let request_headers = Arc::clone(&thread_request_headers);
                 thread::spawn(move || {
-                    let _ = handle(stream, &routes);
+                    requests.fetch_add(1, Ordering::Relaxed);
+                    let _ = handle(stream, &routes, &request_headers);
                 });
             }
         });
@@ -83,6 +95,8 @@ impl TestServer {
             addr,
             routes,
             shutdown,
+            requests,
+            request_headers,
         }
     }
 
@@ -111,6 +125,24 @@ impl TestServer {
     pub fn remove(&self, path: &str) {
         self.routes.lock().expect("routes").remove(path);
     }
+
+    /// Total requests accepted so far.
+    #[allow(dead_code)]
+    pub fn request_count(&self) -> usize {
+        self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Header lines received for requests to `path`.
+    #[allow(dead_code)]
+    pub fn headers_for(&self, path: &str) -> Vec<String> {
+        self.request_headers
+            .lock()
+            .expect("request headers")
+            .iter()
+            .filter(|(request_path, _)| request_path == path)
+            .flat_map(|(_, headers)| headers.clone())
+            .collect()
+    }
 }
 
 impl Drop for TestServer {
@@ -121,21 +153,31 @@ impl Drop for TestServer {
     }
 }
 
-fn handle(mut stream: TcpStream, routes: &Routes) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, routes: &Routes, requests: &Requests) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
 
     // Drain headers so the client does not see a reset before we reply.
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
             break;
         }
+        headers.push(line.trim_end().to_owned());
     }
 
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/");
-    let route = routes.lock().expect("routes").get(path).cloned();
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("/")
+        .to_owned();
+    requests
+        .lock()
+        .expect("request headers")
+        .push((path.clone(), headers));
+    let route = routes.lock().expect("routes").get(&path).cloned();
 
     match route {
         Some(Route::Body(body)) => {
