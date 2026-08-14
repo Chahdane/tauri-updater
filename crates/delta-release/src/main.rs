@@ -85,6 +85,15 @@ struct Args {
     #[arg(long, default_value = "manifest.json")]
     manifest: PathBuf,
 
+    /// Also write the signature to this file, as `tauri build` does.
+    ///
+    /// The updater reads signatures out of the manifest, so this is not required
+    /// for updates to work. It is published because the `.sig` beside the
+    /// artifact is what the rest of the Tauri ecosystem expects to find, and a
+    /// release that omits it looks broken to every tool that is not this one.
+    #[arg(long)]
+    signature_out: Option<PathBuf>,
+
     /// Release notes.
     #[arg(long)]
     notes: Option<String>,
@@ -186,6 +195,21 @@ fn run() -> Result<()> {
 
     let existing = load_manifest(&args.manifest)?;
     let (manifest, summary) = build_release(&request, &key, existing)?;
+
+    if let Some(path) = &args.signature_out {
+        // Taken from the manifest rather than re-signed: minisign includes
+        // randomness, so signing twice produces two different valid signatures
+        // and the `.sig` file would not be the one the manifest published.
+        let signature = &manifest
+            .platforms
+            .get(&args.platform)
+            .expect("build_release always writes the platform it was asked for")
+            .signature;
+        std::fs::write(path, signature).map_err(|e| {
+            tauri_updater_delta_release::Error::Io(format!("writing {}: {e}", path.display()))
+        })?;
+        println!("signature written to {}", path.display());
+    }
 
     match (summary.patch_size, summary.ratio_percent()) {
         (Some(patch), Some(percent)) => {
