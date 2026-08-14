@@ -43,6 +43,15 @@ struct Args {
     #[arg(long)]
     from_version: String,
 
+    /// Application bundle identifier, as in `tauri.conf.json`'s `identifier`.
+    ///
+    /// Bound into the signature's authenticated release identity, so a client
+    /// can refuse an artifact belonging to a different application signed with
+    /// the same key. Required rather than inferred: reading it out of a bundle
+    /// works for exactly one format on one platform.
+    #[arg(long)]
+    app_id: String,
+
     /// Installer that users on --from-version already have.
     #[arg(long)]
     previous_installer: PathBuf,
@@ -146,6 +155,7 @@ fn run() -> Result<()> {
         patch_out: &args.patch_out,
         notes: args.notes.as_deref(),
         pub_date: args.pub_date.as_deref(),
+        app_id: &args.app_id,
         tar_layer,
     };
 

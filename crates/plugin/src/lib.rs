@@ -34,10 +34,14 @@ pub use http::{
     HttpFetch, HttpFetchBuilder, DEFAULT_CONNECT_TIMEOUT, DEFAULT_MAX_REDIRECTS,
     DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_REQUEST_TIMEOUT,
 };
-pub use tauri_glue::{Builder, Config, TauriInstall, UpdateExt};
+pub use tauri_glue::{Builder, UpdateExt, UpdateSession};
 
 #[doc(no_inline)]
-pub use tauri_updater_delta_core::{Limits, Refusal, UpdateIdentity};
+// Deliberately no `UpdateIdentity` re-export. The shipping flow is entered
+// through `UpdateSession`, which only a checked `Update` can produce, so there
+// is nothing here for a fabricated identity to be handed to. See
+// `tauri_glue::UpdateSession` for the exact scope of that guarantee.
+pub use tauri_updater_delta_core::{Limits, Refusal};
 
 /// Convenience alias for results produced by this crate.
 pub type Result<T> = std::result::Result<T, Error>;

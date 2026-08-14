@@ -27,6 +27,16 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
+
+/// The platform this test runs on, not a hard-coded one.
+///
+/// The release signature now authenticates the platform it was built for, so a
+/// fixture claiming `linux-x86_64` is correctly refused on a macOS runner. That
+/// is the guard working, and the fixture is what has to describe the machine.
+fn platform() -> String {
+    tauri_updater_delta_core::release_identity::current_platform()
+}
+
 use minisign::KeyPair;
 use tauri_plugin_updater_delta::flow::{run_update, Context, InstallHandoff, Outcome};
 use tauri_plugin_updater_delta::Error;
@@ -39,7 +49,6 @@ use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifac
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::{build_release, ReleaseRequest, TarLayerOptions};
 
-const PLATFORM: &str = "darwin-aarch64";
 const INSTALLER_URL: &str = "https://example.com/App.app.tar.gz";
 const PATCH_URL: &str = "https://example.com/direct.zst";
 const TAR_PATCH_URL: &str = "https://example.com/tar.zst";
@@ -178,7 +187,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
 
     let (manifest, summary) = build_release(
         &ReleaseRequest {
-            platform: PLATFORM,
+            platform: &platform(),
             version: "1.0.1",
             from_version: "1.0.0",
             previous_installer: &old,
@@ -188,6 +197,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             patch_out: &direct_patch,
             notes: None,
             pub_date: None,
+            app_id: "dev.example.testapp",
             tar_layer: Some(TarLayerOptions {
                 patch_url: TAR_PATCH_URL,
                 patch_out: &tar_patch,
@@ -231,7 +241,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         pubkey: pubkey_b64(pair),
         old,
         new,
-        signature: manifest.platforms[PLATFORM].signature.clone(),
+        signature: manifest.platforms[&platform()].signature.clone(),
         manifest_json: manifest.to_json().expect("serialise"),
         manifest,
     }
@@ -242,7 +252,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
 fn namespace(pubkey: &str) -> Namespace {
     Namespace {
         bundle_id: "com.example.delta".to_owned(),
-        platform: PLATFORM.to_owned(),
+        platform: platform().to_owned(),
         arch: "aarch64".to_owned(),
         pubkey_fingerprint: FileHash::of_bytes(pubkey.as_bytes()).to_hex(),
         representation: REPRESENTATION_APP_TAR_GZ_V1.to_owned(),
@@ -290,6 +300,7 @@ fn run(
             // up as Full rather than silently succeeding down the other branch.
             base: None,
             cache,
+            app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),
         },
@@ -306,6 +317,7 @@ fn plan(w: &World, cache: Option<&ArtifactCache>, work: &Path) -> UpdateSource {
             base: None,
             cache,
             pubkey: &w.pubkey,
+            app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),
         },
@@ -450,6 +462,7 @@ fn the_direct_patch_still_works_when_there_is_no_cache_at_all() {
             pubkey: &w.pubkey,
             base: Some(&w.old),
             cache: None,
+            app_id: "dev.example.testapp",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
         },
@@ -638,7 +651,7 @@ fn a_base_whose_recorded_tar_digest_is_wrong_is_caught_before_expansion() {
         .as_mut()
         .expect("delta")
         .platforms
-        .get_mut(PLATFORM)
+        .get_mut(&platform())
         .expect("platform");
     let tar_patch = entry
         .tar_layer
@@ -708,7 +721,7 @@ fn a_patch_that_rebuilds_the_wrong_tar_falls_back() {
         .as_mut()
         .expect("delta")
         .platforms
-        .get_mut(PLATFORM)
+        .get_mut(&platform())
         .expect("platform");
     entry
         .tar_layer
@@ -739,7 +752,7 @@ fn a_recompression_that_misses_the_published_digest_falls_back() {
         .as_mut()
         .expect("delta")
         .platforms
-        .get_mut(PLATFORM)
+        .get_mut(&platform())
         .expect("platform");
     entry.target_installer_blake3 = FileHash::of_bytes(b"not what we will build").to_hex();
     w.manifest_json = w.manifest.to_json().expect("serialise");
@@ -762,7 +775,7 @@ fn an_unknown_representation_falls_back_without_touching_the_cache() {
         .as_mut()
         .expect("delta")
         .platforms
-        .get_mut(PLATFORM)
+        .get_mut(&platform())
         .expect("platform");
     entry.tar_layer.as_mut().expect("tar layer").representation = "app-tar-zstd-v2".to_owned();
     w.manifest_json = w.manifest.to_json().expect("serialise");
@@ -801,7 +814,7 @@ fn an_unknown_recompression_recipe_falls_back() {
         .as_mut()
         .expect("delta")
         .platforms
-        .get_mut(PLATFORM)
+        .get_mut(&platform())
         .expect("platform");
     entry.tar_layer.as_mut().expect("tar layer").recompression = "tauri-app-tar-gz-v9".to_owned();
     w.manifest_json = w.manifest.to_json().expect("serialise");
@@ -851,6 +864,7 @@ fn a_bad_signature_over_a_correctly_rebuilt_artifact_fails_closed() {
             pubkey: &w.pubkey,
             base: None,
             cache: Some(&cache),
+            app_id: "dev.example.testapp",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
         },

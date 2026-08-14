@@ -5,11 +5,11 @@
 //! logic has probably leaked out of the layer that can be tested without an app.
 
 use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
-use tauri::{Manager, Runtime};
+use tauri::Runtime;
 use tauri_plugin_updater::Update;
 use tauri_updater_delta_core::{UpdateIdentity, VerifiedArtifact};
 
-use crate::flow::InstallHandoff;
+use crate::flow::{run_update, Context, InstallHandoff, Outcome};
 use crate::{Error, Result};
 
 /// Derives the authoritative release identity from a checked `Update`.
@@ -17,8 +17,88 @@ use crate::{Error, Result};
 /// An extension trait rather than a `From` impl because both types are foreign
 /// to this crate.
 pub trait UpdateExt {
-    /// The single description of the release this update refers to.
-    fn delta_identity(&self) -> UpdateIdentity;
+    /// Begin a delta update from this checked update.
+    ///
+    /// The **only** way to obtain an [`UpdateSession`], and therefore the only
+    /// way into the shipping update flow.
+    fn delta_session(&self) -> UpdateSession<'_>;
+}
+
+/// One update, from the check that produced it to the install that ends it.
+///
+/// # What this type is for
+///
+/// Two audit findings had the same shape: the public API let a caller assemble
+/// an update out of parts that never belonged together.
+///
+/// - `UpdateIdentity::new` was public, so any caller could fabricate a version,
+///   URL and signature and feed them to the flow as though Tauri had checked
+///   them.
+/// - `TauriInstall::new` took any `&Update`, so the identity used for planning
+///   and verification could come from one checked update while the installation
+///   went through a different one.
+///
+/// Neither was fixed by hiding a constructor, because the *entry point* still
+/// accepted the dangerous pairing. What fixes it is removing the pairing: this
+/// type holds the checked `Update` and derives the identity from it, and
+/// [`install`](UpdateSession::install) installs through **that same `Update`**.
+/// There is no seam to get wrong because there are no longer two things to
+/// align.
+///
+/// # The honest limit
+///
+/// The guarantee is that **the shipping plugin API cannot express the unsafe
+/// pairing**. It is not that no Rust program can: a determined developer can
+/// depend on `tauri-updater-delta-core` directly and drive the engine by hand.
+/// That crate exists to be driven by hand — it is how the flow is tested without
+/// an app — and pretending otherwise would be a stronger claim than the code
+/// supports.
+///
+/// Both halves are enforced by the compiler rather than by review.
+///
+/// A fabricated identity has nowhere to go, because the plugin no longer
+/// re-exports `UpdateIdentity` and no public entry point accepts one:
+///
+/// ```compile_fail
+/// // error[E0432]: no `UpdateIdentity` in the root
+/// use tauri_plugin_updater_delta::UpdateIdentity;
+/// ```
+///
+/// And the installer cannot be aimed at a different update, because
+/// `TauriInstall` is private and `run_update`'s handoff cannot be named from
+/// outside this crate:
+///
+/// ```compile_fail
+/// // error[E0603]: struct `TauriInstall` is private
+/// use tauri_plugin_updater_delta::TauriInstall;
+/// ```
+pub struct UpdateSession<'a> {
+    update: &'a Update,
+    identity: UpdateIdentity,
+}
+
+impl<'a> UpdateSession<'a> {
+    /// Version this update installs, as Tauri's own check resolved it.
+    pub fn version(&self) -> &str {
+        self.identity.version()
+    }
+
+    /// Version currently installed, as Tauri determined it.
+    pub fn current_version(&self) -> &str {
+        self.identity.current_version()
+    }
+
+    /// Take the cheapest safe path to this release and install it.
+    ///
+    /// The identity is the one derived from `self.update`, and the installer is
+    /// `self.update`. They cannot disagree.
+    pub fn install(
+        &self,
+        ctx: &Context<'_>,
+        fetch: &dyn tauri_updater_delta_core::client::Fetch,
+    ) -> crate::Result<Outcome> {
+        run_update(&self.identity, ctx, fetch, &TauriInstall::new(self.update))
+    }
 }
 
 /// This is the only place the delta flow learns what it is installing, and it is
@@ -40,16 +120,23 @@ pub trait UpdateExt {
 /// algorithm free to drift from the real one. Consuming its *result* cannot
 /// drift.
 impl UpdateExt for Update {
-    fn delta_identity(&self) -> UpdateIdentity {
-        UpdateIdentity::new(
-            &self.current_version,
-            &self.version,
-            &self.target,
-            self.download_url.as_str(),
-            &self.signature,
-            self.raw_json.to_string(),
-        )
+    fn delta_session(&self) -> UpdateSession<'_> {
+        UpdateSession {
+            update: self,
+            identity: identity_of(self),
+        }
     }
+}
+
+fn identity_of(update: &Update) -> UpdateIdentity {
+    UpdateIdentity::new(
+        &update.current_version,
+        &update.version,
+        &update.target,
+        update.download_url.as_str(),
+        &update.signature,
+        update.raw_json.to_string(),
+    )
 }
 
 /// Hands a verified artifact to the official updater's own install step.
@@ -61,13 +148,13 @@ impl UpdateExt for Update {
 ///
 /// It takes a [`VerifiedArtifact`] because `install` itself verifies nothing.
 /// See `docs/DECISIONS.md` #10.
-pub struct TauriInstall<'a> {
+pub(crate) struct TauriInstall<'a> {
     update: &'a Update,
 }
 
 impl<'a> TauriInstall<'a> {
     /// Wrap an `Update` obtained from `tauri-plugin-updater`.
-    pub fn new(update: &'a Update) -> Self {
+    pub(crate) fn new(update: &'a Update) -> Self {
         Self { update }
     }
 }
@@ -80,60 +167,30 @@ impl InstallHandoff for TauriInstall<'_> {
     }
 }
 
-/// Configuration for the plugin.
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Where the delta-aware manifest is published.
-    ///
-    /// This is a superset of Tauri's own updater manifest, so it can be the same
-    /// URL the official updater is already pointed at.
-    ///
-    /// **Currently stored and never read.** Before `docs/DECISIONS.md` #13 the
-    /// flow fetched this URL itself; it now reads the release document out of
-    /// `Update::raw_json`, so nothing consults this value. It is kept — and
-    /// still required by [`Builder::build`] — rather than removed, because
-    /// changing the registration API belongs to the developer-experience phase.
-    /// Recorded here so the next reader does not assume it is load-bearing.
-    pub manifest_url: String,
-}
-
 /// Builds the plugin.
 #[derive(Debug, Default)]
-pub struct Builder {
-    manifest_url: Option<String>,
-}
+pub struct Builder;
 
 impl Builder {
     /// Start configuring the plugin.
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the manifest URL. Required.
-    pub fn manifest_url(mut self, url: impl Into<String>) -> Self {
-        self.manifest_url = Some(url.into());
-        self
+        Self
     }
 
     /// Build the plugin.
     ///
-    /// # Errors
+    /// # Why this takes no configuration
     ///
-    /// If no manifest URL was set. Failing at registration is deliberate: a
-    /// plugin that silently does nothing because it was misconfigured is worse
-    /// than an app that refuses to start.
+    /// It used to require a manifest URL. Since `docs/DECISIONS.md` #13 the flow
+    /// reads the release document out of `Update::raw_json` — the response
+    /// Tauri's own check already made — so nothing consulted that value. It was
+    /// left in place for a while and documented as unused, which is the worst of
+    /// both worlds: a required, security-adjacent knob that does nothing, on a
+    /// plugin whose whole argument is that there is only one source of truth.
+    ///
+    /// Point Tauri's updater at your manifest as you already do. This plugin
+    /// reads the document that check returns.
     pub fn build<R: Runtime>(self) -> std::result::Result<TauriPlugin<R>, Error> {
-        let manifest_url = self.manifest_url.ok_or_else(|| {
-            Error::Manifest("a manifest URL is required: call Builder::manifest_url".to_owned())
-        })?;
-
-        Ok(PluginBuilder::new("updater-delta")
-            .setup(move |app, _api| {
-                app.manage(Config {
-                    manifest_url: manifest_url.clone(),
-                });
-                Ok(())
-            })
-            .build())
+        Ok(PluginBuilder::new("updater-delta").build())
     }
 }

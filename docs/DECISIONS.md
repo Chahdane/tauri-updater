@@ -1162,3 +1162,126 @@ back, which is strictly worse than publishing no tar layer at all.
 standard library changes `io::copy`'s buffer size. Either invalidates the
 recipe, the fixture test goes red, and the correct response is a new identifier
 rather than a fix under the old one.
+
+## 27. The release identity rides in the signature that was already verified
+
+**Decided:** 2026-08-14 · **Status:** active · **Closes finding F4 · Gate P1**
+
+A minisign signature proves *these bytes were signed by the release key*. It does
+not prove **which release they are**, because the release document is not signed
+(#11). An attacker who controls the update server and holds no key could serve a
+genuinely signed **1.0.0** while the metadata said **9.9.9**: every cryptographic
+check passes and the user is silently rolled back onto a known-vulnerable build.
+The delta paths made that worse, because they take a *base* from the local cache
+chosen by the same unauthenticated metadata.
+
+### Why not a second signature
+
+The obvious fix — sign the manifest with a second key — costs every adopter a new
+key to generate, distribute, rotate and not lose, plus a second artifact to fetch
+and a second failure mode. It was rejected because the property was already
+purchasable for free.
+
+Minisign signature blocks carry a *trusted comment*, and it is not decoration.
+The block holds two Ed25519 signatures under the same key:
+
+```text
+artifact_sig = Ed25519(sk, BLAKE2b-512(artifact bytes))
+global_sig   = Ed25519(sk, artifact_sig ‖ trusted_comment)
+```
+
+The second binds the comment to *that specific artifact signature*, and
+`minisign-verify` checks both inside `PublicKey::verify`
+(`minisign-verify-0.2.5/src/lib.rs:334`) — the call `tauri-plugin-updater`
+already makes, and the one this crate reproduces. **The comment has been
+authenticated all along. Nobody was reading it.** So the fix is one existing key,
+one existing signature, one existing fetch, and a parser.
+
+That the binding holds was measured, not assumed
+(`research/experiments/2026-08-14-minisign-trusted-comment-binding`): editing the
+version inside the comment, splicing another release's comment onto this
+artifact's signature, and swapping whole signature blocks between releases all
+fail verification.
+
+### The format
+
+```text
+delta-v1 app:<id> v:<semver> plat:<os>-<arch> rep:<rep-id> b3:<64 hex> sz:<u64> ts:<unix>
+```
+
+Every field exists because something downstream compares against it:
+
+| Field | Compared against | Attack it closes |
+| --- | --- | --- |
+| `app` | `app.config().identifier` | An artifact from another product of the same vendor |
+| `v` | the version Tauri's check resolved | Relabelling an old release as new |
+| `plat` | `current_platform()`, a local fact | Cross-platform artifact substitution |
+| `rep` | the layer's `representation` | Reinterpreting the bytes under a recipe they were not built for |
+| `b3` | the digest of what was actually assembled | Swapping the artifact the identity describes |
+| `sz` | its length | Cheap disagreement caught before hashing |
+| `ts` | *nothing* | See "what is still not proven" |
+
+`ts` is recorded and deliberately **not** enforced. A field nobody checks is
+usually a bug; this one is a hedge whose cost is 14 bytes, and inventing a
+clock-skew policy for it now would be inventing a security control by accident.
+
+### Strict, because it is security metadata
+
+The parser accepts exactly one spelling: exact tag, exact field order, ASCII
+only, single-space separation, canonical semver, lowercase 64-hex digest,
+decimal size with no leading zeros, no duplicates, no trailing fields. A
+permissive parser for security metadata is an attack surface — every alternative
+encoding it forgives is a way to make two implementations disagree about what a
+signature said. Malformed input fails closed.
+
+### Legacy is a compatibility state, not an attack
+
+The three-way distinction is the whole of the migration design:
+
+| The comment | Meaning | Behaviour |
+| --- | --- | --- |
+| Not our family | Signed before this existed | Delta paths **unavailable**, Full download proceeds |
+| Our family, contradicted | Signed description ≠ what is being installed | **Refused.** No fallback |
+| Our family, agrees | Authenticated | Delta paths available |
+
+Calling the first case an attack would fail every existing release; calling the
+second one a transport hiccup would let an attacker *choose* the fallback. So an
+authenticated contradiction never decays into a Full download — a test enforces
+that direction specifically.
+
+This is safe to leave open because absence cannot be forged. The tag lives inside
+the signed bytes, so stripping the identity from a bound release to force the
+legacy path invalidates the global signature. **Legacy is a property of the
+release, not a claim by the server.** Delta becomes available when a publisher
+re-signs, and never because someone asked for it.
+
+### Checked twice, and only once authoritatively
+
+Planning reads the comment *before* verification, from a document that is still
+untrusted, so that a contradiction is refused before anything is downloaded. That
+read is advisory: it may refuse, it may make a path unavailable, and it can never
+authorise anything. The authoritative check is on `VerifiedArtifact::binding()`,
+which exists only after `PublicKey::verify` returned, and every install path runs
+it before staging.
+
+### What is still not proven
+
+Three properties, and conflating them is how this class of bug survives:
+
+| Property | Status |
+| --- | --- |
+| **Artifact authenticity** — these bytes were signed by the key | Already true |
+| **Release identity** — these bytes *are* release X of app Y | **This decision** |
+| **Freshness** — release X is the newest published | **Not proven** |
+
+An attacker who controls the server can still serve a *genuine older release
+carrying its own genuine old identity*. Against an existing installation the
+downgrade policy in `identity.rs` refuses it, and that refusal is now trustworthy
+because the version is authenticated rather than asserted. Against a **first
+install** there is no floor to compare with, and nothing here establishes what
+"latest" means. Nor is a stale but genuine manifest detectable: the manifest
+itself is still unsigned, and no expiry, timestamp authority or role separation
+is implemented. This is not TUF-style freshness and must not be described as it.
+
+**Revisit when:** freshness is in scope — that needs signed, expiring metadata,
+which is a `delta-v2` comment or a second document, not a patch to this one.

@@ -49,6 +49,9 @@ OUT="${1:-/tmp/delta-e2e-build}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="$(cd "$APP_DIR/../.." && pwd)"
 KEY_PASSWORD="e2e-test-password"
+# Bound into the signature's authenticated release identity, and compared at
+# runtime against the app's own tauri.conf.json identifier.
+APP_ID="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["identifier"])' "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tauri.conf.json")"
 MAIN_BINARY="Contents/MacOS/delta-updater-example"
 
 ARCH="$(uname -m)"; [ "$ARCH" = "arm64" ] && ARCH="aarch64"
@@ -121,6 +124,7 @@ echo "==> publishing with delta-release"
 cargo build -q --release -p tauri-updater-delta-release --manifest-path "$ROOT/Cargo.toml"
 "$ROOT/target/release/delta-release" \
   --platform "$PLATFORM" \
+  --app-id "$APP_ID" \
   --target-version 1.0.1 --from-version 1.0.0 \
   --previous-installer "$OUT/v1.0.0/DeltaUpdaterExample.app.tar.gz" \
   --new-installer      "$OUT/v1.0.1/DeltaUpdaterExample.app.tar.gz" \

@@ -25,7 +25,10 @@ use std::path::Path;
 
 use tauri_updater_delta_core::cache::ArtifactCache;
 use tauri_updater_delta_core::client::{plan_update, Fetch, PlanContext, UpdateSource};
-use tauri_updater_delta_core::{verify_artifact, Limits, UpdateIdentity, VerifiedArtifact};
+use tauri_updater_delta_core::release_identity::current_platform;
+use tauri_updater_delta_core::{
+    verify_artifact, FileHash, Limits, Refusal, UpdateIdentity, VerifiedArtifact,
+};
 
 use crate::{Error, Result};
 
@@ -101,6 +104,12 @@ pub struct Context<'a> {
     /// Scratch directory. Each update gets its own subdirectory inside it, so
     /// concurrent runs cannot consume one another's files.
     pub work_dir: &'a Path,
+    /// Application bundle identifier, as in `tauri.conf.json`'s `identifier`.
+    ///
+    /// Checked against the identity the release signature authenticates, so an
+    /// artifact belonging to another application signed with the same key is
+    /// refused instead of installed.
+    pub app_id: &'a str,
     /// Local ceilings on what a manifest may ask this host to do.
     pub limits: Limits,
 }
@@ -126,6 +135,7 @@ pub fn run_update(
             base: ctx.base,
             cache: ctx.cache,
             pubkey: ctx.pubkey,
+            app_id: ctx.app_id,
             work_dir: ctx.work_dir,
             limits: ctx.limits,
         },
@@ -148,6 +158,7 @@ pub fn run_update(
             _workspace,
         } => {
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
+            check_release_identity(ctx, identity, &verified)?;
             stage(ctx, identity, &verified, &signature);
             handoff.install(&verified)?;
             Ok(Outcome::InstalledFromTarDelta {
@@ -164,6 +175,7 @@ pub fn run_update(
             _workspace,
         } => {
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
+            check_release_identity(ctx, identity, &verified)?;
             stage(ctx, identity, &verified, &signature);
             handoff.install(&verified)?;
             // No explicit cleanup: dropping _workspace removes the whole
@@ -182,8 +194,8 @@ pub fn run_update(
 
             let bytes = std::fs::read(&full)
                 .map_err(|e| Error::Io(format!("reading the downloaded artifact: {e}")))?;
-            let verified = verify_artifact(bytes, &signature, ctx.pubkey)
-                .map_err(|e| Error::Signature(e.to_string()))?;
+            let verified = verify_artifact(bytes, &signature, ctx.pubkey).map_err(classify)?;
+            check_release_identity(ctx, identity, &verified)?;
 
             stage(ctx, identity, &verified, &signature);
             handoff.install(&verified)?;
@@ -207,17 +219,74 @@ fn verify_rebuilt(
     let bytes = std::fs::read(artifact)
         .map_err(|e| Error::Io(format!("reading the rebuilt artifact: {e}")))?;
 
-    verify_artifact(bytes, signature, pubkey).map_err(|_| {
-        // The artifact matched the digest this document published but not the
-        // signature it published alongside it. That does not prove the document
-        // is forged — it is not signed, so there was never a claim to disprove.
-        // What it does mean is that something in the chain that produced this
-        // release is wrong, and we cannot tell what. Falling back would fetch a
-        // second artifact chosen by the same document and check it against a
-        // signature from that same document, which grants a second attempt
-        // rather than a safer one. See docs/DECISIONS.md #11.
-        Error::Signature("the rebuilt artifact did not match the manifest's signature".to_owned())
-    })
+    verify_artifact(bytes, signature, pubkey).map_err(classify)
+}
+
+/// Map a core verification error onto the plugin's vocabulary.
+///
+/// `verify_artifact` can fail two ways that are worth telling apart. The
+/// cryptography can fail — the bytes are not what the key signed — or the
+/// cryptography can hold while the *statement it authenticated* is unusable.
+/// Both fail closed, and collapsing them into one variant would make a
+/// release-identity contradiction look like a corrupt download in every log and
+/// every test.
+fn classify(e: tauri_updater_delta_core::Error) -> Error {
+    match e {
+        tauri_updater_delta_core::Error::ReleaseIdentity(reason) => {
+            Error::Refused(Refusal::ReleaseIdentity { reason })
+        }
+        _ => {
+            // The artifact matched the digest this document published but not
+            // the signature it published alongside it. That does not prove the
+            // document is forged — it is not signed, so there was never a claim
+            // to disprove. What it does mean is that something in the chain
+            // that produced this release is wrong, and we cannot tell what.
+            // Falling back would fetch a second artifact chosen by the same
+            // document and check it against a signature from that same
+            // document, which grants a second attempt rather than a safer one.
+            // See docs/DECISIONS.md #11.
+            Error::Signature("the artifact did not match the manifest's signature".to_owned())
+        }
+    }
+}
+
+/// The authoritative release-identity check.
+///
+/// Runs on [`VerifiedArtifact::binding`], which exists only because the
+/// signature verified — so unlike the planner's advisory read, this one is
+/// checking an authenticated statement. It also compares the digest and size
+/// against the **bytes actually in hand** rather than against the manifest's
+/// claims about them, which is the difference between binding the identity to
+/// the artifact and binding two unauthenticated numbers to each other.
+///
+/// A contradiction here is [`Error::Refused`], never a fallback. The
+/// full-download path is pointed at that same artifact by that same document,
+/// so retrying there would run the contradiction down the other branch.
+///
+/// A [`ReleaseBinding::Legacy`] release reaches this point only on the full
+/// path — the planner makes the delta paths unavailable for one — and is
+/// allowed through, which is exactly what a stock Tauri client would do.
+fn check_release_identity(
+    ctx: &Context<'_>,
+    identity: &UpdateIdentity,
+    verified: &VerifiedArtifact,
+) -> Result<()> {
+    let Some(signed) = verified.binding().identity() else {
+        return Ok(());
+    };
+    signed
+        .check(
+            ctx.app_id,
+            identity.version(),
+            &current_platform(),
+            &FileHash::of_bytes(verified.as_bytes()).to_hex(),
+            verified.len() as u64,
+        )
+        .map_err(|e| {
+            Error::Refused(Refusal::ReleaseIdentity {
+                reason: e.to_string(),
+            })
+        })
 }
 
 /// Record a verified artifact as the cache's PENDING entry.
@@ -311,6 +380,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -350,6 +420,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -382,6 +453,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -410,6 +482,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },
@@ -443,6 +516,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
             },

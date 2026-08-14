@@ -31,7 +31,8 @@ Kept deliberately conservative. "Tested" and "proven in a real app" are differen
 claims, and the table below keeps them apart. A real macOS app now performs both
 a full and a tar-layer update through the official installer; that is integration
 evidence on one platform, not production readiness, and the open v0.1 security
-blockers in [SPRINT.md](SPRINT.md) are untouched by it.
+blockers in [docs/DECISIONS.md](docs/DECISIONS.md) and the
+[findings ledger](research/FINDINGS.md) are untouched by it.
 
 | Claim | Status |
 | --- | --- |
@@ -39,6 +40,8 @@ blockers in [SPRINT.md](SPRINT.md) are untouched by it.
 | Signature-verifier compatibility with `tauri-plugin-updater` 2.10.1 | **Supported** |
 | `VerifiedArtifact` capability boundary (unverified bytes cannot reach install) | **Supported** |
 | Downgrade, replay and update-identity refusal | **Supported** |
+| Authenticated release identity inside the signature | **Supported** — [F27](research/FINDINGS.md), [DECISIONS #27](docs/DECISIONS.md) |
+| Manifest authenticity and update freshness | **Unproven, and not attempted** — [F28](research/FINDINGS.md) |
 | Transport bounds: HTTPS, redirects, timeouts, size caps | **Supported** |
 | A real running Tauri app installing a delta update | **Supported** — demonstrated on macOS, [F19](research/FINDINGS.md) |
 | Exact in-process rebuild of a published macOS `.app.tar.gz` | **Supported** — [F22](research/FINDINGS.md), [DECISIONS #26](docs/DECISIONS.md) |
@@ -67,10 +70,9 @@ Measurements and the claims they do or do not support are tracked in
 [research/FINDINGS.md](research/FINDINGS.md), classified so that a plausible
 observation cannot become a stated fact by repetition.
 
-The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan,
-[SPRINT.md](SPRINT.md) tracks what is being worked on right now, and
+The [roadmap](docs/ROADMAP.md) has the phase-by-phase plan and
 [docs/DECISIONS.md](docs/DECISIONS.md) records the non-obvious calls and why they
-were made.
+were made. Measured results live in [research/](research/).
 
 ## How it works
 
@@ -183,6 +185,7 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/myapp.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
 
 delta-release \
+  --app-id com.example.myapp \
   --platform linux-x86_64 \
   --version 1.0.1 \
   --from-version 1.0.0 \
@@ -199,11 +202,45 @@ same `version`, `pub_date` and `platforms` fields the official updater already
 reads, with delta information added alongside. Point Tauri's updater at it and a
 delta-unaware client behaves exactly as before.
 
+`--app-id` must match your `tauri.conf.json` identifier. It is bound into the
+signature, so it cannot be guessed from the artifact.
+
 The signature it records is over the **target installer**, not the patch, so the
 same signature validates whether a user rebuilt the artifact from a patch or
 downloaded it whole. Run the tool once per upgrade path you want to support;
 repeated runs against the same version add to the manifest rather than replacing
 it. Pass `--dry-run` to see the manifest without writing it.
+
+### What the signature now says
+
+A minisign signature proves *these bytes were signed by your key*. On its own it
+says nothing about **which release they are**, because the manifest is not signed
+— so anyone who can rewrite the manifest, holding no key at all, could serve your
+genuinely signed 1.0.0 while claiming it is 9.9.9.
+
+`delta-release` closes that by writing a release identity into the signature's
+*trusted comment*, which minisign authenticates against that specific artifact
+and which `PublicKey::verify` has been checking all along:
+
+```text
+delta-v1 app:com.example.myapp v:1.0.1 plat:linux-x86_64 rep:opaque-v1 \
+         b3:<digest of the artifact> sz:<its size> ts:<unix>
+```
+
+Every field is derived from the artifact the tool just wrote, and the client
+compares each one against what it is actually installing. Nothing changes
+operationally: same key, same signature, same single download.
+
+Releases signed before this feature still install — as **full downloads only**.
+The delta paths need an authenticated identity to know that a cached base belongs
+to the release it claims to. Re-sign to get them back.
+
+**What this does not give you:** the manifest is still unsigned, and freshness is
+still not proven. A genuine *older* release presented with its own genuine
+identity is refused for an existing install by version policy, but nothing here
+establishes what "latest" means for a first install, and a stale-but-genuine
+manifest is undetectable. This is not TUF-style freshness. See
+[DECISIONS #27](docs/DECISIONS.md) and `research/FINDINGS.md` F28.
 
 ## Usage
 
@@ -219,7 +256,6 @@ fn main() {
         // The official updater is still the one that installs.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_updater_delta::Builder::new()
-            .manifest_url("https://releases.example.com/manifest.json")
             .build()
             .expect("configuring the delta updater"))
         .run(tauri::generate_context!())
@@ -232,32 +268,28 @@ plugin never fetches a manifest of its own:
 
 ```rust
 use tauri_plugin_updater::UpdaterExt;
-use tauri_plugin_updater_delta::{flow::{run_update, Context}, HttpFetch, Limits,
-                                 TauriInstall, UpdateExt};
+use tauri_plugin_updater_delta::{flow::Context, HttpFetch, Limits, UpdateExt};
 
 let Some(update) = app.updater()?.check().await? else { return Ok(()) };
 
-let outcome = run_update(
-    // One line, and it is the whole trust argument: the release installed is
-    // the release Tauri checked, because it is the same object.
-    &update.delta_identity(),
-    &Context { pubkey: &pubkey, base: cached.as_deref(), work_dir: &work_dir,
-               limits: Limits::default() },
+// One call, and it is the whole trust argument: the release installed is the
+// release Tauri checked, because the session holds that same `Update` and
+// derives the identity from it. There is no second thing to keep in step.
+let outcome = update.delta_session().install(
+    &Context {
+        pubkey: &pubkey,
+        base: cached.as_deref(),
+        cache: cache.as_ref(),
+        app_id: &app.config().identifier,
+        work_dir: &work_dir,
+        limits: Limits::default(),
+    },
     &HttpFetch::new()?,
-    &TauriInstall::new(&update),
 )?;
 ```
 
-### Known rough edge
-
-`Builder::manifest_url` is **required but unused**. Before the single-fetch
-change ([DECISIONS #13](docs/DECISIONS.md)) the plugin fetched that URL itself;
-it now reads the release document out of `Update::raw_json`, so nothing consults
-the stored value — yet `build()` still fails without it.
-
-That is a real wart, documented rather than quietly fixed because removing it is
-an API change belonging to the developer-experience phase, not to a
-documentation pass. Set it to the same URL as your updater endpoint.
+`app_id` is checked against the identity inside the signature, so an artifact
+signed for a different application of yours is refused rather than installed.
 
 ## Privacy
 
