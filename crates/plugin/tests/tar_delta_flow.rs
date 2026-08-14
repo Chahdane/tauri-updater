@@ -311,6 +311,16 @@ fn run(
 
 /// Plan without installing, so a test can inspect which paths were attempted.
 fn plan(w: &World, cache: Option<&ArtifactCache>, work: &Path) -> UpdateSource {
+    plan_with_limits(w, cache, work, Limits::default())
+}
+
+/// [`plan`] with the host's ceilings set explicitly, for the resource tests.
+fn plan_with_limits(
+    w: &World,
+    cache: Option<&ArtifactCache>,
+    work: &Path,
+    limits: Limits,
+) -> UpdateSource {
     plan_update(
         &w.identity("1.0.0"),
         &PlanContext {
@@ -319,10 +329,28 @@ fn plan(w: &World, cache: Option<&ArtifactCache>, work: &Path) -> UpdateSource {
             pubkey: &w.pubkey,
             app_id: "dev.example.testapp",
             work_dir: work,
-            limits: Limits::default(),
+            limits,
         },
         &w.server,
     )
+}
+
+/// Rewrite the tar layer in place and re-serialise, which is what a hostile
+/// update server gets to do to every one of these numbers.
+fn edit_tar_layer(
+    w: &mut World,
+    edit: impl FnOnce(&mut tauri_updater_delta_core::manifest::TarLayer),
+) {
+    let entry = w
+        .manifest
+        .delta
+        .as_mut()
+        .expect("delta")
+        .platforms
+        .get_mut(&platform())
+        .expect("platform");
+    edit(entry.tar_layer.as_mut().expect("tar layer"));
+    w.manifest_json = w.manifest.to_json().expect("serialise");
 }
 
 /// Assert a fallback happened *after* the tar path genuinely ran, and return
@@ -953,5 +981,246 @@ fn two_updates_running_at_once_do_not_produce_an_incorrect_active() {
             .artifact
             .as_bytes(),
         &w.released_bytes()[..]
+    );
+}
+
+// ---- local resource ceilings on the tar pipeline -------------------------
+//
+// Gate B gave the flow one dial, `max_target_bytes`, and checked it against the
+// compressed installer. The tar layer then put a four-stage pipeline in front of
+// that number, every stage sized by the same unauthenticated document. These
+// tests are about the stage that had no local ceiling above it at all.
+//
+// The shape they all share: the manifest asks for something unreasonable, the
+// tar path is *attempted* and refused, and the update still completes as a full
+// download. Refusing to blow up the machine is not the same as refusing to
+// update.
+
+/// The reason string a size refusal produces, for tests that assert on which
+/// gate spoke rather than merely that something did.
+fn assert_refused_for_size(source: &UpdateSource) -> String {
+    let reason = assert_fell_back_from_tar(source);
+    assert!(
+        reason.contains("declares") && reason.contains("local limit"),
+        "expected a declared-size refusal, got: {reason}"
+    );
+    reason
+}
+
+#[test]
+fn an_absurd_declared_target_tar_is_refused_before_anything_is_touched() {
+    // The gap this closes. `target_tar_size` becomes zstd's window and output
+    // bound, so before there was a local ceiling above it a manifest could ask
+    // this client to reserve and write half a terabyte -- and every digest and
+    // signature check happens far too late to matter.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+
+    edit_tar_layer(&mut w, |layer| {
+        layer.target_tar_size = 500 * 1024 * 1024 * 1024;
+    });
+
+    let source = plan(&w, Some(&cache), &dir.path().join("work"));
+    assert_refused_for_size(&source);
+
+    // Nothing was downloaded and nothing was expanded: the check is a
+    // comparison against a local constant, so it costs one branch.
+    assert!(
+        !w.server.fetched(TAR_PATCH_URL),
+        "an absurd declaration must be refused before the patch is fetched"
+    );
+}
+
+#[test]
+fn an_absurd_declared_base_tar_is_refused_before_the_cache_is_expanded() {
+    // The other direction: `base_tar_size` sizes the expansion of a blob we
+    // already hold. Still a server-supplied number, so still capped locally.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+
+    let entry = w
+        .manifest
+        .delta
+        .as_mut()
+        .expect("delta")
+        .platforms
+        .get_mut(&platform())
+        .expect("platform");
+    entry
+        .tar_layer
+        .as_mut()
+        .expect("tar layer")
+        .patches
+        .get_mut("1.0.0")
+        .expect("patch")
+        .base_tar_size = 900 * 1024 * 1024 * 1024;
+    w.manifest_json = w.manifest.to_json().expect("serialise");
+
+    assert_refused_for_size(&plan(&w, Some(&cache), &dir.path().join("work")));
+    assert!(!w.server.fetched(TAR_PATCH_URL));
+}
+
+#[test]
+fn the_local_ceiling_binds_even_when_the_manifest_is_honest() {
+    // An absurdity filter and a policy ceiling are different things. This
+    // manifest is entirely truthful -- the tar really is that size -- and the
+    // host has simply said it will not reconstruct one that big. The refusal
+    // must come from the host's number, not from the manifest disagreeing with
+    // itself, or the cap is decorative on any release whose metadata is
+    // internally consistent.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+
+    let honest_size = w.manifest.delta.as_ref().expect("delta").platforms[&platform()]
+        .tar_layer
+        .as_ref()
+        .expect("tar layer")
+        .target_tar_size;
+    assert!(honest_size > 1024, "fixture sanity: the tar has real size");
+
+    let source = plan_with_limits(
+        &w,
+        Some(&cache),
+        &dir.path().join("work"),
+        Limits {
+            max_target_bytes: u64::MAX,
+            max_tar_bytes: honest_size - 1,
+        },
+    );
+    assert_refused_for_size(&source);
+    assert!(!w.server.fetched(TAR_PATCH_URL));
+}
+
+#[test]
+fn a_size_exactly_at_the_ceiling_is_still_allowed() {
+    // The boundary, in the direction that costs a user a working update if it
+    // is wrong. An off-by-one here silently disables the tar path for anyone
+    // whose artifact happens to sit on the limit.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+
+    let layer = w.manifest.delta.as_ref().expect("delta").platforms[&platform()]
+        .tar_layer
+        .as_ref()
+        .expect("tar layer");
+    let ceiling = layer
+        .target_tar_size
+        .max(layer.patches["1.0.0"].base_tar_size);
+
+    let source = plan_with_limits(
+        &w,
+        Some(&cache),
+        &dir.path().join("work"),
+        Limits {
+            max_target_bytes: Limits::default().max_target_bytes,
+            max_tar_bytes: ceiling,
+        },
+    );
+    assert_eq!(
+        source.path_name(),
+        "tar-delta",
+        "a tar exactly at the ceiling must still be reconstructed"
+    );
+}
+
+#[test]
+fn a_cached_blob_that_expands_past_the_cache_ceiling_falls_back() {
+    // A decompression bomb reaching the pipeline through the cache rather than
+    // over the network. gzip's ratio is unbounded, so the artifact that
+    // describes a huge tar is itself small enough to have passed the blob
+    // ceiling on the way in.
+    //
+    // The cache's own dial catches this one, which is the point: the ceilings
+    // are independent, so a host that tightened one has not accidentally
+    // loosened another.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+
+    let tight = ArtifactCache::open(
+        dir.path().join("cache"),
+        namespace(&w.pubkey),
+        CacheLimits {
+            max_blob_bytes: 64 * 1024 * 1024,
+            // Far below the fixture's real tar.
+            max_tar_bytes: 1024,
+            blob_grace: std::time::Duration::from_secs(0),
+        },
+    )
+    .expect("open cache");
+
+    // Staging expands the artifact to record its tar digest, so the ceiling is
+    // enforced on the way in as well as on the way out.
+    let bytes = std::fs::read(&w.old).expect("read old artifact");
+    let signature = base64::engine::general_purpose::STANDARD.encode(
+        minisign::sign(None, &pair.sk, &bytes[..], None, None)
+            .expect("sign")
+            .into_string(),
+    );
+    let verified = tauri_updater_delta_core::verify_artifact(bytes, &signature, &w.pubkey)
+        .expect("the seeded base must verify");
+    let staged = tight.stage_pending("1.0.0", &verified, &signature);
+    assert!(
+        staged.is_err(),
+        "a blob that expands past the ceiling must not be cached at all"
+    );
+
+    // And with nothing cached, the update still happens.
+    let handoff = RecordingHandoff::default();
+    let outcome = run(&w, Some(&tight), &handoff, &dir.path().join("work")).expect("update");
+    assert_eq!(outcome.path_name(), "full");
+    assert_eq!(handoff.installed.borrow()[0], w.released_bytes());
+}
+
+#[test]
+fn a_malformed_tar_is_rejected_by_a_linear_walk_not_an_extraction() {
+    // Recompression is the only stage that reads tar *structure*, and it does so
+    // to replay write boundaries -- never to extract entries onto disk. This
+    // feeds it a header claiming an entry far larger than the archive, which is
+    // the shape that turns a naive extractor into an out-of-memory or a
+    // path-traversal bug.
+    use tauri_updater_delta_core::recompress::recompress_app_tar_gz;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let bad = dir.path().join("bad.tar");
+    let out = dir.path().join("out.tar.gz");
+
+    // A plausible 512-byte tar header whose size field claims 8 GB, followed by
+    // nothing.
+    let mut header = [0u8; 512];
+    header[..9].copy_from_slice(b"evil.bin\0");
+    // Size field at offset 124, 12 bytes, octal, NUL-terminated.
+    header[124..135].copy_from_slice(b"77777777777");
+    header[156] = b'0';
+    std::fs::write(&bad, header).expect("write malformed tar");
+
+    let err = recompress_app_tar_gz(&bad, &out).expect_err("a malformed tar must be refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("malformed tar"),
+        "expected a malformed-tar refusal, got: {text}"
+    );
+
+    // The refusal is a bounded read, so nothing resembling an extracted tree
+    // appears next to it.
+    let siblings: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("read dir")
+        .filter_map(|e| e.ok().map(|e| e.file_name()))
+        .collect();
+    assert!(
+        siblings.len() <= 2,
+        "a malformed tar must not produce files beyond its own output: {siblings:?}"
     );
 }
