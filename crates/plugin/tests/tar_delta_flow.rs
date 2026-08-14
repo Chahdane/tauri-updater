@@ -1224,3 +1224,160 @@ fn a_malformed_tar_is_rejected_by_a_linear_walk_not_an_extraction() {
         "a malformed tar must not produce files beyond its own output: {siblings:?}"
     );
 }
+
+// ---- what a failed transaction leaves behind -----------------------------
+
+#[test]
+fn every_tar_failure_path_leaves_the_workspace_empty() {
+    // The tar path writes five intermediates -- the expanded base, the
+    // downloaded patch, the reconstructed tar and its `.part`, the recompressed
+    // artifact and its `.part` -- and it can fail at any of them. None may
+    // survive, because a file left at a plausible name is exactly what a later
+    // transaction might mistake for its own work.
+    //
+    // Isolation already makes cross-transaction confusion impossible: each
+    // update gets its own directory under `work_dir`. This is the other half --
+    // that the directory itself goes, so a user who fails an update repeatedly
+    // does not accumulate one copy of their application per attempt.
+    type Case = (&'static str, fn(&mut World));
+
+    let cases: Vec<Case> = vec![
+        ("corrupt tar patch", |w| {
+            w.server
+                .replace(TAR_PATCH_URL, b"this is not a zstd frame".to_vec());
+        }),
+        ("truncated tar patch", |w| {
+            let full = w.server.files.borrow()[TAR_PATCH_URL].clone();
+            w.server
+                .replace(TAR_PATCH_URL, full[..full.len() / 2].to_vec());
+        }),
+        ("reconstruction misses the declared tar", |w| {
+            edit_tar_layer(w, |layer| {
+                layer.target_tar_blake3 = FileHash::of_bytes(b"a different tar").to_hex();
+            });
+        }),
+        ("declared tar over the local ceiling", |w| {
+            edit_tar_layer(w, |layer| {
+                layer.target_tar_size = 500 * 1024 * 1024 * 1024;
+            });
+        }),
+        ("recompression misses the published installer", |w| {
+            let entry = w
+                .manifest
+                .delta
+                .as_mut()
+                .expect("delta")
+                .platforms
+                .get_mut(&platform())
+                .expect("platform");
+            entry.target_installer_blake3 = FileHash::of_bytes(b"not this artifact").to_hex();
+            w.manifest_json = w.manifest.to_json().expect("serialise");
+        }),
+    ];
+
+    for (name, inject) in cases {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pair = keypair();
+        let mut w = world(dir.path(), &pair);
+        let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+        seed_active(&cache, &w, &pair);
+        let work = dir.path().join("work");
+
+        inject(&mut w);
+
+        let source = plan(&w, Some(&cache), &work);
+        assert!(
+            matches!(source, UpdateSource::Full { .. }),
+            "{name}: expected a fallback, got {source:?}"
+        );
+        // Dropping the plan drops any workspace it still owns.
+        drop(source);
+
+        let leftovers: Vec<_> = std::fs::read_dir(&work)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "{name}: a failed tar transaction must remove its workspace, found {leftovers:?}"
+        );
+
+        // And the base it was patching against is untouched: a failure may not
+        // cost the user the cache entry that made the next attempt cheap.
+        let base = cache
+            .active(&w.pubkey)
+            .expect("active")
+            .expect("the base survives a failed transaction");
+        assert_eq!(base.entry.version, "1.0.0", "{name}: ACTIVE must be intact");
+    }
+}
+
+#[test]
+fn a_successful_tar_delta_leaves_the_workspace_empty_once_the_update_is_done() {
+    // The success path holds the workspace open on purpose -- the artifact lives
+    // inside it until the installer has been handed the bytes -- so the
+    // assertion has to come after the whole update, not after planning.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+    let work = dir.path().join("work");
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run(&w, Some(&cache), &handoff, &work).expect("update");
+    assert_eq!(outcome.path_name(), "tar-delta");
+
+    let leftovers: Vec<_> = std::fs::read_dir(&work)
+        .expect("read work dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a finished update must not outlive itself on disk: {leftovers:?}"
+    );
+}
+
+#[test]
+fn a_failed_install_leaves_no_workspace_and_no_promotion() {
+    // The artifact is verified, staged and handed over, and the installer
+    // refuses. Two things must hold: the transaction cleans up after itself even
+    // though it failed late, and ACTIVE is still the old version because
+    // promotion asks what is *running*, not what was installed.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+    let work = dir.path().join("work");
+
+    let handoff = RecordingHandoff {
+        fail: true,
+        ..RecordingHandoff::default()
+    };
+    let result = run(&w, Some(&cache), &handoff, &work);
+    assert!(result.is_err(), "a refusing installer fails the update");
+
+    let leftovers: Vec<_> = std::fs::read_dir(&work)
+        .expect("read work dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a failed install must still clean up: {leftovers:?}"
+    );
+
+    assert_eq!(
+        cache
+            .active(&w.pubkey)
+            .expect("active")
+            .expect("base")
+            .entry
+            .version,
+        "1.0.0",
+        "a failed install must not promote"
+    );
+}

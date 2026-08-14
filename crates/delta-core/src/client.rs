@@ -238,10 +238,78 @@ impl UpdateSource {
 /// the same instant.
 pub fn transaction_workspace(work_dir: &Path) -> Result<tempfile::TempDir, Error> {
     std::fs::create_dir_all(work_dir).map_err(|e| Error::io("create", work_dir, e))?;
+    sweep_abandoned_workspaces(work_dir);
     tempfile::Builder::new()
         .prefix("update-")
         .tempdir_in(work_dir)
         .map_err(|e| Error::io("create", work_dir, e))
+}
+
+/// How long an `update-*` directory must be untouched before it is treated as
+/// wreckage rather than as work in progress.
+///
+/// Deliberately far longer than any update could take. The cache's blob grace is
+/// sixty seconds because a blob is immutable and re-derivable, so collecting a
+/// live one costs a re-download. A workspace is the opposite: it holds a
+/// transaction's working state, and removing a live one breaks the update that
+/// owns it. The threshold therefore has to exceed the slowest plausible
+/// download on the worst plausible connection, and a day does, by a lot.
+const ABANDONED_WORKSPACE_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Remove `update-*` directories left by processes that died mid-update.
+///
+/// # Why this exists
+///
+/// [`transaction_workspace`] hands back a `TempDir`, which removes itself on
+/// drop — including on every error path, since the drop runs regardless of how
+/// the scope is left. What it cannot cover is the process not getting there: a
+/// crash, a `SIGKILL`, a machine losing power. The directory then survives with
+/// a full copy of the application inside it, and nothing ever looks at it again.
+///
+/// That is **not** a correctness problem. The names are random, so no later
+/// transaction can find, read or be confused by one; the isolation that closed
+/// B4 also makes wreckage inert. It is a disk problem, and an unbounded one: one
+/// abandoned copy of the artifact per crash, forever.
+///
+/// The cache already collects orphaned *blobs* for exactly this reason
+/// (`cache::blob::retain`). This is the same sweep for the other half of the
+/// temporary state, and it is the only thing that bounds transaction scratch
+/// space over a program's lifetime.
+///
+/// Best-effort throughout: a sweep that cannot read the directory, or cannot
+/// remove something, is not a reason to fail an update. The worst case is the
+/// disk usage this exists to avoid, which is where we started.
+fn sweep_abandoned_workspaces(work_dir: &Path) {
+    sweep_workspaces_older_than(work_dir, ABANDONED_WORKSPACE_AGE);
+}
+
+/// [`sweep_abandoned_workspaces`] with the threshold supplied, so a test can
+/// exercise both directions without waiting a day or backdating a directory.
+fn sweep_workspaces_older_than(work_dir: &Path, age_limit: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(work_dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("update-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        // Modification time rather than creation time: a transaction that is
+        // still writing keeps touching its directory, and creation time is not
+        // available everywhere.
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age >= age_limit);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Decide how to obtain the release `identity` points at, and if a patch can be
@@ -966,6 +1034,78 @@ mod tests {
     /// Generous by default; the size-cap tests set their own.
     fn limits() -> Limits {
         Limits::default()
+    }
+
+    #[test]
+    fn abandoned_workspaces_are_swept_and_live_ones_are_not() {
+        // `TempDir` cleans up on every path a process actually takes, including
+        // the error ones. It cannot clean up after a process that stops
+        // existing, so a crash mid-update strands a full copy of the artifact.
+        //
+        // Harmless -- the names are random, so nothing later can find or misread
+        // one -- but unbounded: one copy per crash, kept forever. Orphaned cache
+        // blobs are already collected; this is the same sweep for the other half
+        // of the temporary state.
+        //
+        // The second assertion is the one that matters. A sweep that removed a
+        // *live* transaction's directory would be worse than the leak it fixes,
+        // so the threshold is tested from both sides rather than only the side
+        // that deletes.
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let crashed = dir.path().join("update-crashed");
+        std::fs::create_dir_all(&crashed).expect("mkdir");
+        std::fs::write(crashed.join("full.artifact"), b"a whole application").expect("write");
+
+        // A stranger's directory, to prove the sweep only claims its own.
+        let stranger = dir.path().join("not-ours");
+        std::fs::create_dir_all(&stranger).expect("mkdir");
+
+        // Let both age past a deliberately tiny threshold.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // Created after the sleep, so it is younger than the threshold: this
+        // stands for a transaction that is still running.
+        let live = dir.path().join("update-inflight");
+        std::fs::create_dir_all(&live).expect("mkdir");
+        std::fs::write(live.join("full.part"), b"still downloading").expect("write");
+
+        sweep_workspaces_older_than(dir.path(), std::time::Duration::from_millis(50));
+
+        assert!(
+            !crashed.exists(),
+            "an abandoned workspace past the threshold must be swept"
+        );
+        assert!(
+            live.exists(),
+            "a live transaction's workspace must survive another update's sweep"
+        );
+        assert!(
+            stranger.exists(),
+            "the sweep must only touch directories it creates"
+        );
+    }
+
+    #[test]
+    fn creating_a_workspace_does_not_disturb_a_concurrent_one() {
+        // The sweep runs on the path every update takes, so its default
+        // threshold has to be safe for the common case: two updates at once.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = transaction_workspace(dir.path()).expect("first");
+        std::fs::write(first.path().join("full.part"), b"in flight").expect("write");
+
+        let second = transaction_workspace(dir.path()).expect("second");
+
+        assert_ne!(first.path(), second.path(), "workspaces must be distinct");
+        assert!(
+            first.path().join("full.part").exists(),
+            "opening a workspace must not sweep a live sibling"
+        );
+        drop(second);
+        assert!(
+            first.path().exists(),
+            "dropping one workspace must not remove another"
+        );
     }
 
     fn refusal(source: UpdateSource) -> Refusal {
