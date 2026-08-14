@@ -24,7 +24,9 @@
 use std::path::Path;
 
 use tauri_updater_delta_core::cache::ArtifactCache;
-use tauri_updater_delta_core::client::{plan_update, Fetch, PlanContext, UpdateSource};
+use tauri_updater_delta_core::client::{
+    plan_update, transaction_workspace, Fetch, PlanContext, UpdateSource,
+};
 use tauri_updater_delta_core::release_identity::current_platform;
 use tauri_updater_delta_core::{
     verify_artifact, FileHash, Limits, Refusal, UpdateIdentity, VerifiedArtifact,
@@ -187,7 +189,21 @@ pub fn run_update(
         }
 
         UpdateSource::Full { url, signature, .. } => {
-            let full = ctx.work_dir.join("full.artifact");
+            // Blocker B4. This used to be `work_dir.join("full.artifact")` — a
+            // fixed name in a directory the only real caller sets to one shared
+            // path — while the two delta paths had had private workspaces since
+            // `docs/DECISIONS.md` #18. Two updates falling back at once raced on
+            // that single file, and falling back is the *common* case: it is what
+            // happens with a cold cache, a legacy signature, or any delta
+            // failure. The isolated paths were the rare ones.
+            //
+            // Same mechanism as those paths, from the same function, so the
+            // download target is unique per transaction and the whole directory
+            // is removed when `space` drops — on the error paths too.
+            let space = transaction_workspace(ctx.work_dir)
+                .map_err(|e| Error::Io(format!("creating the update workspace: {e}")))?;
+            let full = space.path().join("full.artifact");
+
             fetch
                 .fetch(&url, &full)
                 .map_err(|e| Error::Fetch(format!("downloading the full artifact: {e}")))?;
@@ -199,7 +215,8 @@ pub fn run_update(
 
             stage(ctx, identity, &verified, &signature);
             handoff.install(&verified)?;
-            let _ = std::fs::remove_file(&full);
+            // No explicit cleanup: dropping `space` removes the directory and
+            // the artifact inside it.
             Ok(Outcome::InstalledFromFullDownload)
         }
     }
