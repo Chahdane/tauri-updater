@@ -100,8 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downgrade would have crashed the updater — and `load` fell back to the newest
   generation it could *parse*, resurrecting state the compare-and-set had
   already replaced and permanently wedging the store.
-- `SPRINT.md` was being ignored by a `sprint.md` gitignore rule, because git
-  matches ignore patterns case-insensitively where `core.ignorecase` is set.
+- A file was being ignored by a lowercase gitignore rule that differed from it
+  only in case, because git matches ignore patterns case-insensitively where
+  `core.ignorecase` is set. The rule is gone; the trap is worth remembering.
 
 - Corrected the declared minimum supported Rust version from 1.77 to 1.85. The
   1.77 claim was wrong and CI's `msrv` job failed on it: `blake3` pulls in
