@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A first release published no updater document.** `delta-release` required a
+  predecessor, so a release with nothing to patch from could not be expressed,
+  and the workflow gated the whole generate step on there being a previous tag —
+  skipping the manifest and the signature with it. Tauri's `check()` had nothing
+  to read until a second release happened to create one. The predecessor is now
+  optional and the manifest is unconditional. Blocker **B5**; see
+  `docs/DECISIONS.md` #32.
+
+- **Generated patches were described but never applied.** The direct-patch
+  generator recorded a patch's digest and size and emitted metadata for it,
+  having never checked that applying it reconstructs anything. The tar layer had
+  round-tripped its output from the start. Every patch now proves itself before
+  publication, and a failure is a refusal to release. Blocker **B7**; see #33.
+
+### Added
+
+- **`release-check`**, a pre-upload gate. Reads the manifest back as a stranger,
+  hashes the artifact about to be uploaded, verifies the signature under the
+  configured public key, and refuses unless the document describes *this*
+  release: tag, app id, platform, URL scheme, digest, size, the authenticated
+  `delta-v1` identity, and the tar layer's representation. Replaces eleven lines
+  of inline `python3` that could not be run locally or tested.
+
+- **`delta-release --signature-out`**, writing the `.sig` beside the artifact as
+  the rest of the Tauri ecosystem expects. Copied from the manifest rather than
+  re-signed, since minisign is randomised.
+
+- **Release rehearsals.** `examples/desktop-app/e2e/rehearse-release.sh` runs the
+  workflow's command sequence over real `cargo tauri build` output for all three
+  predecessor states; `github-hosted-e2e.sh` does the same against GitHub-hosted
+  assets over HTTPS. `docs/RELEASING.md` documents the published asset set, the
+  toolchain pins, and the Apple boundary.
+
+### Changed
+
+- **The release workflow publishes macOS `.app.tar.gz`.** It previously built a
+  Linux AppImage that nothing had released or tested; macOS is the platform every
+  claim here has been demonstrated on, and the only one where the tar layer
+  applies. `tauri-cli` is pinned to an exact version rather than a caret range,
+  and the job now rebuilds a retained published artifact before building anything
+  — if the runner cannot reproduce a known artifact byte-for-byte, the release
+  stops rather than shipping a tar layer no client could use.
+
 ### Security
 
 - **Every stage of the tar pipeline now has a local ceiling.** Gate B bounded one
