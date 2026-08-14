@@ -131,6 +131,93 @@ reported as it.
 *Evidence:* DECISIONS #27; case 4 of the binding probe, which is *accepted* by
 verification and refused only by version policy.
 
+### F29 — A decision applied twice from a paragraph naming three cases leaves the third · **DEMONSTRATED**
+
+`docs/DECISIONS.md` #18 listed three shared filenames — `update.patch`,
+`update.artifact`, `full.artifact` — argued that a per-update workspace beats a
+lock, and implemented it for the first two. The third kept its fixed name in a
+shared directory for four gates, in a decision record written specifically about
+it.
+
+The one left out was the **common** path. Delta paths are conditional; falling
+back to a full download is what a cold cache, a legacy signature, a missing patch
+or any delta failure does, so the isolated paths were the rare ones.
+
+Restoring the shared path makes eight concurrent updates fail in two distinct
+ways: seven lose their in-flight `.part` file to another transaction's rename,
+and one reads a **different release's artifact** into its own signature check.
+Not an integrity failure — `VerifiedArtifact` owns what it authenticated (F5) —
+but #11 makes `Error::Signature` non-recoverable, so the race converts a routine
+update into a permanent-looking abort.
+
+The generalisation is about *form*, not about this bug: a rule stated in prose
+and applied by hand at N call sites is a rule that holds at N−1 of them. The fix
+extracted `transaction_workspace`, so the rule is now applied by being called.
+
+*Evidence:* `crates/plugin/tests/transaction_isolation.rs`; DECISIONS #18, #28.
+Mutation: restoring `work_dir.join("full.artifact")` fails all three tests.
+
+### F30 — A guard written for one quantity does not extend to a pipeline added later · **DEMONSTRATED**
+
+Gate B established `written ≤ declared ≤ local cap` and applied it to the
+compressed installer, which was the only quantity that existed. The tar layer
+then added four more stages, each sized by the same unauthenticated document.
+Three inherited a cap incidentally, from the cache's own limits and the HTTP
+ceiling. The reconstructed target tar inherited none — and its declared size is
+not passive: it becomes zstd's window and output bound.
+
+Removing the new check does not make a test fail at the check. It makes the
+client reconstruct the tar and *then* report that the manifest declared 500 GB,
+which is the resource attack having already completed.
+
+Corollary that generalises: the caps must be **independent** dials, not one
+number and a ratio. Every stage boundary here is a compression or patch
+application, and both have unbounded expansion ratios, so a cap derived from an
+earlier stage inherits exactly the unboundedness it was meant to remove.
+
+*Evidence:* `crates/delta-core/src/limits.rs`; the size cases in
+`crates/plugin/tests/tar_delta_flow.rs`; DECISIONS #19, #29.
+
+### F31 — "It is already there" is a claim about a name, not about contents · **DEMONSTRATED**
+
+`BlobStore::get` treats the cache as hostile on every read — kind, size, digest,
+signature. `BlobStore::put` did not: it published with `hard_link` and read
+`AlreadyExists` as "content addressing means those are the same bytes". True of a
+file the store wrote; false of a *path*, which anything running as this user can
+create.
+
+A directory planted at a content address made staging report success, recording a
+cache entry that named it.
+
+The interesting part is the severity, because it is easy to overstate in both
+directions. It is **not** unauthorised installation: reuse rejects the entry and
+the update falls back, exactly as designed. It **is** availability — the bogus
+entry is promoted over a good ACTIVE on the next launch, so the cache is
+permanently unreadable and every future update pays full price, for the cost of
+creating one directory.
+
+*Evidence:* `a_blob_path_occupied_by_a_directory_is_a_clean_write_failure`;
+DECISIONS #30.
+
+### F32 — Two temporary-state collectors need different thresholds for the same reason · **ENGINEERING DECISION**
+
+Orphaned cache blobs are collected after 60 seconds. Orphaned transaction
+workspaces were not collected at all, so a crash mid-update stranded a full copy
+of the artifact forever — inert, since the names are random and nothing
+enumerates them, but unbounded.
+
+Adding the sweep with the cache's threshold would have been the obvious move and
+the wrong one. A blob is immutable and re-derivable, so collecting a live one
+costs a re-download; a workspace holds a running transaction's state, so
+collecting a live one breaks the update. The asymmetry sets the number: 24 hours,
+above the slowest plausible download rather than above the typical one.
+
+Which makes the load-bearing test the one nobody writes first — not that wreckage
+is removed, but that a **live sibling survives** a concurrent update's sweep.
+
+*Evidence:* `abandoned_workspaces_are_swept_and_live_ones_are_not`,
+`creating_a_workspace_does_not_disturb_a_concurrent_one`; DECISIONS #31.
+
 ### F5 — A capability type can make an unverified install unrepresentable · **DEMONSTRATED**
 
 `VerifiedArtifact` has a private field and no public constructor, so
