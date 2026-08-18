@@ -31,10 +31,14 @@ clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 log = "0.4"
 
-# Internal
-tauri-updater-delta-core = { path = "crates/delta-core" }
+# Published to crates.io: `version` is required for a path dependency to
+# survive publication, and is what a consumer actually resolves.
+tauri-updater-delta-core = { path = "crates/delta-core", version = "0.1.0" }
+tauri-updater-delta-release = { path = "crates/delta-release", version = "0.1.0" }
+# Never published. Left without a version on purpose: cargo strips a
+# version-less dev-dependency when packaging, which is exactly right for a
+# fixtures crate that will not exist on crates.io.
 tauri-updater-delta-fixtures = { path = "crates/fixtures" }
-tauri-updater-delta-release = { path = "crates/delta-release" }
 
 [profile.release]
 lto = true

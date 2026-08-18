@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["tauri", "updater", "delta", "release", "codesign"]
 categories = ["development-tools::build-utils", "command-line-utilities"]
+readme = "../../README.md"
 
 [[bin]]
 name = "delta-release"

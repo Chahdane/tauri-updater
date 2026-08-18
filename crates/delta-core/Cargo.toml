@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["tauri", "updater", "delta", "binary-diff", "zstd"]
 categories = ["development-tools", "compression"]
+readme = "../../README.md"
 
 [dependencies]
 base64.workspace = true

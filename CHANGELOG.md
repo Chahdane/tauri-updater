@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Prepared as the **macOS v0.1 release candidate**. Not tagged or published: the
-version is left at `0.1.0` for an independent audit to run against.
+## [0.1.0] - 2026-08-18
+
+First public release. macOS only.
 
 ### v0.1 scope
 

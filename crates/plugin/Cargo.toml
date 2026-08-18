@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["tauri", "updater", "delta", "auto-update", "macos"]
 categories = ["development-tools", "gui"]
+readme = "../../README.md"
 
 [dependencies]
 tauri = "2"
