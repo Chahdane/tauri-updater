@@ -21,11 +21,11 @@ homepage = "https://github.com/Chahdane/tauri-updater"
 blake3 = "1"
 thiserror = "2"
 zstd = "0.13"
-base64 = "0.22"
+base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 semver = "1"
 serde_json = "1"
-minisign = "0.7"
+minisign = "0.9"
 minisign-verify = "0.2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
