@@ -51,7 +51,7 @@ pub struct ReleaseUnderTest<'a> {
     /// `1.2.3`, `v1.2.3` and `app-v1.2.3` all name version `1.2.3`; the two
     /// prefixed forms are the crate and application release tracks, which have
     /// separate tag namespaces so that one tag cannot mean both. See
-    /// [`version_contract`](crate::version_contract).
+    /// [`crate::version_contract`].
     pub tag: &'a str,
     /// Application bundle identifier, from `tauri.conf.json`.
     pub app_id: &'a str,
@@ -65,7 +65,7 @@ pub struct ReleaseUnderTest<'a> {
     ///
     /// For loopback rehearsals only, and enforced as such: a plain-HTTP URL to
     /// anywhere else is refused even with this set, under the same
-    /// [`url_policy`](crate::url_policy) the generator applies. A public release
+    /// [`url_policy`] the generator applies. A public release
     /// with a plain-HTTP URL hands every client's update to anyone on the path,
     /// and the client refuses it anyway (`docs/DECISIONS.md` #19) — so
     /// publishing one produces a release that is both unsafe and broken.
