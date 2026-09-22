@@ -1182,8 +1182,18 @@ mod tests {
         let stranger = dir.path().join("not-ours");
         std::fs::create_dir_all(&stranger).expect("mkdir");
 
-        // Let both age past a deliberately tiny threshold.
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        // Let both age past the threshold.
+        //
+        // The margin is wide on purpose, and this is where it was learned: at
+        // 60ms against a 50ms threshold the test failed on a loaded Windows
+        // runner. Nothing was wrong with the sweep. The `live` directory is
+        // created *after* this sleep and has to still be younger than the
+        // threshold when the sweep reads the clock, so the real margin is not
+        // this sleep at all -- it is however long the few statements below
+        // take, and on a contended runner that can exceed ten milliseconds.
+        // Six hundred is not tuning; it is enough room that scheduling noise
+        // cannot reach it.
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
 
         // Created after the sleep, so it is younger than the threshold: this
         // stands for a transaction that is still running.
@@ -1191,7 +1201,7 @@ mod tests {
         std::fs::create_dir_all(&live).expect("mkdir");
         std::fs::write(live.join("full.part"), b"still downloading").expect("write");
 
-        sweep_workspaces_older_than(dir.path(), std::time::Duration::from_millis(50));
+        sweep_workspaces_older_than(dir.path(), std::time::Duration::from_millis(600));
 
         assert!(
             !crashed.exists(),
