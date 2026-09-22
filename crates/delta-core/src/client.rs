@@ -1286,13 +1286,25 @@ mod tests {
             limits(),
         );
 
-        let UpdateSource::Full { url, reason, .. } = source else {
+        let UpdateSource::Full {
+            url,
+            reason,
+            attempted,
+            ..
+        } = source
+        else {
             panic!("expected a full download, got {source:?}");
         };
         assert_eq!(url, FULL_URL);
+        // Ordinary, and now *nameable*: the direct path is reached and declines
+        // because there is nowhere for a base to come from. "Reached and
+        // declined" and "never reached" are the two states `attempted` exists to
+        // tell apart, and only the first says the wiring is present.
+        assert!(attempted.direct_delta);
+        let reason = reason.expect("an attempted-and-declined path must say why");
         assert!(
-            reason.is_none(),
-            "a missing base is ordinary, not a failure"
+            reason.to_string().contains("no managed cache"),
+            "got: {reason}"
         );
     }
 

@@ -113,6 +113,43 @@ fn opaque_namespace(fingerprint: &str) -> Namespace {
     }
 }
 
+/// Rewrite the namespace recorded *in the stored state*, as a build with a
+/// different capability would have written it.
+///
+/// The direction matters. `ArtifactCache::open` is given the namespace **this**
+/// build uses, and refuses one it cannot interpret, because storing artifacts
+/// under a representation nothing can reason about is how a Windows installer
+/// ends up recorded as a macOS bundle. So a "cache written by another build"
+/// cannot be modelled by opening with a foreign namespace — that is a bug in the
+/// opener, not a foreign cache. It is modelled by making the bytes on disk say
+/// something this build does not, which is what actually happens.
+fn rewrite_stored_namespace(root: &Path, change: impl Fn(&mut Namespace)) {
+    let mut newest: Option<(u64, PathBuf)> = None;
+    for entry in std::fs::read_dir(root).expect("read cache root").flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(rest) = name.strip_prefix("state.") {
+            if let Some(number) = rest.strip_suffix(".json") {
+                if let Ok(generation) = number.parse::<u64>() {
+                    if newest.as_ref().is_none_or(|(g, _)| generation > *g) {
+                        newest = Some((generation, entry.path()));
+                    }
+                }
+            }
+        }
+    }
+    let (_, path) = newest.expect("a state file to rewrite");
+    let mut state: CacheState =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read state"))
+            .expect("parse state");
+    change(&mut state.namespace);
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&state).expect("serialise"),
+    )
+    .expect("write state");
+}
+
 fn cache(root: &Path, key: &Key) -> ArtifactCache {
     ArtifactCache::open(root, namespace(&key.fingerprint), CacheLimits::default()).expect("open")
 }
@@ -370,13 +407,18 @@ fn a_cache_written_for_another_recompression_recipe_is_not_reused() {
         cache.reconcile("1.0.1").expect("promote");
     }
 
-    let mut future = namespace(&k.fingerprint);
-    future.recompression = "tauri-app-tar-gz-v2".to_owned();
-    let cache = ArtifactCache::open(dir.path(), future, CacheLimits::default()).expect("open");
+    // The state on disk now claims a recipe this build does not implement --
+    // which is what a cache written by a later build would look like.
+    rewrite_stored_namespace(dir.path(), |n| {
+        n.recompression = "tauri-app-tar-gz-v2".to_owned()
+    });
+
+    let cache = cache(dir.path(), &k);
     assert_eq!(
         cache.reconcile("1.0.1").expect("reconcile"),
         Reconciliation::NamespaceReset
     );
+    assert!(cache.active(&k.public).expect("active").is_none());
 }
 
 #[test]
@@ -638,10 +680,11 @@ fn changing_any_single_namespace_field_empties_the_cache() {
             );
         }
 
-        let mut foreign = namespace(&k.fingerprint);
-        change(&mut foreign);
-        let cache = ArtifactCache::open(dir.path(), foreign, CacheLimits::default())
-            .unwrap_or_else(|e| panic!("{name}: reopening must not fail: {e}"));
+        // Applied to the bytes on disk rather than to the namespace this build
+        // opens with: `open` is given what *this* build uses and refuses one it
+        // cannot interpret, so a foreign namespace belongs in the file.
+        rewrite_stored_namespace(dir.path(), change);
+        let cache = cache(dir.path(), &k);
 
         assert_eq!(
             cache.reconcile("1.0.1").expect("reconcile"),
