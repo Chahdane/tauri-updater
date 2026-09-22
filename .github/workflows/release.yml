@@ -52,14 +52,28 @@ name: Release the example application
 #
 # ## Scope, stated honestly
 #
-# **macOS `aarch64` only.** That is the platform every claim in this repository
-# has been demonstrated on, and the only one where the tar layer — the whole
-# point — applies, because it needs a gzipped tarball. Other platforms are added
-# by running `delta-release` per platform against artifacts built elsewhere;
-# nothing here is macOS-specific except the bundle format.
+# Two platforms, two jobs, one manifest.
 #
-# The app is **not** Developer ID signed or notarized. It is signed with a Tauri
-# updater key, which is a different thing entirely — see docs/RELEASING.md.
+# | | Artifact | Delta layer |
+# | --- | --- | --- |
+# | macOS `aarch64` | `.app.tar.gz` | direct patch + tar layer |
+# | Windows `x86_64` | NSIS `-setup.exe` | direct patch only |
+#
+# The tar layer needs a gzipped tarball whose exact compressed form this build
+# can rebuild. An NSIS installer is neither, so a Windows release publishes an
+# `opaque-v1` direct patch and nothing else. That is the honest shape of the
+# thing, not a missing feature: `--require-tar-layer` is passed on macOS and
+# must not be passed on Windows.
+#
+# The Windows job runs **after** the macOS one and extends the manifest it
+# produced, because `delta-release` folds one platform into an existing
+# document. If Windows fails, the release keeps a macOS-only manifest, which is
+# a valid release rather than a broken one.
+#
+# The app is **not** Developer ID signed, notarized, or Authenticode signed. It
+# is signed with a Tauri updater key, which is a different thing entirely — see
+# docs/RELEASING.md. Nothing here claims an OS-level code-signing property on
+# either platform.
 
 on:
   push:
@@ -71,7 +85,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PLATFORM: darwin-aarch64
+  MACOS_PLATFORM: darwin-aarch64
+  WINDOWS_PLATFORM: windows-x86_64
   # Pinned, not a caret range. The tar layer requires rebuilding the published
   # artifact byte-for-byte, and the recipe that does it was read out of
   # tauri-bundler 2.8.1 as shipped by this CLI version (docs/DECISIONS.md #26).
@@ -125,9 +140,14 @@ jobs:
   # The real thing.
   # ---------------------------------------------------------------------------
   release:
-    name: build + sign + publish
+    name: macOS - build + sign + publish
     if: startsWith(github.ref, 'refs/tags/app-v')
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      has_previous: ${{ steps.versions.outputs.has_previous }}
+      previous_tag: ${{ steps.versions.outputs.previous_tag }}
+      previous_version: ${{ steps.versions.outputs.previous_version }}
     steps:
       - name: Require the signing key before doing any work
         env:
@@ -301,7 +321,7 @@ jobs:
           # all name the same version. Audit finding A-2.
 
           args=(
-            --platform "$PLATFORM"
+            --platform "$MACOS_PLATFORM"
             --app-config examples/desktop-app/tauri.conf.json
             --target-version "$version"
             --new-installer "$new_installer"
@@ -350,7 +370,7 @@ jobs:
             --manifest dist/manifest.json \
             --tag "${GITHUB_REF_NAME}" \
             --app-config examples/desktop-app/tauri.conf.json \
-            --platform "$PLATFORM" \
+            --platform "$MACOS_PLATFORM" \
             --artifact "$(ls dist/*.app.tar.gz | head -1)" \
             | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -382,4 +402,187 @@ jobs:
           fi
 
           echo "Uploading: ${assets[*]}"
+          gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+
+      # The Windows job extends this document rather than writing a second one:
+      # one release, one updater manifest, one `version` field. Two documents
+      # would be two answers to "what is the latest release".
+      - name: Hand the manifest to the Windows job
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-macos
+          path: dist/manifest.json
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Windows, folded into the same manifest.
+  #
+  # No tar layer: an NSIS installer is not a gzipped tarball, so the release
+  # publishes an `opaque-v1` direct patch and the client's cache holds the exact
+  # official installer as its base (docs/DECISIONS.md #36).
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows - build + sign + publish
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the release tooling
+        shell: bash
+        run: cargo build --release --locked -p tauri-updater-delta-release
+
+      - name: Check the version contract before building anything
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/release-check.exe \
+            --tag "${GITHUB_REF_NAME}" \
+            --app-config examples/desktop-app/tauri.conf.json \
+            --only-version-contract
+
+      - name: Install the Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --version "=${TAURI_CLI_VERSION}" --locked
+
+      - name: Build this version
+        # The signing key is deliberately absent, exactly as on macOS: the one
+        # signature this release publishes is the one `delta-release` makes,
+        # with an authenticated release identity in its trusted comment.
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd examples/desktop-app && cargo tauri build)
+          mkdir -p dist
+          shopt -s nullglob
+          bundles=(target/release/bundle/nsis/*-setup.exe)
+          if [ "${#bundles[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one -setup.exe, found ${#bundles[@]}."
+            echo "::error::The bundle layout changed and every later step would be guessing."
+            exit 1
+          fi
+          cp "${bundles[0]}" "dist/$(basename "${bundles[0]}")"
+          if [ -e "${bundles[0]}.sig" ]; then
+            echo "::error::the bundler produced a signature of its own."
+            echo "::error::That signature carries no authenticated release identity, and"
+            echo "::error::publishing it would make every client refuse the delta paths."
+            echo "::error::The signing key must not be in scope during the build step."
+            exit 1
+          fi
+          echo "Built $(basename "${bundles[0]}")"
+
+      - name: Take the manifest the macOS job published
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-macos
+          path: dist
+
+      - name: Download the previous release's Windows installer
+        if: needs.release.outputs.has_previous == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p previous
+          # State B for this platform specifically: the previous release exists
+          # but has no Windows asset, which is exactly what the release before
+          # this workflow gained a Windows job looks like.
+          if gh release download "${{ needs.release.outputs.previous_tag }}" \
+               --pattern '*-setup.exe' --dir previous 2>/dev/null; then
+            echo "PREVIOUS_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::${{ needs.release.outputs.previous_tag }} has no"
+            echo "::warning::-setup.exe asset. Publishing Windows without a delta layer."
+            echo "PREVIOUS_OK=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Add this platform to the release
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.release.outputs.version }}"
+          new_installer="$(ls dist/*-setup.exe | head -1)"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+
+          args=(
+            --platform "$WINDOWS_PLATFORM"
+            --app-config examples/desktop-app/tauri.conf.json
+            --target-version "$version"
+            --new-installer "$new_installer"
+            --installer-url "$base/$(basename "$new_installer")"
+            --manifest dist/manifest.json
+            --signature-out "$new_installer.sig"
+          )
+
+          if [ "${{ needs.release.outputs.has_previous }}" = "true" ] \
+             && [ "${PREVIOUS_OK}" = "true" ]; then
+            previous_version="${{ needs.release.outputs.previous_version }}"
+            previous_installer="$(ls previous/*-setup.exe | head -1)"
+            patch="dist/${previous_version}-to-${version}-windows.zst"
+            echo "Patching from ${previous_version}"
+            args+=(
+              --from-version "$previous_version"
+              --previous-installer "$previous_installer"
+              --patch-url "$base/$(basename "$patch")"
+              --patch-out "$patch"
+            )
+            # Deliberately no --require-tar-layer and no --tar-patch-*: an NSIS
+            # installer has no inner tar this build can rebuild byte-for-byte,
+            # so asking for one would fail the release for being correct.
+          else
+            echo "No usable Windows predecessor. Publishing full-download only."
+          fi
+
+          ./target/release/delta-release.exe "${args[@]}"
+
+      - name: Verify the manifest describes this release on both platforms
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Windows first, then macOS against the artifact the other job
+          # published: the merge is the step that can go wrong, and a gate that
+          # only checked the platform it just added would not notice the
+          # document losing the other one.
+          ./target/release/release-check.exe \
+            --manifest dist/manifest.json \
+            --tag "${GITHUB_REF_NAME}" \
+            --app-config examples/desktop-app/tauri.conf.json \
+            --platform "$WINDOWS_PLATFORM" \
+            --artifact "$(ls dist/*-setup.exe | head -1)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
+          mkdir -p macos-check
+          gh release download "${GITHUB_REF_NAME}" --pattern '*.app.tar.gz' --dir macos-check
+          ./target/release/release-check.exe \
+            --manifest dist/manifest.json \
+            --tag "${GITHUB_REF_NAME}" \
+            --app-config examples/desktop-app/tauri.conf.json \
+            --platform "$MACOS_PLATFORM" \
+            --artifact "$(ls macos-check/*.app.tar.gz | head -1)" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Upload to the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(
+            dist/*-setup.exe
+            dist/*-setup.exe.sig
+            dist/manifest.json
+            dist/*-windows.zst
+          )
+          echo "Uploading: ${assets[*]}"
+          # --clobber replaces the macOS-only manifest with the merged one.
           gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
