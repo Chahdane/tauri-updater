@@ -60,10 +60,32 @@ surface without improving the security boundary.
 
 P4 does not perform any of these steps.
 
+## Windows client — engine complete, real-install evidence pending
+
+The managed delta path exists on Windows. It did not before: the direct patch
+path read a base the shipping API never supplied, the cache gunzipped every
+artifact it was asked to store, and the cache namespace named macOS on every
+operating system (`docs/DECISIONS.md` #36).
+
+- Representation-aware cache: `opaque-v1` artifacts are stored and reused
+  byte-for-byte; `app-tar-gz-v1` is unchanged.
+- The direct patch path takes its base from the managed cache.
+- `Patch` declares the base it was generated against, so a mismatch is rejected
+  before a patch is downloaded.
+- The whole Full → relaunch → DirectDelta ladder, the fallback matrix and the
+  fail-closed cases run on all three CI platforms against opaque artifacts.
+- The example application builds an NSIS installer on Windows, and a harness
+  drives a real install/update/update ladder with the selected path asserted.
+
+**Not yet claimed as supported.** Windows support is claimed only when the
+acceptance criteria in the 2026-09-22 audit are all met on a Windows runner,
+including the patch ratio recorded honestly. Until the NSIS end-to-end has run
+green, this section describes work, not evidence.
+
 ## After macOS v0.1
 
 - Linux client integration and real AppImage install evidence.
-- Windows artifact handling and real NSIS/MSI install evidence.
+- Windows MSI as a separately demonstrated target; it is not inferred from NSIS.
 - Resume/retry policy and disk-space preflight if evidence justifies them.
 - Additional patch backends only when measured artifacts justify their cost.
 - A JS/TS wrapper only if real application integrations show Rust commands are

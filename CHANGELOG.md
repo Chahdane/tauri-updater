@@ -39,6 +39,36 @@ because none of them could be released around.
   parser, which also fixes the documented `http://[::1]:8080/` spelling that
   the hand-rolled host split had always refused.
 
+### Windows client (2026-09-22)
+
+Audit finding A-1: the release side could already generate an `opaque-v1`
+patch between two Windows installers, and the shipping client could not use
+one. Four things had to change together, and the third is the one that hid the
+other three — cache persistence is deliberately non-fatal, so an installer that
+could not be staged still installed and every later update stayed cache-cold
+with nothing going red.
+
+- **The cache knows what it is holding.** `app-tar-gz-v1` is unchanged: the
+  artifact is expanded once at staging so the tar layer can reject a wrong base
+  cheaply. `opaque-v1` — a Windows NSIS installer or MSI, a Linux AppImage — is
+  stored and reused exactly as published and never opened. The representation is
+  derived from the platform instead of being hard-coded to macOS on every
+  operating system. See `docs/DECISIONS.md` #36.
+- **The direct patch path takes its base from the managed cache** when the host
+  supplies none, which in a normal build is always. Only for `opaque-v1`: for a
+  `.app.tar.gz` the tar path has already had its turn, and a direct patch
+  between two gzip streams measured 95–96% of a full download, so taking it
+  would download a patch the size of the artifact and report a successful
+  DirectDelta where a TarDelta had failed.
+- **`Patch` carries the optional base digest and size** that `TarPatch` has
+  always had, so a cached base can be checked before a patch is downloaded. A
+  half-declared base is refused at parse time.
+- **The on-disk cache format is version 2.** A version-1 cache is stepped over
+  and emptied, costing one full download on one launch.
+- `crates/plugin/tests/direct_delta_flow.rs` runs the whole Full → relaunch →
+  DirectDelta ladder on every CI platform, plus the fallback and fail-closed
+  matrix, with every fallback case asserting the direct path was reached first.
+
 ### v0.1 scope
 
 **Supported.** macOS `.app.tar.gz` artifacts, Rust 1.88+, `tauri` 2,
