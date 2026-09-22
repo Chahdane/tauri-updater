@@ -126,6 +126,8 @@ fn every_documented_flag_is_accepted() {
     for flag in [
         "--platform",
         "--target-version",
+        "--app-id",
+        "--app-config",
         "--from-version",
         "--previous-installer",
         "--new-installer",
@@ -187,4 +189,150 @@ fn an_unknown_flag_is_rejected_rather_than_ignored() {
         stderr.contains("unexpected argument") || stderr.contains("unrecognized"),
         "expected an unknown-flag error: {stderr}"
     );
+}
+
+// ---- the release-version contract, through the real binaries --------------
+//
+// Audit finding A-2. The workflow derived `--target-version` from the git tag
+// and never compared it against the version compiled into the application, so
+// a crate-release tag would have signed the demonstration app under a version
+// the app contradicts the moment it launches. The library tests in
+// `version_contract` cover the rule; these cover the two command lines an
+// operator actually types, because that is the boundary the release runs
+// through.
+
+/// The `release-check` binary cargo just built.
+fn release_check() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_release-check"))
+}
+
+/// Write a minimal application whose two files agree on `version`.
+fn write_app(dir: &std::path::Path, version: &str) -> std::path::PathBuf {
+    let conf = dir.join("tauri.conf.json");
+    std::fs::write(
+        &conf,
+        format!(
+            r#"{{"productName":"Demo","version":"{version}","identifier":"dev.example.demo",
+                 "plugins":{{"updater":{{"pubkey":"a-key"}}}}}}"#
+        ),
+    )
+    .expect("write tauri.conf.json");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]
+name = \"demo\"
+version = \"{version}\"
+"
+        ),
+    )
+    .expect("write Cargo.toml");
+    conf
+}
+
+#[test]
+fn the_generator_refuses_a_tag_that_does_not_name_the_built_version() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let conf = write_app(dir.path(), "1.0.0");
+
+    // No signing key is set, and that must not be what fails: the version
+    // contract is checked first precisely so the useful error is the one an
+    // operator sees.
+    let out = delta_release()
+        .args([
+            "--platform",
+            "darwin-aarch64",
+            "--target-version",
+            "0.1.0",
+            "--app-config",
+        ])
+        .arg(&conf)
+        .args(["--new-installer", "does-not-matter.bin"])
+        .args(["--installer-url", "https://example.com/app.bin"])
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .output()
+        .expect("run the generator");
+
+    assert!(
+        !out.status.success(),
+        "a mismatched version must be refused"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("names version 0.1.0") && stderr.contains("is version 1.0.0"),
+        "expected the version-contract refusal, got: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn the_generator_accepts_the_matching_tag_and_moves_on() {
+    // The same invocation with the versions in step must get past the contract.
+    // It still fails -- there is no key and no installer -- and what matters is
+    // that it fails for one of those reasons rather than the version.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let conf = write_app(dir.path(), "1.0.0");
+
+    let out = delta_release()
+        .args(["--platform", "darwin-aarch64", "--target-version", "1.0.0"])
+        .arg("--app-config")
+        .arg(&conf)
+        .args(["--new-installer", "does-not-matter.bin"])
+        .args(["--installer-url", "https://example.com/app.bin"])
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .output()
+        .expect("run the generator");
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("names version"),
+        "the version contract should have passed, got: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn the_checker_refuses_a_tag_that_does_not_name_the_built_version() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let conf = write_app(dir.path(), "1.0.0");
+    let manifest = dir.path().join("manifest.json");
+    std::fs::write(&manifest, r#"{"version":"0.1.0","platforms":{}}"#).expect("write manifest");
+
+    let out = release_check()
+        .arg("--manifest")
+        .arg(&manifest)
+        .args(["--tag", "v0.1.0"])
+        .args(["--platform", "darwin-aarch64"])
+        .arg("--artifact")
+        .arg(dir.path().join("missing.bin"))
+        .arg("--app-config")
+        .arg(&conf)
+        .output()
+        .expect("run the checker");
+
+    assert!(
+        !out.status.success(),
+        "a mismatched version must be refused"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("names version 0.1.0"),
+        "expected the version-contract refusal, got: {stderr}"
+    );
+}
+
+#[test]
+fn the_checker_still_requires_an_app_id_and_key_without_a_config() {
+    let out = release_check()
+        .args(["--manifest", "manifest.json"])
+        .args(["--tag", "v1.0.0"])
+        .args(["--platform", "darwin-aarch64"])
+        .args(["--artifact", "app.bin"])
+        .output()
+        .expect("run the checker");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("required"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
 }
