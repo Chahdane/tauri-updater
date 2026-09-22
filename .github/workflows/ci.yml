@@ -286,8 +286,8 @@ jobs:
           name: windows-nsis-e2e-logs
           if-no-files-found: ignore
           path: |
-            /c/delta-nsis-e2e/run/app.log
-            /c/delta-nsis-e2e/run/server.log
-            /c/delta-nsis-e2e/run/requests.log
-            /c/delta-nsis-e2e/versions.json
-            /c/delta-nsis-e2e/e2e-report.json
+            C:/delta-nsis-e2e/run/app.log
+            C:/delta-nsis-e2e/run/server.log
+            C:/delta-nsis-e2e/run/requests.log
+            C:/delta-nsis-e2e/versions.json
+            C:/delta-nsis-e2e/e2e-report.json
