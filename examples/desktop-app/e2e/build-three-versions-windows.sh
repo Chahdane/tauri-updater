@@ -48,13 +48,11 @@ case "$ARCH" in
   *) echo "FATAL: unsupported architecture $ARCH" >&2; exit 1 ;;
 esac
 
-# Bound into the signature's authenticated release identity, and compared at
-# runtime against the app's own tauri.conf.json identifier.
-# The application identifier and the version both come from
-# tauri.conf.json via --app-config, which also refuses to build a release
-# whose target version is not the one compiled into the app. Reading the
-# identifier here and never reading the version is how a tag could
-# publish a differently versioned application -- audit finding A-2.
+# The application identifier and the version both come from tauri.conf.json, via
+# `delta-release --app-config`. That flag also refuses to build a release whose
+# target version is not the one compiled into the app: reading the identifier
+# out of that file and never reading the version is how a tag could publish a
+# differently versioned application -- audit finding A-2.
 
 _LOCK="$ROOT/Cargo.lock"
 _LOCK_BACKUP="$(mktemp)"
@@ -95,20 +93,42 @@ cargo = pathlib.Path(app_dir, "Cargo.toml")
 cargo.write_text(re.sub(r'^version = "[^"]+"$', f'version = "{version}"',
                         cargo.read_text(), count=1, flags=re.M))
 PY
-  ( cd "$APP_DIR" && cargo tauri build --features e2e-control )
   local bundle="$ROOT/target/release/bundle/nsis"
+  # Emptied first, not filtered afterwards. An NSIS installer's filename carries
+  # its version -- `DeltaUpdaterExample_1.0.1_x64-setup.exe` -- so unlike the
+  # macOS `.app.tar.gz`, successive builds accumulate rather than overwrite, and
+  # the second build found two. Globbing for this version's name would work and
+  # would still leave the directory describing three releases at once; an empty
+  # directory before the build means what comes out is what went in.
+  rm -rf "$bundle"
+
+  ( cd "$APP_DIR" && cargo tauri build --features e2e-control )
+
   shopt -s nullglob
   local setups=("$bundle"/*-setup.exe)
   if [ "${#setups[@]}" -ne 1 ]; then
     echo "FATAL: expected exactly one -setup.exe, found ${#setups[@]} in $bundle" >&2
+    printf "       %s\n" "${setups[@]}" >&2
     exit 1
   fi
+  echo "    bundled $(basename "${setups[0]}")"
   cp "${setups[0]}" "$OUT/v$version/$PRODUCT-setup.exe"
   # The executable the installer will place, kept so the harness can assert on
   # the exact bytes that end up installed rather than on a version string the
   # app reports about itself.
-  cp "$ROOT/target/release/$PRODUCT.exe" "$OUT/v$version/$PRODUCT.exe" 2>/dev/null \
-    || cp "$ROOT/target/release/delta-updater-example.exe" "$OUT/v$version/$PRODUCT.exe"
+  #
+  # `cargo tauri build` reports where it put it, and on this toolchain that is
+  # the cargo binary name rather than the product name -- which is a
+  # configuration detail, so both are tried rather than assumed.
+  if [ -f "$ROOT/target/release/$PRODUCT.exe" ]; then
+    cp "$ROOT/target/release/$PRODUCT.exe" "$OUT/v$version/$PRODUCT.exe"
+  elif [ -f "$ROOT/target/release/delta-updater-example.exe" ]; then
+    cp "$ROOT/target/release/delta-updater-example.exe" "$OUT/v$version/$PRODUCT.exe"
+  else
+    echo "FATAL: no built executable in $ROOT/target/release" >&2
+    ls -la "$ROOT/target/release"/*.exe >&2 2>/dev/null || true
+    exit 1
+  fi
 }
 
 build_version 1.0.0
