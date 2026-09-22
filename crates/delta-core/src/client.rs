@@ -29,7 +29,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::cache::ArtifactCache;
+use crate::cache::{ArtifactCache, CachedRepresentation};
 use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 use crate::limits::Limits;
 use crate::manifest::{DeltaPlatform, Manifest, TarLayer, TarPatch, TarSupport};
@@ -94,7 +94,12 @@ pub struct PlanContext<'a> {
 pub struct Attempted {
     /// The tar-layer path ran and did not produce an artifact.
     pub tar_delta: bool,
-    /// The direct patch path ran and did not produce an artifact.
+    /// The direct patch path was reached and did not produce an artifact.
+    ///
+    /// Set as soon as a patch from the running version exists, before a base
+    /// has been found. "Reached and declined because there is nothing cached to
+    /// patch from" and "never reached at all" are the two states this flag
+    /// exists to tell apart, and only the first says the wiring is present.
     pub direct_delta: bool,
 }
 
@@ -501,12 +506,9 @@ pub fn plan_update(
         }
     }
 
-    // ---- the direct patch, unchanged in meaning ---------------------------
+    // ---- the direct patch -------------------------------------------------
 
     let Some(patch) = entry.patches.get(identity.current_version()) else {
-        return fallback(last_reason, attempted);
-    };
-    let Some(base) = ctx.base else {
         return fallback(last_reason, attempted);
     };
 
@@ -516,7 +518,25 @@ pub fn plan_update(
         return fallback(reason.or(last_reason), attempted);
     };
 
-    match attempt_delta(entry, patch, base, space.path(), fetch) {
+    // A host-supplied base if there is one, otherwise the managed cache's
+    // ACTIVE artifact. The second is what makes a Windows delta reachable at
+    // all: in a normal build `ctx.base` is always `None`, because no ordinary
+    // application possesses the exact official installer it is running -- only
+    // the cache does.
+    let base = match ctx.base {
+        Some(base) => base.to_path_buf(),
+        None => match cached_direct_base(ctx, patch, space.path(), &binding) {
+            Ok(base) => base,
+            // The tar path's reason first when there is one. It ran earlier and
+            // it is the cheaper path, so why *it* declined is what a reader
+            // wants -- "the recipe is one this build cannot perform" explains
+            // the fallback; "the cached representation has a tar layer of its
+            // own" only explains why the consolation prize was declined too.
+            Err(e) => return fallback(last_reason.or(Some(e)), attempted),
+        },
+    };
+
+    match attempt_delta(entry, patch, &base, space.path(), fetch) {
         Ok(artifact) => UpdateSource::Delta {
             artifact,
             _workspace: space,
@@ -529,6 +549,93 @@ pub fn plan_update(
         },
         Err(reason) => fallback(Some(reason), attempted),
     }
+}
+
+/// Materialise the managed cache's ACTIVE artifact as a direct-patch base.
+///
+/// # Why the cache, and why only for an opaque representation
+///
+/// A direct patch needs the exact installer the user is running. `ctx.base` is
+/// the host handing one over, and in a normal build it is always `None`: an
+/// application does not keep the `.exe` or `.tar.gz` it was installed from, and
+/// the one place that does is this cache. Leaving the direct path dependent on
+/// `ctx.base` alone is why a Windows client could never take a delta no matter
+/// what the release published.
+///
+/// The restriction to [`CachedRepresentation::Opaque`] is deliberate, and it is
+/// about economics rather than safety. For a `.app.tar.gz` the tar path above
+/// has already had its turn, and a direct patch between two gzip streams was
+/// measured at 95-96% of a full download (`docs/DECISIONS.md` #15). Taking it
+/// when the tar path declined would download a patch the size of the artifact,
+/// apply it, and call the result an optimisation. Worse, it would relabel a
+/// failed TarDelta as a successful DirectDelta, which is exactly the "a delta
+/// updater that always falls back looks like one that works" failure #22 is
+/// about. An opaque artifact has no cheaper path to decline in favour of.
+///
+/// Every refusal here is an ordinary fallback. Nothing in this function can
+/// authorise an install: the base is unverified input to a reconstruction whose
+/// output is checked against the target digest regardless.
+fn cached_direct_base(
+    ctx: &PlanContext<'_>,
+    patch: &crate::manifest::Patch,
+    work_dir: &Path,
+    binding: &crate::release_identity::ReleaseBinding,
+) -> Result<PathBuf, Error> {
+    let Some(cache) = ctx.cache else {
+        return Err(Error::Manifest(
+            "no managed cache, so the direct patch has no base".to_owned(),
+        ));
+    };
+
+    if cache.representation() != CachedRepresentation::Opaque {
+        return Err(Error::Manifest(
+            "the cached representation has a tar layer of its own; a direct patch \
+             against the compressed artifact is not the cheaper path"
+                .to_owned(),
+        ));
+    }
+
+    // The manifest's representation claim is unauthenticated; the signature's
+    // is not. The cache is keyed on the representation this build uses for this
+    // platform, so requiring the signed one to agree is what stops a release
+    // describing an artifact as something the cache is not holding.
+    if let Some(signed) = binding.identity() {
+        signed
+            .check_representation(crate::release_identity::REPRESENTATION_OPAQUE_V1)
+            .map_err(|e| Error::ReleaseIdentity(e.to_string()))?;
+    }
+
+    // Both halves, or the base cannot be checked before it is spent. A patch
+    // with no declared base is not an error -- older releases have none -- it
+    // simply is not one this path can take, because the alternative is to
+    // download a patch on the hope that the cache happens to hold its base.
+    let Some((declared_blake3, declared_size)) = patch.declared_base() else {
+        return Err(Error::Manifest(
+            "the patch declares no base installer, so a cached base cannot be \
+             matched against it before downloading"
+                .to_owned(),
+        ));
+    };
+
+    let Some(base) = cache.active(ctx.pubkey)? else {
+        return Err(Error::Manifest(
+            "no cached base artifact for the direct path".to_owned(),
+        ));
+    };
+
+    if base.entry.compressed_blake3 != declared_blake3
+        || base.entry.compressed_size != declared_size
+    {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<cached base installer>"),
+            expected: declared_blake3.to_owned(),
+            actual: base.entry.compressed_blake3.clone(),
+        });
+    }
+
+    let path = work_dir.join("base.artifact");
+    cache.write_artifact(&base.artifact, &path)?;
+    Ok(path)
 }
 
 fn limits_check(limits: Limits, entry: &DeltaPlatform) -> Result<(), Error> {
@@ -697,12 +804,22 @@ fn attempt_tar_delta(
             actual: base.entry.compressed_blake3.clone(),
         });
     }
-    if base.entry.tar_blake3 != patch.base_tar_blake3 || base.entry.tar_size != patch.base_tar_size
-    {
+    // A cached entry with no recorded tar is not a wrong base; it is an artifact
+    // this build stored whole, which the tar path cannot start from. Reported as
+    // a mismatch because the consequence is identical: this base is not the one
+    // the patch was made against, so fall back.
+    let Some(cached_tar) = &base.entry.tar else {
+        return Err(Error::Manifest(
+            "the cached base was stored without an inner tar, so the tar path \
+             cannot use it"
+                .to_owned(),
+        ));
+    };
+    if cached_tar.blake3 != patch.base_tar_blake3 || cached_tar.size != patch.base_tar_size {
         return Err(Error::ChecksumMismatch {
             path: PathBuf::from("<cached base tar>"),
             expected: patch.base_tar_blake3.clone(),
-            actual: base.entry.tar_blake3.clone(),
+            actual: cached_tar.blake3.clone(),
         });
     }
 
@@ -1006,6 +1123,10 @@ mod tests {
                                 patch_url: patch_url.clone(),
                                 patch_blake3: FileHash::of_bytes(&patch_bytes).to_hex(),
                                 patch_size: patch_bytes.len() as u64,
+                                base_installer_blake3: Some(
+                                    FileHash::of_file(&old).expect("hash old").to_hex(),
+                                ),
+                                base_installer_size: Some(old_bytes.len() as u64),
                             },
                         )]),
                         tar_layer: None,
@@ -1061,8 +1182,18 @@ mod tests {
         let stranger = dir.path().join("not-ours");
         std::fs::create_dir_all(&stranger).expect("mkdir");
 
-        // Let both age past a deliberately tiny threshold.
-        std::thread::sleep(std::time::Duration::from_millis(60));
+        // Let both age past the threshold.
+        //
+        // The margin is wide on purpose, and this is where it was learned: at
+        // 60ms against a 50ms threshold the test failed on a loaded Windows
+        // runner. Nothing was wrong with the sweep. The `live` directory is
+        // created *after* this sleep and has to still be younger than the
+        // threshold when the sweep reads the clock, so the real margin is not
+        // this sleep at all -- it is however long the few statements below
+        // take, and on a contended runner that can exceed ten milliseconds.
+        // Six hundred is not tuning; it is enough room that scheduling noise
+        // cannot reach it.
+        std::thread::sleep(std::time::Duration::from_millis(1_200));
 
         // Created after the sleep, so it is younger than the threshold: this
         // stands for a transaction that is still running.
@@ -1070,7 +1201,7 @@ mod tests {
         std::fs::create_dir_all(&live).expect("mkdir");
         std::fs::write(live.join("full.part"), b"still downloading").expect("write");
 
-        sweep_workspaces_older_than(dir.path(), std::time::Duration::from_millis(50));
+        sweep_workspaces_older_than(dir.path(), std::time::Duration::from_millis(600));
 
         assert!(
             !crashed.exists(),
@@ -1165,13 +1296,25 @@ mod tests {
             limits(),
         );
 
-        let UpdateSource::Full { url, reason, .. } = source else {
+        let UpdateSource::Full {
+            url,
+            reason,
+            attempted,
+            ..
+        } = source
+        else {
             panic!("expected a full download, got {source:?}");
         };
         assert_eq!(url, FULL_URL);
+        // Ordinary, and now *nameable*: the direct path is reached and declines
+        // because there is nowhere for a base to come from. "Reached and
+        // declined" and "never reached" are the two states `attempted` exists to
+        // tell apart, and only the first says the wiring is present.
+        assert!(attempted.direct_delta);
+        let reason = reason.expect("an attempted-and-declined path must say why");
         assert!(
-            reason.is_none(),
-            "a missing base is ordinary, not a failure"
+            reason.to_string().contains("no managed cache"),
+            "got: {reason}"
         );
     }
 

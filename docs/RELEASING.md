@@ -4,19 +4,36 @@ What a release publishes, what has been proven about it, and what has not.
 
 ## The published asset set
 
-A macOS release publishes exactly these, and nothing else:
+A release publishes exactly these, and nothing else:
 
-| Asset | Who reads it | Present when |
-| --- | --- | --- |
-| `DeltaUpdaterExample.app.tar.gz` | Tauri's updater, on a full download | always |
-| `DeltaUpdaterExample.app.tar.gz.sig` | the wider Tauri ecosystem | always |
-| `manifest.json` | Tauri's `check()`, and this plugin | always |
-| `<old>-to-<new>.zst` | this plugin, direct delta path | a usable predecessor exists |
-| `<old>-to-<new>.tar.zst` | this plugin, tar-layer path | a usable predecessor exists |
+| Asset | Platform | Who reads it | Present when |
+| --- | --- | --- | --- |
+| `DeltaUpdaterExample.app.tar.gz` | macOS | Tauri's updater, on a full download | always |
+| `DeltaUpdaterExample.app.tar.gz.sig` | macOS | the wider Tauri ecosystem | always |
+| `<old>-to-<new>.zst` | macOS | this plugin, direct delta path | a usable predecessor exists |
+| `<old>-to-<new>.tar.zst` | macOS | this plugin, tar-layer path | a usable predecessor exists |
+| `DeltaUpdaterExample_<v>_x64-setup.exe` | Windows | Tauri's updater, on a full download | always |
+| `DeltaUpdaterExample_<v>_x64-setup.exe.sig` | Windows | the wider Tauri ecosystem | always |
+| `<old>-to-<new>-windows.zst` | Windows | this plugin, direct delta path | a usable predecessor exists |
+| `manifest.json` | both | Tauri's `check()`, and this plugin | always |
+
+**One manifest, not two.** The Windows job runs after the macOS one and folds
+its platform entry into the document that job produced. A release has one
+`version` field; two documents would be two answers to "what is the latest
+release". If the Windows job fails, the release keeps a macOS-only manifest,
+which is a valid release rather than a broken one.
+
+**No tar layer on Windows, and `--require-tar-layer` must not be passed there.**
+An NSIS installer is not a gzipped tarball and nothing here can rebuild one
+byte-for-byte from its contents, so the release publishes an `opaque-v1` direct
+patch and the client's cache holds the exact official installer as its base. The
+saving that produces depends entirely on what changed between the two
+installers; NSIS compresses solid with LZMA, so a small source change can move
+most of the archive. Measure it, record it, and do not promise it.
 
 Nothing from the artifact cache, the tar layer's scratch directory, or
-`research/` is uploaded. The upload step names the five patterns explicitly
-rather than globbing a directory.
+`research/` is uploaded. Each upload step names its patterns explicitly rather
+than globbing a directory.
 
 The `.sig` file is not required for updates — the updater reads signatures out of
 the manifest — but every other tool in the Tauri ecosystem expects to find one
@@ -55,8 +72,21 @@ at the same publish gate. Only `gh` is absent.
    > tooling uses the `minisign` crate, which does not. Use a real password.
    > See `DECISIONS.md` #16.
 
-3. The tag is `vX.Y.Z` and matches the app's version. `release-check` compares
-   them and refuses to publish a manifest describing a different release.
+3. The tag is `app-vX.Y.Z` and names the **application's** own version.
+
+   > **Two tags, two tracks.** `v*` publishes the three crates at the workspace
+   > version; `app-v*` publishes the demonstration application at its version.
+   > They used to share one namespace, and since the workspace is `0.1.0` while
+   > the app is `1.0.0`, tagging `v0.1.0` would have built a 1.0.0 application
+   > and signed it as release `0.1.0` — a release whose every cryptographic
+   > check passes on an artifact that lies about what it is. See audit finding
+   > A-2 and `DECISIONS.md` #35.
+
+   Both `delta-release` and `release-check` are passed `--app-config`, which
+   reads the identifier, public key and version out of `tauri.conf.json` and
+   refuses unless that file, the application crate's `Cargo.toml` and the tag
+   all name the same version. The workflow runs the check once before the build
+   and again at the publish gate.
 
 4. The application identifier and platform are known. Use the exact
    `identifier` from `tauri.conf.json` and `darwin-aarch64` or
@@ -84,10 +114,11 @@ at the same publish gate. Only `gh` is absent.
    `--require-tar-layer` when a usable predecessor exists, so a silently missing
    optimization fails at release time instead of sending every client Full.
 
-3. Run `release-check` against the exact artifact, manifest, tag, app id,
-   platform, and public key that will be published. This is mandatory even
-   though `delta-release` self-applies each patch: the publish gate also checks
-   URLs, tag identity, signature, and cross-layer consistency.
+3. Run `release-check` against the exact artifact, manifest, tag, app config,
+   and platform that will be published. This is mandatory even though
+   `delta-release` self-applies each patch: the publish gate also checks URLs,
+   tag identity, signature, the application's own version, and cross-layer
+   consistency.
 
 4. Upload only the asset set listed above. Point the existing Tauri updater
    endpoint at `manifest.json`; there is no second delta-specific endpoint.
@@ -102,10 +133,17 @@ the signature.
 Before any upload, `release-check` reads the manifest back as a stranger would
 and refuses unless every one of these holds:
 
+- the application's own version equals the tag being published, read from
+  `tauri.conf.json` and the application crate's `Cargo.toml` — the one claim
+  every other check here is blind to, because the rest were all derived from a
+  single `--target-version` and therefore agree with each other by
+  construction (`--app-config`);
 - the manifest's version equals the tag being published;
 - the document is internally consistent;
 - there is a platform entry, and its URL is `https://`;
-- every patch URL is `https://`;
+- every patch URL is `https://`, under the same loopback-only policy the
+  generator applies (`--allow-insecure-urls` narrows to loopback in both, and
+  used to narrow in only one);
 - the artifact on disk hashes and sizes to what the delta layer declares;
 - the signature verifies against **those bytes** under the configured public key;
 - the signature carries an authenticated `delta-v1` identity — not a legacy one;
@@ -117,10 +155,108 @@ Run it by hand against anything already published:
 ```sh
 cargo build --release -p tauri-updater-delta-release
 ./target/release/release-check \
-  --manifest dist/manifest.json --tag v1.2.3 \
-  --app-id com.example.myapp --platform darwin-aarch64 \
-  --artifact dist/MyApp.app.tar.gz --pubkey "$(cat key.pub)"
+  --manifest dist/manifest.json --tag app-v1.2.3 \
+  --app-config src-tauri/tauri.conf.json --platform darwin-aarch64 \
+  --artifact dist/MyApp.app.tar.gz
 ```
+
+## Publishing the crates
+
+A different release from the one above, on a different tag, publishing different
+things. `v*` tags this workflow; `app-v*` tags the application release.
+
+### Order is not a preference
+
+`tauri-updater-delta-release` and `tauri-plugin-updater-delta` both depend on
+`tauri-updater-delta-core` **by version as well as by path** — a path dependency
+with no version cannot be published at all, which is why two of the three crates
+could not be packaged before (audit finding A-3). crates.io resolves those
+versions against the registry, so the dependency has to be there first:
+
+```sh
+cargo publish -p tauri-updater-delta-core
+cargo publish -p tauri-updater-delta-release
+cargo publish -p tauri-plugin-updater-delta
+```
+
+`tauri-updater-delta-fixtures` is `publish = false` and only ever a
+dev-dependency; cargo strips a version-less dev-dependency from a published
+manifest, which is exactly what should happen to a fixtures crate that will not
+exist on crates.io.
+
+### Rehearse it first
+
+```sh
+cargo package --locked --no-verify \
+  -p tauri-updater-delta-core \
+  -p tauri-updater-delta-release \
+  -p tauri-plugin-updater-delta
+```
+
+Packaged as a workspace set so cargo resolves the three against each other
+rather than against a registry that does not have them yet. Running
+`cargo package -p tauri-updater-delta-release` on its own before the first
+release fails with `no matching package named tauri-updater-delta-core`, and
+that is correct rather than a regression.
+
+`.github/workflows/publish-crates.yml` does all of this. Dispatch it manually
+for the dry run; push a `v*` tag for the real thing. It needs a
+`CARGO_REGISTRY_TOKEN` repository secret and runs the full test suite before
+anything irreversible happens, because a crates.io publication cannot be undone
+— a yank leaves the version occupied forever.
+
+## Rehearsing the Windows path
+
+The release workflow's Windows job is the same three steps the harness runs,
+with a real tag instead of a loopback server. Rehearse them locally on a Windows
+machine before tagging:
+
+```sh
+./examples/desktop-app/e2e/build-three-versions-windows.sh /c/delta-nsis-e2e
+./examples/desktop-app/e2e/run-nsis-e2e.sh                /c/delta-nsis-e2e
+```
+
+The first builds three real versions and publishes two releases through
+`delta-release`. The second installs 1.0.0 from its own NSIS installer and moves
+that installation to 1.0.1 and then to 1.0.2, requiring the first transition to
+select **Full** and the second to select **DirectDelta**.
+
+Both assertions matter and neither is the installed hash. Both transitions
+install the published installer, so a hash-only harness would pass twice on an
+updater that downloaded everything — which is exactly what the first real macOS
+run did (`DECISIONS.md` #22).
+
+**How the selected path is read on Windows.** It cannot be read from the return
+value: `tauri_plugin_updater::Update::install` calls `ShellExecuteW` and then
+`std::process::exit(0)`, so the process is gone before the update returns and
+`GET /trigger` never answers. The plugin writes the chosen path to the file
+named by `DELTA_E2E_INSTALL_JOURNAL` immediately before the handoff — the last
+moment at which it exists — and the artifact server's request log is the
+independent second witness for what was *not* fetched.
+
+This runs in CI on every push as the `windows nsis e2e` job.
+CI run 139 demonstrated the complete ladder on Windows x86_64 with NSIS,
+tauri-cli 2.10.1 and `tauri-plugin-updater` 2.10.1. Its two controlled direct
+patches were 98.2520% and 98.2523% of Full; record that as correctness evidence,
+not as a savings claim.
+
+## Authenticode, and what this repository does not sign
+
+The same distinction as the Apple one below, one platform over.
+
+| | Tauri updater signature | Authenticode |
+| --- | --- | --- |
+| Algorithm | minisign (Ed25519) with an authenticated release identity | Microsoft's PE signature over a code-signing certificate |
+| Covers | the `-setup.exe` bytes | the executable's own integrity and publisher |
+| Checked by | this plugin, before installing | SmartScreen and Windows policy, on run |
+| Key from | `tauri signer generate` | a CA-issued code-signing certificate |
+| This repo has | **yes**, demonstrated | **no** |
+
+The example application is **not** Authenticode signed, and nothing in this
+repository claims it is. An unsigned installer will draw a SmartScreen warning
+on a real user's machine; that is a property of the example, not of the delta
+mechanism, and signing it is a credential-bound step exactly as notarization is
+on macOS.
 
 ## Toolchain, and why it is pinned
 
@@ -185,13 +321,13 @@ Repository pushes work over SSH; creating a *release* needs the REST API.
 export GH_TOKEN=...
 
 # 2. Two prerelease tags. Deliberately non-production names.
-git tag v0.0.0-hosted-a && git push origin v0.0.0-hosted-a
+git tag app-v0.0.0-hosted-a && git push origin app-v0.0.0-hosted-a
 #    wait for the Release workflow to finish, then:
-git tag v0.0.0-hosted-b && git push origin v0.0.0-hosted-b
+git tag app-v0.0.0-hosted-b && git push origin app-v0.0.0-hosted-b
 
 # 3. Run the rehearsal against them.
 ./examples/desktop-app/e2e/github-hosted-e2e.sh \
-    <owner>/<repo> v0.0.0-hosted-a v0.0.0-hosted-b
+    <owner>/<repo> app-v0.0.0-hosted-a app-v0.0.0-hosted-b
 ```
 
 The workflow must also have `TAURI_SIGNING_PRIVATE_KEY` set, or step 2 fails

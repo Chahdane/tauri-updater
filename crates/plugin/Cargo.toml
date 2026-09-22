@@ -10,6 +10,9 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["tauri", "updater", "delta", "auto-update", "macos"]
 categories = ["development-tools", "gui"]
+# Shipped inside the package: cargo refuses a `readme` outside the crate
+# root, and crates.io renders this file on the package page.
+readme = "README.md"
 
 [dependencies]
 tauri = "2"
@@ -59,6 +62,15 @@ required-features = ["test-support"]
 [[test]]
 name = "tar_delta_flow"
 path = "tests/tar_delta_flow.rs"
+required-features = ["test-support"]
+
+# The managed direct-patch path: what a Windows or Linux client takes. Runs on
+# every platform because the artifacts are opaque blobs and the cache is opened
+# under `opaque-v1` explicitly, so a macOS-hosted change that breaks the Windows
+# route fails before a Windows runner sees it.
+[[test]]
+name = "direct_delta_flow"
+path = "tests/direct_delta_flow.rs"
 required-features = ["test-support"]
 
 [[test]]

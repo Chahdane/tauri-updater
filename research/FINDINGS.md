@@ -411,6 +411,93 @@ quantified.
 
 ---
 
+### F37 — The managed delta path reaches a non-macOS client · **DEMONSTRATED at the engine and flow level**
+
+Before this, a Windows or Linux application could not take a delta through the
+shipping API, and nothing said so. Four things were linked, and the third is the
+one that hid the other three.
+
+| | What it did | Consequence |
+| --- | --- | --- |
+| 1 | `install_blocking` set the direct base to `None` outside `test-support` | nothing could supply a base |
+| 2 | `plan_update` read the managed cache only for the tar path | the cache could not supply one either |
+| 3 | `stage_pending` gunzipped every artifact to record a tar digest | an NSIS `.exe` could not be cached at all |
+| 4 | the cache namespace hard-coded `app-tar-gz-v1` on every OS | a Windows cache claimed to hold macOS bundles |
+
+Three is the interesting one: cache persistence is deliberately non-fatal, so the
+install *succeeded*, a `CacheNotPersisted` diagnostic was returned to an
+application that had no reason to treat it as anything but noise, and every
+subsequent update stayed cache-cold. `Full, Full, Full, …` for ever, with
+nothing red. That is `F19`'s failure mode — a delta updater that never deltas
+looks exactly like one that works — arriving one layer down.
+
+*Evidence:* `crates/plugin/tests/direct_delta_flow.rs` runs the whole ladder —
+Full, promotion on relaunch, DirectDelta from the artifact Full staged — against
+artifacts that are **not** gzipped tarballs, with the cache opened under
+`opaque-v1` explicitly. It therefore runs on all three CI platforms rather than
+only on Windows, so a macOS-hosted change that breaks the Windows route fails
+before a Windows runner sees it. CI re-runs the ladder by name and fails if it
+did not execute.
+
+Every fallback case — cold cache, wrong base, undeclared base, corrupt patch,
+truncated patch, missing patch, corrupt cached blob — asserts the direct path was
+**reached** before it fell back, and the two that can be decided without spending
+bytes assert that no patch was fetched.
+
+**Scope, precisely.** This is engine and flow evidence with the network and the
+installer faked. It says nothing about whether a real NSIS installer accepts the
+bytes, whether the cache survives a real reinstall, or what a real patch ratio
+is. Those are `F38`.
+
+### F38 — A real Windows NSIS installation takes DirectDelta, but the opaque patch saves almost nothing · **DEMONSTRATED FOR WINDOWS X86_64 NSIS**
+
+GitHub Actions [CI run 139](https://github.com/Chahdane/tauri-updater/actions/runs/35751082711),
+commit `8a70543`, `windows-latest` x86_64,
+tauri-cli 2.10.1, `tauri-plugin-updater` 2.10.1. Three distinct applications
+were built as NSIS `-setup.exe` installers and one current-user installation
+moved through both releases:
+
+| | Transition 1 | Transition 2 |
+| --- | --- | --- |
+| Cache before | EMPTY | ACTIVE(1.0.1) |
+| Required and observed | **Full** | **DirectDelta** |
+| Network evidence | full installer fetched; patch absent | patch fetched; full installer absent |
+| Patch / Full | 3,115,925 / 3,171,360 (**98.2520%**) | 3,116,863 / 3,172,306 (**98.2523%**) |
+| Installed executable SHA-256 | `708cd5f0653604d809e8004c7e48cc00a6aff4123ae4e37da0562a077e862e35` | `d2c886c2759a83bafa7227e260a71724d52ce025cd4e6446772809ade5940a26` |
+
+Both PENDING artifacts remained unlicensed until the updated application
+relaunched and reported its own version. A separate degradation pass corrupted
+the cached installer without changing its length; the next update selected Full
+and installed the exact 1.0.2 executable. The engine-level fallback and
+fail-closed matrix remains in F37; this run adds what it could not: a real NSIS
+handoff, cache survival across real reinstalls, selected-path/request-log proof,
+and installed-file equality.
+
+The retained artifact provenance is:
+
+| Version | Installer bytes | Installer SHA-256 | Main executable SHA-256 |
+| --- | ---: | --- | --- |
+| 1.0.0 | 3,172,730 | `7c6f9a07370fe5296ff3a0a67d5ab69e3c432c7817aca403e636c9c818814775` | `b35f8e11ec0756a24ad7aa5adffa240097fe10d56c03a5c6e3cd72de7456c5ad` |
+| 1.0.1 | 3,171,360 | `94b8a39b6142dbccea031c034b7cf8912d9ded5258032210309d87b7eee1aee5` | `708cd5f0653604d809e8004c7e48cc00a6aff4123ae4e37da0562a077e862e35` |
+| 1.0.2 | 3,172,306 | `de35f5e313c7d821c872dc6a581c148501b6bd82daac7ad8ff27bfb8beca6434` | `d2c886c2759a83bafa7227e260a71724d52ce025cd4e6446772809ade5940a26` |
+
+The first transition binds base BLAKE3
+`da916deb6613fa62698cac6e94bc1a2e0d9b17bddc409dbb0d7dcd7b045569e7`
+to target BLAKE3
+`d5c84772edb6d2da0ba705649624f8f3a3bb7ca1793ad52b228ac2296f6e8d7b`.
+That target is the second transition's base; its target is
+`397c1420e24ba688533eb41107f41f72785401ffcac2b6d4a4802f61560296d9`.
+
+**The ratio is the result.** NSIS uses solid LZMA compression, so a small source
+change moved almost the whole opaque installer. Windows support is therefore a
+correctness and availability claim, not a bandwidth claim. An inner
+representation is future research, not something this evidence permits the
+project to promise.
+
+**Scope.** Unsigned NSIS, Windows x86_64, GitHub-hosted runner, loopback plain
+HTTP enabled only in the E2E build, controlled version-string changes. MSI,
+ARM64, Authenticode/SmartScreen and public HTTPS remain unproven.
+
 ## Delta efficiency
 
 ### F11 — One macOS `.app.tar.gz` pair produced a patch ≈95% of the target · **STRONG OBSERVATION**

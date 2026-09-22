@@ -601,6 +601,130 @@ fn the_loopback_opt_in_permits_http_and_nothing_else() {
 }
 
 #[test]
+fn the_checker_opt_in_reaches_no_further_than_the_generator_s() {
+    // Finding A-6. The generator narrowed `allow_insecure_urls` to loopback,
+    // exactly as its documentation said; the checker accepted *every* http URL
+    // once the flag was set, while its own CLI help said "for loopback
+    // rehearsals only". Nothing about the production workflow was weakened --
+    // it passes the flag nowhere -- but the two disagreed in precisely the mode
+    // the flag exists for, so the independent gate could not have caught a
+    // generator that emitted a public plain-HTTP URL during a rehearsal.
+    //
+    // Both now call url_policy::check_url. This asserts the checker's side.
+    for url in [
+        "http://releases.example.com/app_1.0.1.bin",
+        "http://192.168.1.10/app_1.0.1.bin",
+        "http://127.0.0.1.evil.example.com/app_1.0.1.bin",
+    ] {
+        let mut p = publishable();
+        p.manifest
+            .platforms
+            .get_mut(PLATFORM)
+            .expect("platform")
+            .url = url.to_owned();
+
+        let err = verify_release(
+            &p.manifest,
+            &ReleaseUnderTest {
+                tag: "v1.0.1",
+                app_id: APP_ID,
+                platform: PLATFORM,
+                artifact: &p.artifact,
+                pubkey: &public_key_base64(&p.pair),
+                allow_insecure_urls: true,
+            },
+        )
+        .expect_err("the checker's opt-in must not reach beyond loopback either");
+        assert!(
+            err.to_string().contains("loopback only"),
+            "{url} should be refused as non-loopback, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn the_checker_refuses_a_non_loopback_patch_url_under_the_opt_in() {
+    // The patch URLs travel the same code path and are the ones a rehearsal
+    // template actually gets wrong: the installer URL is rewritten by hand and
+    // the patch URLs are copied.
+    let mut p = publishable();
+    p.manifest
+        .platforms
+        .get_mut(PLATFORM)
+        .expect("platform")
+        .url = "http://127.0.0.1:8080/app_1.0.1.bin".to_owned();
+    let entry = p
+        .manifest
+        .delta
+        .as_mut()
+        .expect("delta")
+        .platforms
+        .get_mut(PLATFORM)
+        .expect("platform");
+    entry.patches.get_mut("1.0.0").expect("patch").patch_url =
+        "http://releases.example.com/p.zst".to_owned();
+
+    let err = verify_release(
+        &p.manifest,
+        &ReleaseUnderTest {
+            tag: "v1.0.1",
+            app_id: APP_ID,
+            platform: PLATFORM,
+            artifact: &p.artifact,
+            pubkey: &public_key_base64(&p.pair),
+            allow_insecure_urls: true,
+        },
+    )
+    .expect_err("a public patch URL is not a loopback rehearsal");
+    assert!(err.to_string().contains("loopback only"), "got: {err}");
+}
+
+#[test]
+fn the_documented_ipv6_loopback_spelling_is_publishable_under_the_opt_in() {
+    // `[::1]` was named in the generator's allow-list and in the flag's
+    // documentation, and the hand-rolled host split truncated it at the first
+    // colon, so the one documented IPv6 spelling was refused by the very check
+    // that claimed to permit it. Asserted on both sides, since both used to
+    // have a host parser of their own.
+    build_with_urls(
+        "http://[::1]:8080/v1.0.1/app.bin",
+        "http://[::1]:8080/p.zst",
+        None,
+        true,
+    )
+    .expect("the generator must accept the documented IPv6 loopback spelling");
+
+    let mut p = publishable();
+    p.manifest
+        .platforms
+        .get_mut(PLATFORM)
+        .expect("platform")
+        .url = "http://[::1]:8080/app_1.0.1.bin".to_owned();
+    let entry = p
+        .manifest
+        .delta
+        .as_mut()
+        .expect("delta")
+        .platforms
+        .get_mut(PLATFORM)
+        .expect("platform");
+    entry.patches.get_mut("1.0.0").expect("patch").patch_url = "http://[::1]:8080/p.zst".to_owned();
+
+    verify_release(
+        &p.manifest,
+        &ReleaseUnderTest {
+            tag: "v1.0.1",
+            app_id: APP_ID,
+            platform: PLATFORM,
+            artifact: &p.artifact,
+            pubkey: &public_key_base64(&p.pair),
+            allow_insecure_urls: true,
+        },
+    )
+    .expect("the checker must accept it too");
+}
+
+#[test]
 fn a_release_signed_for_a_different_application_is_refused() {
     // Gate P1's app binding, enforced at publish time. One key, two products,
     // and the wrong artifact staged for upload.

@@ -60,10 +60,37 @@ surface without improving the security boundary.
 
 P4 does not perform any of these steps.
 
+## Windows client — NSIS x86_64 demonstrated
+
+The managed delta path exists on Windows. It did not before: the direct patch
+path read a base the shipping API never supplied, the cache gunzipped every
+artifact it was asked to store, and the cache namespace named macOS on every
+operating system (`docs/DECISIONS.md` #36).
+
+- Representation-aware cache: `opaque-v1` artifacts are stored and reused
+  byte-for-byte; `app-tar-gz-v1` is unchanged.
+- The direct patch path takes its base from the managed cache.
+- `Patch` declares the base it was generated against, so a mismatch is rejected
+  before a patch is downloaded.
+- The whole Full → relaunch → DirectDelta ladder, the fallback matrix and the
+  fail-closed cases run on all three CI platforms against opaque artifacts.
+- The example application builds an NSIS installer on Windows, and a harness
+  drives a real install/update/update ladder with the selected path asserted.
+
+**Supported for the demonstrated target:** Windows x86_64, NSIS `-setup.exe`,
+tauri-cli 2.10.1 and `tauri-plugin-updater` 2.10.1. CI run 139 completed the
+real Full -> relaunch -> DirectDelta ladder, exact installed-executable checks,
+request-log checks, and corrupt-cache fallback on `windows-latest`.
+
+The measured direct patches were 98.2520% and 98.2523% of Full. That is an
+honest negative efficiency result: the path is correct, but these solid-LZMA
+NSIS pairs save almost no bytes. MSI, ARM64 and Authenticode-signed E2E remain
+outside the demonstrated support boundary.
+
 ## After macOS v0.1
 
 - Linux client integration and real AppImage install evidence.
-- Windows artifact handling and real NSIS/MSI install evidence.
+- Windows MSI as a separately demonstrated target; it is not inferred from NSIS.
 - Resume/retry policy and disk-space preflight if evidence justifies them.
 - Additional patch backends only when measured artifacts justify their cost.
 - A JS/TS wrapper only if real application integrations show Rust commands are

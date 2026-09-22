@@ -10,21 +10,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Prepared as the **macOS v0.1 release candidate**. Not tagged or published: the
 version is left at `0.1.0` for an independent audit to run against.
 
+### Release baseline (2026-09-22)
+
+Findings A-2, A-3, A-4 and A-6 of the 2026-09-22 project audit, fixed together
+because none of them could be released around.
+
+- **Security:** locked `rustls` moved from `0.23.43` to `0.23.45`, which is not
+  affected by [RUSTSEC-2026-0285](https://osv.dev/vulnerability/RUSTSEC-2026-0285).
+  `chacha20` moved off a yanked `0.10.1`. A full OSV query over all 522 locked
+  registry packages now reports nothing in the macOS or Windows runtime path;
+  what remains is `glib` in the Linux GTK graph and six unmaintained-crate
+  warnings, all transitive.
+- **Packaging:** `tauri-updater-delta-release` and `tauri-plugin-updater-delta`
+  could not be packaged at all, because their dependency on
+  `tauri-updater-delta-core` carried a path and no version. Both now carry one,
+  each published crate has its own README, and
+  `.github/workflows/publish-crates.yml` publishes the three in dependency
+  order with a dry-run rehearsal.
+- **Release-version contract:** `v*` now publishes the crates and `app-v*`
+  publishes the demonstration application; a crate-release tag can no longer
+  build and sign a differently versioned application. `delta-release` and
+  `release-check` both take `--app-config`, which requires `tauri.conf.json`,
+  the application crate's `Cargo.toml` and the tag to name one version. See
+  `docs/DECISIONS.md` #35.
+- **URL policy:** the generator narrowed its insecure opt-in to loopback and the
+  independent checker did not, so the two disagreed in exactly the mode the
+  flag exists for. Both now call one `url_policy` function built on a real URL
+  parser, which also fixes the documented `http://[::1]:8080/` spelling that
+  the hand-rolled host split had always refused.
+
+### Windows client (2026-09-22)
+
+Audit finding A-1: the release side could already generate an `opaque-v1`
+patch between two Windows installers, and the shipping client could not use
+one. Four things had to change together, and the third is the one that hid the
+other three — cache persistence is deliberately non-fatal, so an installer that
+could not be staged still installed and every later update stayed cache-cold
+with nothing going red.
+
+- **The cache knows what it is holding.** `app-tar-gz-v1` is unchanged: the
+  artifact is expanded once at staging so the tar layer can reject a wrong base
+  cheaply. `opaque-v1` — a Windows NSIS installer or MSI, a Linux AppImage — is
+  stored and reused exactly as published and never opened. The representation is
+  derived from the platform instead of being hard-coded to macOS on every
+  operating system. See `docs/DECISIONS.md` #36.
+- **The direct patch path takes its base from the managed cache** when the host
+  supplies none, which in a normal build is always. Only for `opaque-v1`: for a
+  `.app.tar.gz` the tar path has already had its turn, and a direct patch
+  between two gzip streams measured 95–96% of a full download, so taking it
+  would download a patch the size of the artifact and report a successful
+  DirectDelta where a TarDelta had failed.
+- **`Patch` carries the optional base digest and size** that `TarPatch` has
+  always had, so a cached base can be checked before a patch is downloaded. A
+  half-declared base is refused at parse time.
+- **The on-disk cache format is version 2.** A version-1 cache is stepped over
+  and emptied, costing one full download on one launch.
+- `crates/plugin/tests/direct_delta_flow.rs` runs the whole Full → relaunch →
+  DirectDelta ladder on every CI platform, plus the fallback and fail-closed
+  matrix, with every fallback case asserting the direct path was reached first.
+- **Real Windows NSIS evidence.** On `windows-latest` x86_64, one installation
+  completed Full -> relaunch -> DirectDelta through the public API and real
+  NSIS installer. The harness asserted selected paths, request logs, promotion,
+  exact installed executable hashes, and corrupt-cache Full fallback. The two
+  direct patches measured 98.2520% and 98.2523% of Full.
+
 ### v0.1 scope
 
-**Supported.** macOS `.app.tar.gz` artifacts, Rust 1.88+, `tauri` 2,
+**Supported.** macOS `.app.tar.gz` and Windows x86_64 NSIS `-setup.exe`
+artifacts, Rust 1.88+, `tauri` 2,
 `tauri-plugin-updater` `>=2.10.1, <2.11.0`, releases generated with tauri-cli
-2.10.1, `app-tar-gz-v1` artifacts rebuilt by the `tauri-app-tar-gz-v1` recipe,
-zstd patches. The README carries the full table and a test keeps it honest.
+2.10.1, `app-tar-gz-v1` macOS artifacts rebuilt by the
+`tauri-app-tar-gz-v1` recipe, `opaque-v1` Windows installers, zstd patches. The
+README carries the full table and a test keeps it honest.
 
 **Demonstrated.** A real macOS `aarch64` application completing Full then
-TarDelta through the public API and the real Tauri installer, with asserted
+TarDelta, and a real Windows x86_64 NSIS installation completing Full then
+DirectDelta, through the public API and real Tauri installers, with asserted
 update sources and exact installed binary hashes.
 
 **Not demonstrated, and stated as such.** GitHub-hosted HTTPS end-to-end and
 Apple Developer ID/notarized end-to-end are credential-bound; Intel macOS has no
-real-app run; Linux and Windows client support is not claimed. Release freshness
-is not proven and this is not a TUF-style framework.
+real-app run; Windows Authenticode-signed, MSI and ARM64 runs are absent; Linux
+client support is not claimed. Release freshness is not proven and this is not
+a TUF-style framework.
 
 ### Added
 

@@ -1,0 +1,194 @@
+name: Publish the crates
+
+# What a `v*` tag does.
+#
+# ## Two tags, two tracks
+#
+# `v*`     -> this workflow, which publishes the three public crates at the
+#             workspace version.
+# `app-v*` -> .github/workflows/release.yml, which builds, signs and publishes
+#             the demonstration application at *its* version.
+#
+# They were one namespace, and tagging `v0.1.0` would have built the 1.0.0
+# example application and published it under the signed release identity 0.1.0.
+# See audit finding A-2 and the header of release.yml.
+#
+# ## Publication order is not a preference
+#
+# `tauri-updater-delta-release` and `tauri-plugin-updater-delta` both depend on
+# `tauri-updater-delta-core` by version as well as by path, because a path
+# dependency without a version cannot be published at all. crates.io resolves
+# those versions against the registry, so the dependency has to exist there
+# first:
+#
+#   1. tauri-updater-delta-core
+#   2. tauri-updater-delta-release
+#   3. tauri-plugin-updater-delta
+#
+# `tauri-updater-delta-fixtures` is `publish = false` and is only ever a
+# dev-dependency, which cargo strips from a published manifest.
+#
+# ## Rehearsal
+#
+# `workflow_dispatch` runs everything except the upload: `cargo publish
+# --dry-run` for each crate, in order. It cannot fully succeed for the two
+# dependent crates until core is actually on crates.io — a dry run still
+# resolves `tauri-updater-delta-core = "0.1.0"` against the registry — so that
+# step is reported rather than enforced on a first release. The packaging
+# itself, which is what used to fail, is checked for all three.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'rehearse' to run the dry run"
+        required: true
+        default: rehearse
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rehearsal:
+    name: package + publish dry run (no upload)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        # tauri pulls in wry -> webkit2gtk-sys, which runs pkg-config at build
+        # time. `cargo package` verifies by building, so the plugin needs these.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - uses: Swatinem/rust-cache@v2
+
+      # The failure the audit found (A-3): two of the three crates could not be
+      # packaged at all, because their internal dependency carried a path and no
+      # version. Packaged as a workspace set so cargo resolves the three against
+      # each other rather than against a registry that does not have them yet.
+      - name: Package all three public crates
+        run: |
+          cargo package --locked --no-verify \
+            -p tauri-updater-delta-core \
+            -p tauri-updater-delta-release \
+            -p tauri-plugin-updater-delta
+
+      - name: Build each package from its extracted contents
+        # `--no-verify` above proves the manifests; this proves the packages
+        # actually compile from what was put in them, which is what a consumer
+        # gets. Run per-crate because a workspace verify would compile them
+        # together and hide a missing file.
+        run: cargo package --locked -p tauri-updater-delta-core
+
+      - name: Publish dry run, in dependency order
+        run: |
+          set -uo pipefail
+          for crate in tauri-updater-delta-core \
+                       tauri-updater-delta-release \
+                       tauri-plugin-updater-delta; do
+            echo "::group::cargo publish --dry-run -p $crate"
+            if cargo publish --dry-run --locked --no-verify -p "$crate"; then
+              echo "$crate: dry run ok"
+            else
+              echo "::warning::$crate dry run failed. Before the first release"
+              echo "::warning::this is expected for the two crates that depend on"
+              echo "::warning::tauri-updater-delta-core, which is not on crates.io yet."
+            fi
+            echo "::endgroup::"
+          done
+
+  publish:
+    name: publish to crates.io
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the registry token before doing any work
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not set."
+            echo "::error::Create a scoped token at https://crates.io/settings/tokens"
+            echo "::error::and add it as a repository secret."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - uses: Swatinem/rust-cache@v2
+
+      # The tag names the crate release, so it must be the workspace version.
+      # This is the crate-track half of the A-2 contract; the application half
+      # lives in release.yml and is enforced by `release-check`.
+      - name: Check the tag against the workspace version
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          workspace_version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "$tag_version" != "$workspace_version" ]; then
+            echo "::error::the tag ${GITHUB_REF_NAME} names ${tag_version}, but the"
+            echo "::error::workspace is ${workspace_version}. A crate release tag must"
+            echo "::error::name the version being published."
+            exit 1
+          fi
+          echo "publishing ${workspace_version}"
+
+      - name: Test before publishing anything irreversible
+        # crates.io publication cannot be undone; a yank leaves the version
+        # occupied forever. This is the last point at which the answer is still
+        # free.
+        run: cargo test --workspace --all-features --locked
+
+      - name: Publish, in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `--no-verify` is deliberate: the tests above already built and ran
+          # everything, and a verify build here would compile the whole Tauri
+          # tree three more times. Packaging itself is still checked.
+          for crate in tauri-updater-delta-core \
+                       tauri-updater-delta-release \
+                       tauri-plugin-updater-delta; do
+            echo "::group::publishing $crate"
+            # Already published is not a failure: a re-run of a partly completed
+            # release must be able to finish it.
+            if cargo publish --locked --no-verify -p "$crate"; then
+              echo "$crate published"
+            elif cargo search "$crate" --limit 1 | grep -q "^$crate = "; then
+              echo "::notice::$crate appears to be published already; continuing"
+            else
+              echo "::error::publishing $crate failed"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published ${GITHUB_REF_NAME}"
+            echo ""
+            echo "- tauri-updater-delta-core"
+            echo "- tauri-updater-delta-release"
+            echo "- tauri-plugin-updater-delta"
+          } >> "$GITHUB_STEP_SUMMARY"
