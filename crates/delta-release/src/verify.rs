@@ -39,12 +39,19 @@ use tauri_updater_delta_core::manifest::Manifest;
 use tauri_updater_delta_core::release_identity::ReleaseBinding;
 use tauri_updater_delta_core::{verify_artifact, FileHash};
 
+use crate::url_policy;
+use crate::version_contract::version_from_tag;
 use crate::{Error, Result};
 
 /// The release being published, as facts rather than as claims.
 #[derive(Debug, Clone)]
 pub struct ReleaseUnderTest<'a> {
-    /// The tag being published, with or without a leading `v`.
+    /// The tag being published.
+    ///
+    /// `1.2.3`, `v1.2.3` and `app-v1.2.3` all name version `1.2.3`; the two
+    /// prefixed forms are the crate and application release tracks, which have
+    /// separate tag namespaces so that one tag cannot mean both. See
+    /// [`version_contract`](crate::version_contract).
     pub tag: &'a str,
     /// Application bundle identifier, from `tauri.conf.json`.
     pub app_id: &'a str,
@@ -54,12 +61,14 @@ pub struct ReleaseUnderTest<'a> {
     pub artifact: &'a Path,
     /// Base64 minisign public key, as it appears in `tauri.conf.json`.
     pub pubkey: &'a str,
-    /// Permit `http://` URLs.
+    /// Permit `http://` URLs pointing at loopback.
     ///
-    /// For loopback rehearsals only. A public release with a plain-HTTP URL
-    /// hands every client's update to anyone on the path, and the client
-    /// refuses it anyway (`docs/DECISIONS.md` #19) — so publishing one produces
-    /// a release that is both unsafe and broken.
+    /// For loopback rehearsals only, and enforced as such: a plain-HTTP URL to
+    /// anywhere else is refused even with this set, under the same
+    /// [`url_policy`](crate::url_policy) the generator applies. A public release
+    /// with a plain-HTTP URL hands every client's update to anyone on the path,
+    /// and the client refuses it anyway (`docs/DECISIONS.md` #19) — so
+    /// publishing one produces a release that is both unsafe and broken.
     pub allow_insecure_urls: bool,
 }
 
@@ -91,7 +100,7 @@ pub fn verify_release(
     release: &ReleaseUnderTest<'_>,
 ) -> Result<ReleaseReport> {
     // ---- the document against the tag -----------------------------------
-    let expected_version = release.tag.strip_prefix('v').unwrap_or(release.tag);
+    let expected_version = version_from_tag(release.tag);
     if manifest.version != expected_version {
         return Err(reject(format!(
             "the manifest describes {} but the tag being published is {} ({})",
@@ -231,22 +240,22 @@ pub fn verify_release(
     })
 }
 
-/// Refuse plain HTTP, and anything that is not a URL at all.
+/// Refuse a URL a production client would not fetch, under the same rule the
+/// generator applies.
+///
+/// This function used to have a policy of its own: it accepted **every**
+/// `http://` URL once `allow_insecure_urls` was set, although the flag's own
+/// help said "for loopback rehearsals only" and the generator narrowed it to
+/// loopback. A checker that is more permissive than the generator cannot catch a
+/// generator bug, which is the only reason this binary is separate from that
+/// one. Both now call [`url_policy::check_url`]; see that module.
 fn check_url(what: &str, url: &str, release: &ReleaseUnderTest<'_>) -> Result<()> {
-    if url.starts_with("https://") {
-        return Ok(());
-    }
-    if url.starts_with("http://") {
-        if release.allow_insecure_urls {
-            return Ok(());
-        }
-        return Err(reject(format!(
-            "{what} is plain HTTP ({url}). Clients refuse these without an explicit \
-             opt-in, so publishing one produces a release that is both unsafe and \
-             unusable."
-        )));
-    }
-    Err(reject(format!("{what} is not an http(s) URL ({url})")))
+    url_policy::check_url(
+        what,
+        url,
+        url_policy::HttpPolicy::from_insecure_flag(release.allow_insecure_urls),
+    )
+    .map_err(reject)
 }
 
 fn reject(reason: String) -> Error {

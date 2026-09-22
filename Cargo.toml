@@ -30,11 +30,20 @@ minisign-verify = "0.2"
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 log = "0.4"
+# Release-time URL policy. Already in the workspace graph via tauri/reqwest,
+# so requiring it here adds nothing new to the lock.
+url = "2"
 
-# Internal
-tauri-updater-delta-core = { path = "crates/delta-core" }
+# Published to crates.io. A path dependency needs a `version` to survive
+# publication: cargo strips the path and a consumer resolves the registry
+# version, so without one `cargo package` refuses the dependent crates
+# outright. See docs/RELEASING.md.
+tauri-updater-delta-core = { path = "crates/delta-core", version = "0.1.0" }
+tauri-updater-delta-release = { path = "crates/delta-release", version = "0.1.0" }
+# Never published. Left without a version deliberately: cargo strips a
+# version-less dev-dependency when packaging, which is exactly right for a
+# fixtures crate that will not exist on crates.io.
 tauri-updater-delta-fixtures = { path = "crates/fixtures" }
-tauri-updater-delta-release = { path = "crates/delta-release" }
 
 [profile.release]
 lto = true
