@@ -13,10 +13,6 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update as TauriUpdate, UpdaterExt as TauriUpdaterExt};
 use tauri_updater_delta_core::cache::{ArtifactCache, CacheLimits, Namespace, Reconciliation};
-use tauri_updater_delta_core::manifest::{
-    RECOMPRESSION_TAURI_APP_TAR_GZ_V1, REPRESENTATION_APP_TAR_GZ_V1,
-};
-use tauri_updater_delta_core::release_identity::current_platform;
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 
 use crate::flow::{
@@ -274,14 +270,14 @@ impl RuntimeConfig {
             builder.work_dir.clone(),
         );
 
-        let namespace = Namespace {
-            bundle_id: app_id.clone(),
-            platform: current_platform(),
-            arch: std::env::consts::ARCH.to_owned(),
-            pubkey_fingerprint: FileHash::of_bytes(pubkey.as_bytes()).to_hex(),
-            representation: REPRESENTATION_APP_TAR_GZ_V1.to_owned(),
-            recompression: RECOMPRESSION_TAURI_APP_TAR_GZ_V1.to_owned(),
-        };
+        // Derived from the platform, not hard-coded. This used to name
+        // `app-tar-gz-v1` / `tauri-app-tar-gz-v1` on every operating system, so
+        // a Windows cache claimed to hold macOS bundles -- the fourth of the
+        // four linked blockers that made a Windows delta unreachable.
+        let namespace = Namespace::for_current_platform(
+            &app_id,
+            &FileHash::of_bytes(pubkey.as_bytes()).to_hex(),
+        );
 
         let mut diagnostics = Vec::new();
         let cache = match ArtifactCache::open(&paths.cache_dir, namespace, builder.cache_limits) {

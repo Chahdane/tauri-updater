@@ -436,6 +436,13 @@ fn generate_direct_patch(
         patch_url: pred.patch_url.to_owned(),
         patch_blake3: FileHash::of_file(pred.patch_out)?.to_hex(),
         patch_size: file_size(pred.patch_out)?,
+        // The base this patch was actually generated against, so a client whose
+        // base comes from its own cache can reject a mismatch before paying for
+        // the patch. The tar layer has published this since it existed; the
+        // direct path did not need it while its base was always handed in by
+        // the host, and needs it now that the managed cache supplies one.
+        base_installer_blake3: Some(FileHash::of_file(pred.installer)?.to_hex()),
+        base_installer_size: Some(file_size(pred.installer)?),
     })
 }
 
