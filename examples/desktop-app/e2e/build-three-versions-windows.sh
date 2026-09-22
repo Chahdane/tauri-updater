@@ -50,7 +50,11 @@ esac
 
 # Bound into the signature's authenticated release identity, and compared at
 # runtime against the app's own tauri.conf.json identifier.
-APP_ID="$(python -c 'import json,sys;print(json.load(open(sys.argv[1]))["identifier"])' "$APP_DIR/tauri.conf.json")"
+# The application identifier and the version both come from
+# tauri.conf.json via --app-config, which also refuses to build a release
+# whose target version is not the one compiled into the app. Reading the
+# identifier here and never reading the version is how a tag could
+# publish a differently versioned application -- audit finding A-2.
 
 _LOCK="$ROOT/Cargo.lock"
 _LOCK_BACKUP="$(mktemp)"
@@ -140,7 +144,7 @@ publish() {
   echo "==> publishing $from -> $to"
   "$ROOT/target/release/delta-release.exe" \
     --platform "$PLATFORM" \
-    --app-id "$APP_ID" \
+    --app-config "$APP_DIR/tauri.conf.json" \
     --target-version "$to" --from-version "$from" \
     --previous-installer "$OUT/v$from/$PRODUCT-setup.exe" \
     --new-installer      "$OUT/v$to/$PRODUCT-setup.exe" \
