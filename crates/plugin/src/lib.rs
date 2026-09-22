@@ -18,10 +18,12 @@
 //! A fresh installation has no verified official artifact in its cache. The
 //! first update after adopting this plugin is therefore normally a **Full**
 //! download. It is staged, and after the updated application launches it becomes
-//! the base that a later compatible release may use for **TarDelta**. Cache
-//! misses, corruption, and unavailable patches safely degrade to Full where
-//! policy allows; differential updates are an optimisation, not a promise for
-//! every release.
+//! the base a later compatible release may patch against — **TarDelta** on
+//! macOS, where the artifact's inner tar is what the patch applies to, and
+//! **DirectDelta** on Windows and Linux, where the published installer is
+//! patched whole. Cache misses, corruption, and unavailable patches safely
+//! degrade to Full where policy allows; differential updates are an
+//! optimisation, not a promise for every release.
 //!
 //! # Minimal Rust flow
 //!
