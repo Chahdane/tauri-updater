@@ -14,6 +14,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pinned for the same reason the release workflow pins it: the bundler inside
+  # this CLI decides what an installer looks like, and a harness that measures
+  # one bundler while the release ships another measures nothing.
+  TAURI_CLI_VERSION: "2.10.1"
 
 jobs:
   lint:
@@ -220,12 +224,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # `cargo install` compiles the CLI from source, which on a Windows runner
+      # costs more than the three application builds this job exists to perform.
+      # The binary is a pure function of the pinned version, so it is cached by
+      # that version rather than rebuilt every run.
+      - name: Restore the pinned Tauri CLI
+        id: tauri-cli
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri.exe
+          key: cargo-tauri-${{ runner.os }}-${{ env.TAURI_CLI_VERSION }}
+
       - name: Install the pinned Tauri CLI
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
         shell: bash
-        # Pinned for the same reason the release workflow pins it: the bundler
-        # inside it decides what an installer looks like, and a harness that
-        # measures one bundler while the release ships another measures nothing.
-        run: cargo install tauri-cli --version "=2.10.1" --locked
+        run: cargo install tauri-cli --version "=${TAURI_CLI_VERSION}" --locked
 
       - name: Build three versions and publish two releases
         shell: bash
