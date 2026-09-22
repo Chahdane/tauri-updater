@@ -1608,3 +1608,72 @@ would be a UI promise the implementation cannot keep.
 support their frontend UX, or upstream exposes stable progress primitives that
 permit accurate totals. Neither condition licenses exposing identity or install
 handoff construction.
+
+## 35. Two release tracks, two tag namespaces
+
+**Decided:** 2026-09-22 · **Status:** active · **Gate:** release baseline
+
+**Decision:** `v*` publishes the three crates at the workspace version. `app-v*`
+publishes the demonstration application at *its* version. No tag means both, and
+no release signs an artifact whose version was not read out of the files the
+build read.
+
+### The failure this closes
+
+The workspace is `0.1.0`. The example application is `1.0.0`, in both
+`examples/desktop-app/Cargo.toml` and its `tauri.conf.json`. The release
+workflow derived `--target-version` from the git tag and compared it against
+nothing else. So:
+
+| Tag | Builds | Signs it as | Correct? |
+| --- | --- | --- | --- |
+| `v0.1.0` | the 1.0.0 app | release identity `0.1.0` | no |
+| `v1.0.0` | the 1.0.0 app | release identity `1.0.0` | yes — but it is not the crate release |
+
+The first row is the interesting one because **every cryptographic check
+passes**. The manifest says 0.1.0, the signature's authenticated identity says
+0.1.0, the artifact digest matches, `release-check` is satisfied — and the
+application inside reports `1.0.0` the moment it launches. A client on 1.0.0
+offered 0.1.0 sees a downgrade and refuses. A client that installed it comes
+back up as 1.0.0, so the cache's launch reconciliation discards the PENDING
+entry it just staged, and no later update on that installation can ever take a
+delta. The release is simultaneously well-formed and false.
+
+`release-check` could not have caught it. Everything it compares — tag,
+manifest, signature identity, artifact bytes — was derived from that one
+`--target-version`, so those four agree with each other by construction. The one
+thing nobody compared was the version *inside* the thing being built.
+
+### The two halves of the fix
+
+1. **Separate namespaces**, so producing the wrong release takes two mistakes
+   rather than one, and so a crate release cannot trigger an application
+   release at all.
+2. **`--app-config`**, on both `delta-release` and `release-check`. It reads the
+   identifier, the public key and the version out of `tauri.conf.json`, requires
+   the application crate's `Cargo.toml` to state the same version, and requires
+   both to equal the version being released. The rule lives in
+   `crates/delta-release/src/version_contract.rs`, so both binaries apply one
+   implementation of it, and the workflow runs it once before the build and
+   again at the publish gate.
+
+### Alternatives considered
+
+- **Read the version out of the built bundle.** The most direct answer to "what
+  did we actually build", and it is one bundle format on one platform:
+  `Contents/Info.plist` says nothing about an NSIS installer. It also answers
+  after a twenty-minute build rather than before it.
+- **Make the example app inherit the workspace version.** One number, no
+  contract needed — and it makes every crate release a release of the demo
+  application, which is the conflation rather than a fix for it.
+  `version_contract` refuses `version.workspace = true` on the application for
+  exactly this reason.
+- **A shell check in the workflow.** Fast and free, and a second implementation
+  of a rule that already has one. The URL policy had two implementations that
+  drifted apart (finding A-6, `url_policy`); repeating that shape deliberately
+  is not a trade worth making. `--only-version-contract` gives the workflow its
+  fast pre-check by running the same code.
+
+**Revisit when:** the demonstration application is removed from this repository,
+or a real per-platform release matrix makes "the application's version" a
+question with more than one answer.
