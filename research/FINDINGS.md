@@ -411,6 +411,44 @@ quantified.
 
 ---
 
+### F37 — The managed delta path reaches a non-macOS client · **DEMONSTRATED at the engine and flow level**
+
+Before this, a Windows or Linux application could not take a delta through the
+shipping API, and nothing said so. Four things were linked, and the third is the
+one that hid the other three.
+
+| | What it did | Consequence |
+| --- | --- | --- |
+| 1 | `install_blocking` set the direct base to `None` outside `test-support` | nothing could supply a base |
+| 2 | `plan_update` read the managed cache only for the tar path | the cache could not supply one either |
+| 3 | `stage_pending` gunzipped every artifact to record a tar digest | an NSIS `.exe` could not be cached at all |
+| 4 | the cache namespace hard-coded `app-tar-gz-v1` on every OS | a Windows cache claimed to hold macOS bundles |
+
+Three is the interesting one: cache persistence is deliberately non-fatal, so the
+install *succeeded*, a `CacheNotPersisted` diagnostic was returned to an
+application that had no reason to treat it as anything but noise, and every
+subsequent update stayed cache-cold. `Full, Full, Full, …` for ever, with
+nothing red. That is `F19`'s failure mode — a delta updater that never deltas
+looks exactly like one that works — arriving one layer down.
+
+*Evidence:* `crates/plugin/tests/direct_delta_flow.rs` runs the whole ladder —
+Full, promotion on relaunch, DirectDelta from the artifact Full staged — against
+artifacts that are **not** gzipped tarballs, with the cache opened under
+`opaque-v1` explicitly. It therefore runs on all three CI platforms rather than
+only on Windows, so a macOS-hosted change that breaks the Windows route fails
+before a Windows runner sees it. CI re-runs the ladder by name and fails if it
+did not execute.
+
+Every fallback case — cold cache, wrong base, undeclared base, corrupt patch,
+truncated patch, missing patch, corrupt cached blob — asserts the direct path was
+**reached** before it fell back, and the two that can be decided without spending
+bytes assert that no patch was fetched.
+
+**Scope, precisely.** This is engine and flow evidence with the network and the
+installer faked. It says nothing about whether a real NSIS installer accepts the
+bytes, whether the cache survives a real reinstall, or what a real patch ratio
+is. Those are `F38`.
+
 ## Delta efficiency
 
 ### F11 — One macOS `.app.tar.gz` pair produced a patch ≈95% of the target · **STRONG OBSERVATION**
