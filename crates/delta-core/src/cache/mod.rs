@@ -56,7 +56,8 @@ use std::path::{Path, PathBuf};
 
 pub use blob::BlobStore;
 pub use state::{
-    CacheEntry, CacheState, CasError, Namespace, StateStore, Versioned, CACHE_FORMAT_VERSION,
+    CacheEntry, CacheState, CachedRepresentation, CasError, Namespace, StateStore, TarFacts,
+    Versioned, CACHE_FORMAT_VERSION, RECOMPRESSION_NONE,
 };
 
 use crate::recompress::decompress_bytes_bounded;
@@ -155,6 +156,7 @@ pub struct ArtifactCache {
     blobs: BlobStore,
     state: StateStore,
     namespace: Namespace,
+    representation: CachedRepresentation,
     limits: CacheLimits,
 }
 
@@ -177,6 +179,17 @@ impl ArtifactCache {
     /// <root>/tmp/<transaction>/        per-update scratch
     /// ```
     pub fn open(root: impl AsRef<Path>, namespace: Namespace, limits: CacheLimits) -> Result<Self> {
+        // Resolved once, here, so no later branch has to compare representation
+        // strings. A namespace this build cannot interpret makes the cache
+        // unusable rather than empty: an empty cache is one full download, and
+        // storing artifacts under a representation we cannot reason about is
+        // how a Windows installer ends up recorded as a macOS bundle.
+        let representation = namespace.representation_kind().ok_or_else(|| {
+            Error::Manifest(format!(
+                "this build does not implement the cache representation {:?}/{:?}",
+                namespace.representation, namespace.recompression
+            ))
+        })?;
         let root = root.as_ref().to_path_buf();
         let blobs = BlobStore::open(root.join("blobs"))?;
         let state = StateStore::open(&root)?;
@@ -187,8 +200,14 @@ impl ArtifactCache {
             blobs,
             state,
             namespace,
+            representation,
             limits,
         })
+    }
+
+    /// What this cache holds, and therefore what may be done with it.
+    pub fn representation(&self) -> CachedRepresentation {
+        self.representation
     }
 
     /// The blob store, for reporting and cleanup.
@@ -295,9 +314,17 @@ impl ArtifactCache {
     /// on trust from a caller or a manifest, because they are what the blob is
     /// addressed by.
     ///
-    /// The tar inside is expanded once, under the local ceiling, to record its
-    /// digest. That costs one decompression per update and buys the ability to
-    /// reject a mismatched base later without doing it again.
+    /// For an `app-tar-gz-v1` artifact the tar inside is expanded once, under
+    /// the local ceiling, to record its digest. That costs one decompression per
+    /// update and buys the ability to reject a mismatched base later without
+    /// doing it again.
+    ///
+    /// For an `opaque-v1` artifact — a Windows installer, a Linux AppImage —
+    /// nothing is expanded, because there is no inner representation this build
+    /// understands and the exact published bytes are the whole of what a direct
+    /// patch needs. Staging *always* gunzipped, which meant an NSIS `.exe`
+    /// could not be cached at all; persistence is non-fatal, so the install
+    /// still worked and every subsequent update silently stayed cache-cold.
     ///
     /// ACTIVE is never touched. If staging fails at any point the previous
     /// ACTIVE is exactly as it was.
@@ -315,12 +342,21 @@ impl ArtifactCache {
             });
         }
 
-        let scratch = self.scratch()?;
-        let tar = scratch.path().join("staged.tar");
-        let tar_size =
-            decompress_bytes_bounded(artifact.as_bytes(), &tar, self.limits.max_tar_bytes)?;
-        let tar_blake3 = FileHash::of_file(&tar)?.to_hex();
-        drop(scratch);
+        let tar = match self.representation {
+            CachedRepresentation::AppTarGz => {
+                let scratch = self.scratch()?;
+                let path = scratch.path().join("staged.tar");
+                let size = decompress_bytes_bounded(
+                    artifact.as_bytes(),
+                    &path,
+                    self.limits.max_tar_bytes,
+                )?;
+                let blake3 = FileHash::of_file(&path)?.to_hex();
+                drop(scratch);
+                Some(TarFacts { blake3, size })
+            }
+            CachedRepresentation::Opaque => None,
+        };
 
         let compressed_blake3 = self.blobs.put(artifact)?.to_hex();
 
@@ -328,8 +364,7 @@ impl ArtifactCache {
             version: version.to_owned(),
             compressed_blake3,
             compressed_size,
-            tar_blake3,
-            tar_size,
+            tar,
             signature: signature_b64.to_owned(),
         };
 
@@ -373,6 +408,22 @@ impl ArtifactCache {
             self.limits.max_blob_bytes,
         )?;
         Ok(Some(ActiveBase { entry, artifact }))
+    }
+
+    /// Write a verified artifact's exact bytes to `out`.
+    ///
+    /// For the direct patch path, whose backend works on files. The bytes are
+    /// the ones [`active`](Self::active) re-hashed and re-verified, not the blob
+    /// file they were read from, so what lands here is what passed the gate.
+    ///
+    /// No digest check follows, and none is needed: this is a *base*, and a
+    /// wrong base produces a reconstruction that fails the target digest. The
+    /// gate that matters is on the output.
+    pub fn write_artifact(&self, artifact: &VerifiedArtifact, out: &Path) -> Result<()> {
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io("create", parent, e))?;
+        }
+        std::fs::write(out, artifact.as_bytes()).map_err(|e| Error::io("write", out, e))
     }
 
     /// Expand a verified artifact to the exact tar it contains, checking the

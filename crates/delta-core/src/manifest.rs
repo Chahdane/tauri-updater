@@ -44,7 +44,9 @@
 //!             "backend_id": "zstd",
 //!             "patch_url": "https://releases.example.com/1.0.0-to-1.0.1.zst",
 //!             "patch_blake3": "…",
-//!             "patch_size": 393782
+//!             "patch_size": 393782,
+//!             "base_installer_blake3": "…",
+//!             "base_installer_size": 4070756
 //!           }
 //!         }
 //!       }
@@ -224,6 +226,43 @@ pub struct Patch {
     pub patch_blake3: String,
     /// Size of the patch in bytes.
     pub patch_size: u64,
+
+    /// Digest of the installer this patch expects as its base.
+    ///
+    /// Optional, and additive in the same way [`TarLayer`] is: a client that
+    /// ignores it behaves exactly as before, because the gate that decides
+    /// whether a reconstruction is correct has always been
+    /// [`DeltaPlatform::target_installer_blake3`] on the output.
+    ///
+    /// It exists because the base can now come from the managed cache rather
+    /// than from a file the host handed over. Without it a client would fetch a
+    /// patch, apply it and discover the base was wrong only from a failed
+    /// target digest — correct, and paid for in a wasted download. With it the
+    /// wrong base is rejected before anything is fetched, exactly as
+    /// [`TarPatch::base_installer_blake3`] has always allowed for the tar path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_installer_blake3: Option<String>,
+
+    /// Size of that base installer.
+    ///
+    /// Written and checked with [`base_installer_blake3`](Patch::base_installer_blake3);
+    /// a digest and a size that can disagree about which artifact they describe
+    /// would be worse than neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_installer_size: Option<u64>,
+}
+
+impl Patch {
+    /// The base this patch declares, when it declares a complete one.
+    ///
+    /// Both halves or neither: a half-declared base is a manifest that cannot
+    /// be checked and must not be treated as if it had been.
+    pub fn declared_base(&self) -> Option<(&str, u64)> {
+        match (&self.base_installer_blake3, self.base_installer_size) {
+            (Some(blake3), Some(size)) => Some((blake3.as_str(), size)),
+            _ => None,
+        }
+    }
 }
 
 /// Tar-layer patching for one platform.
@@ -436,6 +475,33 @@ impl Manifest {
                         "delta entry for {platform} patches {from} to itself"
                     )));
                 }
+                // The declared base is optional; a half-declared one is not.
+                // A digest with no size, or a size with no digest, describes a
+                // base that cannot be checked, and a client that read only the
+                // half that was there would believe it had checked something.
+                match (&patch.base_installer_blake3, patch.base_installer_size) {
+                    (Some(blake3), Some(size)) => {
+                        FileHash::from_hex(blake3)?;
+                        if size == 0 {
+                            return Err(Error::Manifest(format!(
+                                "patch {from} for {platform} declares a zero-byte base"
+                            )));
+                        }
+                        if blake3 == &entry.target_installer_blake3 {
+                            return Err(Error::Manifest(format!(
+                                "patch {from} for {platform} declares the target \
+                                 installer as its own base"
+                            )));
+                        }
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(Error::Manifest(format!(
+                            "patch {from} for {platform} declares half a base: the \
+                             digest and the size are written together or not at all"
+                        )))
+                    }
+                }
             }
 
             if let Some(tar) = &entry.tar_layer {
@@ -560,6 +626,10 @@ mod tests {
                                 patch_url: "https://example.com/1.0.0-to-1.0.1.zst".to_owned(),
                                 patch_blake3: FileHash::of_bytes(b"patch").to_hex(),
                                 patch_size: 393_782,
+                                base_installer_blake3: Some(
+                                    FileHash::of_bytes(b"base installer").to_hex(),
+                                ),
+                                base_installer_size: Some(4_070_756),
                             },
                         )]),
                         tar_layer: None,
