@@ -39,6 +39,8 @@ struct RuntimeConfig {
     endpoint_override: Option<String>,
     #[cfg(feature = "test-support")]
     base_override: Option<PathBuf>,
+    #[cfg(feature = "test-support")]
+    install_journal: Option<PathBuf>,
 }
 
 struct PluginState {
@@ -94,6 +96,8 @@ pub struct Builder {
     endpoint_override: Option<String>,
     #[cfg(feature = "test-support")]
     base_override: Option<PathBuf>,
+    #[cfg(feature = "test-support")]
+    install_journal: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Builder {
@@ -128,6 +132,8 @@ impl Default for Builder {
             endpoint_override: None,
             #[cfg(feature = "test-support")]
             base_override: None,
+            #[cfg(feature = "test-support")]
+            install_journal: None,
         }
     }
 }
@@ -233,6 +239,24 @@ impl Builder {
         self
     }
 
+    /// Record the chosen update path to `path` just before installation.
+    ///
+    /// This method does not exist unless the non-default `test-support` feature
+    /// is enabled, and it is not a logging facility: it exists because on
+    /// Windows `tauri_plugin_updater::Update::install` calls `ShellExecuteW` and
+    /// then `std::process::exit(0)`. The process is gone before `install()`
+    /// returns, so a harness driving a real Windows update can never read the
+    /// `Outcome` — and "which path ran" is exactly the assertion that separates
+    /// a working delta updater from one that silently downloads everything
+    /// (`docs/DECISIONS.md` #22).
+    ///
+    /// One line, overwritten each run: `full`, `delta` or `tar-delta`.
+    #[cfg(feature = "test-support")]
+    pub fn install_journal_for_tests(mut self, path: impl Into<PathBuf>) -> Self {
+        self.install_journal = Some(path.into());
+        self
+    }
+
     /// Build the plugin.
     ///
     /// Registration itself has no fallible user configuration. At application
@@ -334,6 +358,8 @@ impl RuntimeConfig {
             endpoint_override: builder.endpoint_override.clone(),
             #[cfg(feature = "test-support")]
             base_override: builder.base_override.clone(),
+            #[cfg(feature = "test-support")]
+            install_journal: builder.install_journal.clone(),
         })
     }
 }
@@ -582,11 +608,19 @@ impl Update {
             .map_err(|e| Error::Fetch(format!("building the HTTP client: {e}")))?;
 
         let progress = |phase| {
+            // Written before the handoff, because on Windows the handoff does
+            // not return: see Builder::install_journal_for_tests.
+            #[cfg(feature = "test-support")]
+            if let (FlowPhase::Installing { source }, Some(path)) =
+                (phase, self.config.install_journal.as_ref())
+            {
+                let _ = std::fs::write(path, source);
+            }
             let event = match phase {
                 FlowPhase::Downloading => ProgressEvent::Downloading,
                 FlowPhase::Reconstructing => ProgressEvent::Reconstructing,
                 FlowPhase::Verifying => ProgressEvent::Verifying,
-                FlowPhase::Installing => ProgressEvent::Installing,
+                FlowPhase::Installing { .. } => ProgressEvent::Installing,
             };
             (self.progress)(event);
         };
