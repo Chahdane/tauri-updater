@@ -4,9 +4,10 @@ Differential updates for Tauri v2. The plugin keeps Tauri's official update
 check and installer, but may reconstruct the exact published artifact from a
 smaller patch before handing it to `tauri-plugin-updater`.
 
-This is pre-release software. The supported v0.1 path is **macOS
-`.app.tar.gz`**. Linux and Windows client support is not claimed, and the final
-security audit and release gate have not happened yet.
+This is pre-release software. The supported v0.1 paths are **macOS
+`.app.tar.gz`** and **Windows x86_64 NSIS `-setup.exe`**. Linux, Windows MSI,
+and Windows ARM64 client support are not claimed, and the final security audit
+and release gate have not happened yet.
 
 ## What is proven
 
@@ -15,6 +16,13 @@ security audit and release gate have not happened yet.
   the real Tauri installer.
 - The harness asserts the update source and exact installed binary hashes, so a
   Full fallback cannot masquerade as a delta success.
+- A real Windows x86_64 NSIS installation completed `1.0.0 -> 1.0.1` via Full,
+  promoted only after relaunch, then completed `1.0.1 -> 1.0.2` via
+  DirectDelta. A corrupt cached installer degraded to Full and still installed
+  the exact expected executable.
+- The two controlled NSIS direct patches were 98.2520% and 98.2523% of Full.
+  Windows support is therefore a correctness claim, not a bandwidth-savings
+  claim; solid LZMA compression makes opaque installer patches expensive.
 - On controlled example-app pairs, a direct compressed-artifact patch was
   95.5–96.1% of a Full download while a tar-layer patch was 16.0–16.1%
   (release-candidate build, 2026-08-14; earlier controlled runs measured
@@ -25,8 +33,8 @@ security audit and release gate have not happened yet.
   bounded reconstruction, cache re-verification, and release-time patch
   round-trips are enforced and tested.
 
-GitHub-hosted HTTPS Full→TarDelta and Apple Developer ID/notarized end-to-end
-tests remain credential-bound validation gaps. See
+GitHub-hosted HTTPS Full→TarDelta, Apple Developer ID/notarized, and Windows
+Authenticode-signed end-to-end tests remain credential-bound validation gaps. See
 [Releasing](docs/RELEASING.md) and the evidence ledger in
 [research/FINDINGS.md](research/FINDINGS.md).
 
@@ -245,14 +253,14 @@ constants, so it fails rather than drifts.
 
 | | v0.1 |
 | --- | --- |
-| Client platform | macOS, `.app.tar.gz` artifacts |
-| Architecture | `aarch64` **demonstrated**; `x86_64` expected but not demonstrated (see below) |
+| Client platform | macOS `.app.tar.gz`; Windows NSIS `-setup.exe` |
+| Architecture | macOS `aarch64` and Windows `x86_64` **demonstrated**; Intel macOS and Windows ARM64 not demonstrated |
 | Rust | 1.88 or newer |
 | `tauri` | 2 |
 | `tauri-plugin-updater` | `>=2.10.1, <2.11.0` |
-| Release bundler | tauri-cli 2.10.1 (exact), for the archive the tar layer must reproduce |
-| Artifact representation | `app-tar-gz-v1` |
-| Recompression recipe | `tauri-app-tar-gz-v1` (`tar` 0.4.x into `flate2` with the zlib-rs backend) |
+| Release bundler | tauri-cli 2.10.1 (exact) |
+| Artifact representation | macOS `app-tar-gz-v1`; Windows `opaque-v1` |
+| Recompression recipe | macOS `tauri-app-tar-gz-v1` (`tar` 0.4.x into `flate2` with the zlib-rs backend); none for NSIS |
 | Delta backend | `zstd` |
 
 The updater range is narrow on purpose: six behaviours this plugin's safety
