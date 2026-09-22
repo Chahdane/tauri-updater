@@ -253,6 +253,15 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # Into the log as well as the summary: the log is what a maintainer
+          # can fetch and turn into a research record, and a measurement that
+          # exists only in rendered HTML is a measurement nobody will cite.
+          for f in /c/delta-nsis-e2e/versions.json /c/delta-nsis-e2e/e2e-report.json; do
+            [ -f "$f" ] || continue
+            echo "----- BEGIN $(basename "$f") -----"
+            cat "$f"
+            echo "----- END $(basename "$f") -----"
+          done
           {
             echo "### Windows NSIS end-to-end"
             echo ""
