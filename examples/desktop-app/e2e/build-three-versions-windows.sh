@@ -93,6 +93,15 @@ cargo = pathlib.Path(app_dir, "Cargo.toml")
 cargo.write_text(re.sub(r'^version = "[^"]+"$', f'version = "{version}"',
                         cargo.read_text(), count=1, flags=re.M))
 PY
+  # Preserve the two version sources exactly as this build saw them. After all
+  # three builds the working tree necessarily describes 1.0.2, but publishing
+  # 1.0.1 must be checked against 1.0.1's inputs rather than that final mutable
+  # state. Keeping them beside each other also lets --app-config enforce that
+  # tauri.conf.json and Cargo.toml agree.
+  mkdir -p "$OUT/v$version/app-config"
+  cp "$APP_DIR/tauri.conf.json" "$OUT/v$version/app-config/"
+  cp "$APP_DIR/Cargo.toml" "$OUT/v$version/app-config/"
+
   local bundle="$ROOT/target/release/bundle/nsis"
   # Emptied first, not filtered afterwards. An NSIS installer's filename carries
   # its version -- `DeltaUpdaterExample_1.0.1_x64-setup.exe` -- so unlike the
@@ -164,7 +173,7 @@ publish() {
   echo "==> publishing $from -> $to"
   "$ROOT/target/release/delta-release.exe" \
     --platform "$PLATFORM" \
-    --app-config "$APP_DIR/tauri.conf.json" \
+    --app-config "$OUT/v$to/app-config/tauri.conf.json" \
     --target-version "$to" --from-version "$from" \
     --previous-installer "$OUT/v$from/$PRODUCT-setup.exe" \
     --new-installer      "$OUT/v$to/$PRODUCT-setup.exe" \
