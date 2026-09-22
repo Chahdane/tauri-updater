@@ -589,8 +589,9 @@ State ratios per platform, never as one number:
 - **Linux / AppImage** — the intended case, and the engine performs as designed.
 - **macOS** — correct but not yet worth enabling; wait for the uncompressed-tar
   work.
-- **Windows** — unmeasured. NSIS `.exe` and `.msi` are also compressed
-  containers, so expect something closer to macOS than Linux until measured.
+- **Windows** — later measured for NSIS in F38: two controlled direct patches
+  were 98.2520% and 98.2523% of Full, confirming the compressed-container
+  expectation. MSI remains unmeasured.
 
 A single "delta updates for Tauri" claim that quietly averages these would
 overpromise on two platforms out of three.

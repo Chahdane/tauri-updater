@@ -235,6 +235,10 @@ moment at which it exists — and the artifact server's request log is the
 independent second witness for what was *not* fetched.
 
 This runs in CI on every push as the `windows nsis e2e` job.
+CI run 139 demonstrated the complete ladder on Windows x86_64 with NSIS,
+tauri-cli 2.10.1 and `tauri-plugin-updater` 2.10.1. Its two controlled direct
+patches were 98.2520% and 98.2523% of Full; record that as correctness evidence,
+not as a savings claim.
 
 ## Authenticode, and what this repository does not sign
 

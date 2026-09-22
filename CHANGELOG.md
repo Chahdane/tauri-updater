@@ -68,22 +68,31 @@ with nothing going red.
 - `crates/plugin/tests/direct_delta_flow.rs` runs the whole Full → relaunch →
   DirectDelta ladder on every CI platform, plus the fallback and fail-closed
   matrix, with every fallback case asserting the direct path was reached first.
+- **Real Windows NSIS evidence.** On `windows-latest` x86_64, one installation
+  completed Full -> relaunch -> DirectDelta through the public API and real
+  NSIS installer. The harness asserted selected paths, request logs, promotion,
+  exact installed executable hashes, and corrupt-cache Full fallback. The two
+  direct patches measured 98.2520% and 98.2523% of Full.
 
 ### v0.1 scope
 
-**Supported.** macOS `.app.tar.gz` artifacts, Rust 1.88+, `tauri` 2,
+**Supported.** macOS `.app.tar.gz` and Windows x86_64 NSIS `-setup.exe`
+artifacts, Rust 1.88+, `tauri` 2,
 `tauri-plugin-updater` `>=2.10.1, <2.11.0`, releases generated with tauri-cli
-2.10.1, `app-tar-gz-v1` artifacts rebuilt by the `tauri-app-tar-gz-v1` recipe,
-zstd patches. The README carries the full table and a test keeps it honest.
+2.10.1, `app-tar-gz-v1` macOS artifacts rebuilt by the
+`tauri-app-tar-gz-v1` recipe, `opaque-v1` Windows installers, zstd patches. The
+README carries the full table and a test keeps it honest.
 
 **Demonstrated.** A real macOS `aarch64` application completing Full then
-TarDelta through the public API and the real Tauri installer, with asserted
+TarDelta, and a real Windows x86_64 NSIS installation completing Full then
+DirectDelta, through the public API and real Tauri installers, with asserted
 update sources and exact installed binary hashes.
 
 **Not demonstrated, and stated as such.** GitHub-hosted HTTPS end-to-end and
 Apple Developer ID/notarized end-to-end are credential-bound; Intel macOS has no
-real-app run; Linux and Windows client support is not claimed. Release freshness
-is not proven and this is not a TUF-style framework.
+real-app run; Windows Authenticode-signed, MSI and ARM64 runs are absent; Linux
+client support is not claimed. Release freshness is not proven and this is not
+a TUF-style framework.
 
 ### Added
 
