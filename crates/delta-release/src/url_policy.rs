@@ -2,9 +2,9 @@
 //!
 //! # Why this module exists
 //!
-//! There were two policies. [`build_release`](crate::build_release) narrowed its
+//! There were two policies. [`crate::build_release`] narrowed its
 //! `allow_insecure_urls` opt-in to loopback, exactly as its documentation said.
-//! [`verify_release`](crate::verify::verify_release) — the independent gate that
+//! [`crate::verify::verify_release`] — the independent gate that
 //! reads the manifest back as a stranger — accepted **every** `http://` URL
 //! whenever its flag was set, while its CLI help said the flag was "for loopback
 //! rehearsals only".
