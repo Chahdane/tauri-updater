@@ -29,6 +29,26 @@ fn key() -> Key {
 }
 
 impl Key {
+    /// A signed artifact that is **not** a gzip stream.
+    ///
+    /// Shaped like what it stands in for: an NSIS `-setup.exe` starts `MZ` and
+    /// is a compressed solid archive, so nothing here can open it and nothing
+    /// should try. The bytes are noise rather than a run of zeroes, so a test
+    /// that accidentally gunzipped them would fail loudly.
+    fn opaque_artifact(&self, version: &str) -> (VerifiedArtifact, String) {
+        let mut bytes = b"MZ".to_vec();
+        let mut x = version
+            .bytes()
+            .fold(17u8, |a, b| a.wrapping_mul(31).wrapping_add(b));
+        for _ in 0..20_000 {
+            x = x.wrapping_mul(97).wrapping_add(13);
+            bytes.push(x);
+        }
+        let signature = self.sign(&bytes);
+        let artifact = verify_artifact(bytes, &signature, &self.public).expect("must verify");
+        (artifact, signature)
+    }
+
     fn sign(&self, bytes: &[u8]) -> String {
         use base64::Engine as _;
         base64::engine::general_purpose::STANDARD.encode(
@@ -81,8 +101,29 @@ fn namespace(fingerprint: &str) -> Namespace {
     }
 }
 
+/// The namespace a Windows or Linux client uses: an artifact stored whole.
+fn opaque_namespace(fingerprint: &str) -> Namespace {
+    Namespace {
+        bundle_id: "com.example.delta".to_owned(),
+        platform: "windows-x86_64".to_owned(),
+        arch: "x86_64".to_owned(),
+        pubkey_fingerprint: fingerprint.to_owned(),
+        representation: crate::release_identity::REPRESENTATION_OPAQUE_V1.to_owned(),
+        recompression: RECOMPRESSION_NONE.to_owned(),
+    }
+}
+
 fn cache(root: &Path, key: &Key) -> ArtifactCache {
     ArtifactCache::open(root, namespace(&key.fingerprint), CacheLimits::default()).expect("open")
+}
+
+fn opaque_cache(root: &Path, key: &Key) -> ArtifactCache {
+    ArtifactCache::open(
+        root,
+        opaque_namespace(&key.fingerprint),
+        CacheLimits::default(),
+    )
+    .expect("open")
 }
 
 /// A cache that collects unreferenced blobs immediately, for the tests that are
@@ -187,10 +228,14 @@ fn the_cached_tar_digest_matches_the_artifact_it_describes() {
         .expect("stage");
 
     let out = dir.path().join("expanded.tar");
+    let tar = entry
+        .tar
+        .as_ref()
+        .expect("an app-tar-gz entry records its tar");
     cache
-        .expand_to_tar(&artifact, &out, &entry.tar_blake3, entry.tar_size)
+        .expand_to_tar(&artifact, &out, &tar.blake3, tar.size)
         .expect("the recorded tar digest must describe this artifact");
-    assert_eq!(std::fs::metadata(&out).expect("stat").len(), entry.tar_size);
+    assert_eq!(std::fs::metadata(&out).expect("stat").len(), tar.size);
 }
 
 // ---- everything that must not promote -----------------------------------
@@ -383,15 +428,19 @@ fn a_tar_that_does_not_match_the_manifests_declaration_is_refused() {
         .expect("stage");
 
     let out = dir.path().join("wrong.tar");
+    let tar = entry
+        .tar
+        .as_ref()
+        .expect("an app-tar-gz entry records its tar");
     let wrong = FileHash::of_bytes(b"a different tar entirely").to_hex();
     let err = cache
-        .expand_to_tar(&artifact, &out, &wrong, entry.tar_size)
+        .expand_to_tar(&artifact, &out, &wrong, tar.size)
         .expect_err("a base tar digest mismatch must be refused");
     assert!(matches!(err, Error::ChecksumMismatch { .. }), "{err}");
     assert!(!out.exists(), "and the wrong tar must not be left behind");
 
     let err = cache
-        .expand_to_tar(&artifact, &out, &entry.tar_blake3, entry.tar_size + 1)
+        .expand_to_tar(&artifact, &out, &tar.blake3, tar.size + 1)
         .expect_err("a base tar size mismatch must be refused");
     assert!(matches!(err, Error::UnexpectedOutputSize { .. }), "{err}");
 }
@@ -455,8 +504,10 @@ fn a_state_file_from_a_future_format_is_not_interpreted() {
         version: "9.9.9".to_owned(),
         compressed_blake3: "00".repeat(32),
         compressed_size: 1,
-        tar_blake3: "11".repeat(32),
-        tar_size: 1,
+        tar: Some(TarFacts {
+            blake3: "11".repeat(32),
+            size: 1,
+        }),
         signature: "sig".to_owned(),
     });
     std::fs::write(
@@ -767,4 +818,192 @@ fn an_intact_blob_with_the_wrong_recorded_signature_is_a_miss() {
             .version,
         "1.0.1"
     );
+}
+
+// ---- the opaque representation -------------------------------------------
+//
+// Blockers three and four of the Windows set, as tests. Staging used to gunzip
+// every verified artifact unconditionally in order to record a tar digest, so a
+// Windows installer could not be persisted at all -- and because cache
+// persistence is deliberately non-fatal, the install still succeeded and every
+// later update silently stayed cache-cold. The namespace, meanwhile, named
+// `app-tar-gz-v1` on every operating system.
+
+#[test]
+fn an_opaque_installer_is_staged_without_being_opened() {
+    // The exact case that used to fail: bytes that are not a gzip stream.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let cache = opaque_cache(dir.path(), &k);
+    let (artifact, signature) = k.opaque_artifact("1.0.1");
+
+    let entry = cache
+        .stage_pending("1.0.1", &artifact, &signature)
+        .expect("a non-gzip installer must be cacheable");
+
+    assert_eq!(entry.version, "1.0.1");
+    assert_eq!(entry.compressed_size, artifact.len() as u64);
+    assert_eq!(
+        entry.compressed_blake3,
+        FileHash::of_bytes(artifact.as_bytes()).to_hex()
+    );
+    assert!(
+        entry.tar.is_none(),
+        "there is no tar inside an opaque artifact, and claiming one would be a lie"
+    );
+}
+
+#[test]
+fn an_opaque_base_survives_the_promotion_cycle_and_re_verifies() {
+    // The whole point of caching a Windows installer: the exact official bytes
+    // come back out, re-hashed and re-checked against the configured key, ready
+    // to be a direct patch's base.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let cache = opaque_cache(dir.path(), &k);
+    let (artifact, signature) = k.opaque_artifact("1.0.1");
+
+    cache
+        .stage_pending("1.0.1", &artifact, &signature)
+        .expect("stage");
+    assert!(
+        cache.active(&k.public).expect("active").is_none(),
+        "staging alone must not make an artifact the base"
+    );
+
+    assert_eq!(
+        cache.reconcile("1.0.1").expect("reconcile"),
+        Reconciliation::Promoted {
+            version: "1.0.1".to_owned()
+        }
+    );
+
+    let base = cache
+        .active(&k.public)
+        .expect("active")
+        .expect("1.0.1 is the base now");
+    assert_eq!(base.artifact.as_bytes(), artifact.as_bytes());
+    assert!(base.entry.tar.is_none());
+
+    // And it can be handed to the direct patch backend, which works on files.
+    let out = dir.path().join("work").join("base.artifact");
+    cache
+        .write_artifact(&base.artifact, &out)
+        .expect("materialise");
+    assert_eq!(std::fs::read(&out).expect("read"), artifact.as_bytes());
+}
+
+#[test]
+fn a_rotated_key_empties_an_opaque_cache_too() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    {
+        let cache = opaque_cache(dir.path(), &k);
+        let (artifact, signature) = k.opaque_artifact("1.0.1");
+        cache
+            .stage_pending("1.0.1", &artifact, &signature)
+            .expect("stage");
+        cache.reconcile("1.0.1").expect("promote");
+    }
+
+    let rotated = key();
+    let cache = opaque_cache(dir.path(), &rotated);
+    assert_eq!(
+        cache.reconcile("1.0.1").expect("reconcile"),
+        Reconciliation::NamespaceReset
+    );
+    assert!(cache.active(&rotated.public).expect("active").is_none());
+}
+
+#[test]
+fn a_macos_entry_is_not_readable_as_a_windows_one_or_the_reverse() {
+    // Namespace isolation across representations, in both directions. The
+    // scenario that matters is not two builds sharing a directory; it is a
+    // client whose representation changed under it, which is what the
+    // hard-coded namespace would have produced on Windows.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+
+    {
+        let macos = cache(dir.path(), &k);
+        let (artifact, signature) = k.artifact("1.0.1");
+        macos
+            .stage_pending("1.0.1", &artifact, &signature)
+            .expect("stage");
+        macos.reconcile("1.0.1").expect("promote");
+        assert!(macos.active(&k.public).expect("active").is_some());
+    }
+
+    // Same directory, same key, same application -- different representation.
+    let windows = opaque_cache(dir.path(), &k);
+    assert_eq!(
+        windows.reconcile("1.0.1").expect("reconcile"),
+        Reconciliation::NamespaceReset,
+        "a cache holding macOS bundles must not be read as a Windows one"
+    );
+    assert!(windows.active(&k.public).expect("active").is_none());
+
+    // And back, which is the same property from the other side.
+    let (artifact, signature) = k.opaque_artifact("1.0.2");
+    windows
+        .stage_pending("1.0.2", &artifact, &signature)
+        .expect("stage");
+    windows.reconcile("1.0.2").expect("promote");
+
+    let macos = cache(dir.path(), &k);
+    assert_eq!(
+        macos.reconcile("1.0.2").expect("reconcile"),
+        Reconciliation::NamespaceReset
+    );
+    assert!(macos.active(&k.public).expect("active").is_none());
+}
+
+#[test]
+fn a_representation_this_build_does_not_implement_makes_the_cache_unusable() {
+    // Not "empty": storing artifacts under a representation nothing can reason
+    // about is how a Windows installer ends up recorded as a macOS bundle. The
+    // plugin turns this into a CacheUnavailable diagnostic and a Full download.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let k = key();
+    let mut ns = opaque_namespace(&k.fingerprint);
+    ns.representation = "squashfs-appimage-v9".to_owned();
+
+    let err = ArtifactCache::open(dir.path(), ns, CacheLimits::default())
+        .expect_err("an uninterpretable namespace must not open");
+    assert!(err.to_string().contains("does not implement"), "got: {err}");
+
+    // A recompression recipe that does not go with the representation is the
+    // same problem: the pair is what the cache is bound to.
+    let mut ns = namespace(&k.fingerprint);
+    ns.recompression = RECOMPRESSION_NONE.to_owned();
+    assert!(ArtifactCache::open(dir.path(), ns, CacheLimits::default()).is_err());
+}
+
+#[test]
+fn the_namespace_this_build_uses_matches_the_platform_it_runs_on() {
+    // The mapping is a fact about what this build can do with an artifact, so
+    // it lives in one place and is asserted rather than repeated at each
+    // construction site.
+    let ns = Namespace::for_current_platform("com.example.delta", &"aa".repeat(32));
+
+    assert_eq!(ns.platform, crate::release_identity::current_platform());
+    assert_eq!(ns.arch, std::env::consts::ARCH);
+
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            ns.representation_kind(),
+            Some(CachedRepresentation::AppTarGz)
+        );
+        assert_eq!(
+            ns.representation,
+            crate::manifest::REPRESENTATION_APP_TAR_GZ_V1
+        );
+    } else {
+        assert_eq!(ns.representation_kind(), Some(CachedRepresentation::Opaque));
+        assert_eq!(
+            ns.representation,
+            crate::release_identity::REPRESENTATION_OPAQUE_V1
+        );
+        assert_eq!(ns.recompression, RECOMPRESSION_NONE);
+    }
 }

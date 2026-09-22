@@ -54,7 +54,12 @@ use serde::{Deserialize, Serialize};
 use crate::{Error, Result};
 
 /// Version of the on-disk cache layout.
-pub const CACHE_FORMAT_VERSION: u32 = 1;
+///
+/// Bumped to 2 when [`CacheEntry`] stopped assuming every cached artifact has a
+/// tar inside it. A cache written by version 1 is not read; it is stepped over
+/// and emptied, which costs one full download on one launch and is the outcome
+/// every other unreadable-cache case already has.
+pub const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// How many times [`StateStore::initialise`] will step over a generation that
 /// appeared underneath it before giving up.
@@ -80,10 +85,113 @@ pub struct Namespace {
     pub arch: String,
     /// BLAKE3 of the configured public key, so a key rotation empties the cache.
     pub pubkey_fingerprint: String,
-    /// Representation identifier from the manifest's tar layer.
+    /// What the cached artifact is, e.g. `app-tar-gz-v1` or `opaque-v1`.
+    ///
+    /// Derived from the platform rather than hard-coded, which is blocker four
+    /// of the Windows set: every operating system used to be given
+    /// `app-tar-gz-v1` / `tauri-app-tar-gz-v1`, so a Windows cache claimed to
+    /// hold macOS bundles.
     pub representation: String,
-    /// Recompression recipe identifier.
+    /// Recompression recipe identifier, or [`RECOMPRESSION_NONE`] when the
+    /// artifact is stored and reused exactly as published.
     pub recompression: String,
+}
+
+/// Recompression recipe identifier for an artifact this build never takes
+/// apart.
+///
+/// Named rather than omitted, for the same reason `opaque-v1` is: the field is
+/// part of what the cache is bound to, and an absent value is a value an
+/// attacker — or a future refactor — gets to choose the meaning of.
+pub const RECOMPRESSION_NONE: &str = "none";
+
+/// What a cached artifact is, and therefore what this build may do with it.
+///
+/// Parsed from [`Namespace::representation`] once, at [`open`], so the rest of
+/// the cache asks an enum rather than comparing strings at every branch.
+///
+/// [`open`]: crate::cache::ArtifactCache::open
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CachedRepresentation {
+    /// A gzipped tarball whose inner tar is what patches apply to: macOS
+    /// `.app.tar.gz`. Staging expands it once to record the tar's digest, and
+    /// the tar-layer path reuses that.
+    AppTarGz,
+    /// An artifact with no inner layer this build understands, stored and
+    /// reused byte-for-byte: a Windows NSIS installer or MSI, a Linux AppImage.
+    ///
+    /// The cache's job for one of these is smaller and entirely sufficient:
+    /// hold the exact official installer the user is running, so the direct
+    /// patch path has the base it was generated against.
+    Opaque,
+}
+
+impl Namespace {
+    /// The namespace this build uses on the platform it is running on.
+    ///
+    /// The platform-to-representation mapping lives here, in one place, rather
+    /// than at the plugin's construction site: it is a fact about what this
+    /// build can do with an artifact, not a configuration choice a host makes.
+    pub fn for_current_platform(bundle_id: &str, pubkey_fingerprint: &str) -> Self {
+        let (representation, recompression) = if cfg!(target_os = "macos") {
+            (
+                crate::manifest::REPRESENTATION_APP_TAR_GZ_V1,
+                crate::manifest::RECOMPRESSION_TAURI_APP_TAR_GZ_V1,
+            )
+        } else {
+            // Windows installers and Linux AppImages are not gzipped tarballs,
+            // and nothing here can rebuild one byte-for-byte from its contents.
+            // Stored whole, which is all the direct patch path needs.
+            (
+                crate::release_identity::REPRESENTATION_OPAQUE_V1,
+                RECOMPRESSION_NONE,
+            )
+        };
+        Self {
+            bundle_id: bundle_id.to_owned(),
+            platform: crate::release_identity::current_platform(),
+            arch: std::env::consts::ARCH.to_owned(),
+            pubkey_fingerprint: pubkey_fingerprint.to_owned(),
+            representation: representation.to_owned(),
+            recompression: recompression.to_owned(),
+        }
+    }
+
+    /// What this build may do with an artifact cached under this namespace.
+    ///
+    /// `None` means the namespace names a representation this build does not
+    /// implement, which makes the cache unusable rather than merely empty.
+    pub fn representation_kind(&self) -> Option<CachedRepresentation> {
+        match self.representation.as_str() {
+            crate::manifest::REPRESENTATION_APP_TAR_GZ_V1
+                if self.recompression == crate::manifest::RECOMPRESSION_TAURI_APP_TAR_GZ_V1 =>
+            {
+                Some(CachedRepresentation::AppTarGz)
+            }
+            crate::release_identity::REPRESENTATION_OPAQUE_V1
+                if self.recompression == RECOMPRESSION_NONE =>
+            {
+                Some(CachedRepresentation::Opaque)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What is inside a compressed artifact, when this build knows how to look.
+///
+/// The two values travel together because neither is usable alone: the digest
+/// identifies the tar and the size bounds the decompression that produces it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TarFacts {
+    /// BLAKE3 of the exact tar inside the artifact.
+    ///
+    /// Lets a manifest's declared base tar be rejected without decompressing
+    /// anything. It is a filter, not a proof — the tar is re-hashed after it is
+    /// actually expanded.
+    pub blake3: String,
+    /// Size of that tar.
+    pub size: u64,
 }
 
 /// One cached artifact, identified by content rather than by filename.
@@ -95,14 +203,20 @@ pub struct CacheEntry {
     pub compressed_blake3: String,
     /// Size of the compressed installer.
     pub compressed_size: u64,
-    /// BLAKE3 of the exact tar inside it.
+    /// The tar inside the artifact, for representations that have one.
     ///
-    /// Lets a manifest's declared base tar be rejected without decompressing
-    /// anything. It is a filter, not a proof — the tar is re-hashed after it is
-    /// actually expanded.
-    pub tar_blake3: String,
-    /// Size of that tar.
-    pub tar_size: u64,
+    /// `None` for an `opaque-v1` artifact — a Windows installer or a Linux
+    /// AppImage — which this build stores and reuses exactly as published and
+    /// never opens. It was two unconditional fields, and that was the third of
+    /// the four blockers that made a Windows delta unreachable: staging *always*
+    /// gunzipped the verified artifact to fill them, so an NSIS `.exe` could not
+    /// be persisted at all and every Windows update stayed cache-cold.
+    ///
+    /// An `Option` rather than empty strings because "there is no tar" and "the
+    /// tar hashes to nothing" are different claims, and only one of them is
+    /// true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tar: Option<TarFacts>,
     /// The base64 minisign signature published over the compressed artifact.
     ///
     /// Stored because nothing else can supply it later: the manifest for the
@@ -368,8 +482,10 @@ mod tests {
             version: version.to_owned(),
             compressed_blake3: format!("{version:0>64}").replace('.', "0"),
             compressed_size: 4_070_756,
-            tar_blake3: format!("{version:1>64}").replace('.', "1"),
-            tar_size: 9_461_248,
+            tar: Some(TarFacts {
+                blake3: format!("{version:1>64}").replace('.', "1"),
+                size: 9_461_248,
+            }),
             signature: format!("signature-for-{version}"),
         }
     }
