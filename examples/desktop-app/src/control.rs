@@ -27,6 +27,13 @@
 //! - `GET /outcome` — the last outcome, or `none`.
 //! - `GET /version` — the running app's version.
 //! - `GET /cache` — the artifact cache's ACTIVE and PENDING entries.
+//!
+//! On Windows `/trigger` **never responds**, and that is correct rather than a
+//! bug in the harness: Tauri's Windows installer handoff calls `ShellExecuteW`
+//! and then `std::process::exit(0)`, so the process is gone before the update
+//! returns. `DELTA_E2E_INSTALL_JOURNAL` names a file the plugin writes the
+//! chosen path to immediately before that handoff, which is the only place the
+//! selected path can still be read.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -53,6 +60,13 @@ pub fn configure_delta(
     }
     if let Ok(base) = std::env::var("DELTA_E2E_BASE_ARTIFACT") {
         builder = builder.direct_base_artifact_for_tests(base);
+    }
+    // On Windows the installer handoff never returns -- Tauri calls
+    // ShellExecuteW and then exit(0) -- so `/trigger` cannot report the chosen
+    // path. The journal is written just before the handoff, which is the last
+    // moment at which anything can observe it.
+    if let Ok(journal) = std::env::var("DELTA_E2E_INSTALL_JOURNAL") {
+        builder = builder.install_journal_for_tests(journal);
     }
     builder.dangerous_insecure_transport_protocol_for_tests(true)
 }

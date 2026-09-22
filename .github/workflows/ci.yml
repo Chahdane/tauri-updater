@@ -130,6 +130,21 @@ jobs:
           grep -q "0 failed; 0 ignored" <<< "$out" \
             || { echo "::error::tar-delta tests were filtered or ignored"; exit 1; }
 
+      # The Windows delta path, asserted the same way. It runs on every platform
+      # because its artifacts are opaque blobs, so a change that breaks the
+      # Windows route fails here before the expensive NSIS job even starts.
+      - name: Confirm the direct-delta path assertion actually ran
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(cargo test -p tauri-plugin-updater-delta --features test-support \
+                  --test direct_delta_flow --locked -- --nocapture)
+          echo "$out"
+          grep -q "test the_full_relaunch_direct_delta_ladder_completes ... ok" <<< "$out" \
+            || { echo "::error::the Full -> relaunch -> DirectDelta ladder did not run"; exit 1; }
+          grep -q "0 failed; 0 ignored" <<< "$out" \
+            || { echo "::error::direct-delta tests were filtered or ignored"; exit 1; }
+
       - name: Confirm the forgery doctests actually ran
         shell: bash
         run: |
@@ -181,3 +196,76 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build at the declared minimum supported Rust version
         run: cargo check --workspace --all-targets --all-features --locked
+
+  # ---------------------------------------------------------------------------
+  # The real Windows proof. Three `cargo tauri build` runs, two releases, one
+  # installation moved 1.0.0 -> 1.0.1 -> 1.0.2 through the real NSIS installer
+  # Tauri invokes.
+  #
+  # The engine-level Windows path is covered by
+  # crates/plugin/tests/direct_delta_flow.rs, which runs in the matrix above on
+  # every platform. That proves the mechanism. It cannot prove that a real NSIS
+  # installer accepts the reconstructed bytes, that the cache survives a real
+  # reinstall, or that the promotion happens on a real relaunch. Only this does.
+  #
+  # Expensive on purpose, and separate so a failure here reads as "the Windows
+  # client regressed" rather than "something is wrong somewhere".
+  # ---------------------------------------------------------------------------
+  windows-e2e:
+    name: windows nsis e2e
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install the pinned Tauri CLI
+        shell: bash
+        # Pinned for the same reason the release workflow pins it: the bundler
+        # inside it decides what an installer looks like, and a harness that
+        # measures one bundler while the release ships another measures nothing.
+        run: cargo install tauri-cli --version "=2.10.1" --locked
+
+      - name: Build three versions and publish two releases
+        shell: bash
+        run: ./examples/desktop-app/e2e/build-three-versions-windows.sh /c/delta-nsis-e2e
+
+      - name: Install, update twice, and assert which path each took
+        shell: bash
+        run: ./examples/desktop-app/e2e/run-nsis-e2e.sh /c/delta-nsis-e2e
+
+      - name: Publish the measurements
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          {
+            echo "### Windows NSIS end-to-end"
+            echo ""
+            for f in /c/delta-nsis-e2e/versions.json /c/delta-nsis-e2e/e2e-report.json; do
+              if [ -f "$f" ]; then
+                echo "<details><summary>$(basename "$f")</summary>"
+                echo ""
+                echo '```json'
+                cat "$f"
+                echo '```'
+                echo ""
+                echo "</details>"
+                echo ""
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the evidence on a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-e2e-logs
+          if-no-files-found: ignore
+          path: |
+            /c/delta-nsis-e2e/run/app.log
+            /c/delta-nsis-e2e/run/server.log
+            /c/delta-nsis-e2e/run/requests.log
+            /c/delta-nsis-e2e/versions.json
+            /c/delta-nsis-e2e/e2e-report.json
