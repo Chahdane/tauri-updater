@@ -230,9 +230,9 @@ impl Builder {
     /// Supply the direct-delta base used by this repository's legacy harness.
     ///
     /// Normal applications do not possess the exact official artifact they are
-    /// currently running and should rely on the managed cache's TarDelta path.
-    /// This method is absent unless the non-default `test-support` feature is
-    /// enabled.
+    /// currently running, and do not need to: the managed cache holds it and
+    /// supplies it to the direct patch path itself. This method predates that
+    /// and is absent unless the non-default `test-support` feature is enabled.
     #[cfg(feature = "test-support")]
     pub fn direct_base_artifact_for_tests(mut self, path: impl Into<PathBuf>) -> Self {
         self.base_override = Some(path.into());

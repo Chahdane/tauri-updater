@@ -163,11 +163,25 @@ where CI memory is cheap.
 The byte engine is shared, but v0.1 support is deliberately narrower than the
 platform-independent tests.
 
-| Platform | Artifact | Notes |
-| --- | --- | --- |
-| Linux | `.AppImage` | Engine and release fixtures only; no v0.1 client/install support claim. |
-| Windows | NSIS `.exe` / `.msi` | CI compilation and engine coverage only; no v0.1 client/install support claim. |
-| macOS | `.app.tar.gz` | Supported v0.1 path. The cache expands the old artifact, patches the tar, and exactly reproduces Tauri's gzip write topology before final verification and the real Tauri install. |
+| Platform | Artifact | Cache representation | Delta path | Notes |
+| --- | --- | --- | --- | --- |
+| macOS | `.app.tar.gz` | `app-tar-gz-v1` | TarDelta, then DirectDelta is declined | Supported v0.1 path. The cache expands the old artifact, patches the tar, and exactly reproduces Tauri's gzip write topology before final verification and the real Tauri install. |
+| Windows | NSIS `-setup.exe` | `opaque-v1` | DirectDelta | The cache holds the exact official installer; the direct patch is applied to it. |
+| Linux | `.AppImage` | `opaque-v1` | DirectDelta | Same mechanism as Windows. Engine and release fixtures only; no real-install evidence. |
+
+### Why the direct patch is declined on macOS
+
+Both paths end at the same gate — the reconstructed bytes must hash to
+`target_installer_blake3` — so this is not a safety distinction. It is an
+economic one. A direct patch between two gzip streams measured 95–96% of a full
+download, because gzip output shifts wholesale when its input changes. Taking it
+when the tar path has already declined would download a patch the size of the
+artifact, apply it, and report a **successful DirectDelta** where a TarDelta had
+failed. Correct bytes, and a story about the mechanism that is not true — which
+is the failure `docs/DECISIONS.md` #22 is about.
+
+An `opaque-v1` artifact has no cheaper path to decline in favour of, so for it
+the direct patch *is* the delta path. See #36.
 
 ## Failure model
 
