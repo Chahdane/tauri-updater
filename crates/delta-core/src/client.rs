@@ -527,7 +527,12 @@ pub fn plan_update(
         Some(base) => base.to_path_buf(),
         None => match cached_direct_base(ctx, patch, space.path(), &binding) {
             Ok(base) => base,
-            Err(e) => return fallback(Some(e), attempted),
+            // The tar path's reason first when there is one. It ran earlier and
+            // it is the cheaper path, so why *it* declined is what a reader
+            // wants -- "the recipe is one this build cannot perform" explains
+            // the fallback; "the cached representation has a tar layer of its
+            // own" only explains why the consolation prize was declined too.
+            Err(e) => return fallback(last_reason.or(Some(e)), attempted),
         },
     };
 

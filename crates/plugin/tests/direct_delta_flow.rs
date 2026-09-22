@@ -162,7 +162,7 @@ impl World {
             to,
             // Tauri's `Update.target` is `updater_os()`, not the manifest key.
             if cfg!(windows) { "windows" } else { "linux" },
-            &installer_url(to),
+            installer_url(to),
             &manifest.platforms[&current_platform()].signature,
             manifest.to_json().expect("serialise"),
         )
@@ -746,7 +746,7 @@ fn a_tampered_final_artifact_installs_nothing() {
         "1.0.1",
         "1.0.2",
         if cfg!(windows) { "windows" } else { "linux" },
-        &installer_url("1.0.2"),
+        installer_url("1.0.2"),
         &forged,
         identity_json,
     );
