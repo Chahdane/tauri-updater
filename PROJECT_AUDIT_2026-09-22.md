@@ -568,3 +568,22 @@ tests unchanged.
 
 That is the clean boundary between finishing the existing release candidate and
 starting Windows support.
+
+## Post-audit resolution: Windows x86_64 NSIS
+
+The audit above is preserved as the state at audit start. Later work on
+2026-09-22 closed the four structural blockers and CI run 139 at commit
+`8a70543` supplied the missing real-install evidence on `windows-latest`:
+
+- the default public API selected Full from an empty `opaque-v1` cache;
+- relaunch promoted only the installed 1.0.1 artifact;
+- the next update selected DirectDelta, fetched the patch but not Full, rebuilt
+  the signed-identity-bound installer, and NSIS installed its exact executable;
+- relaunch promoted 1.0.2; and
+- a corrupt cached blob selected verified Full and installed correctly.
+
+The run used Windows x86_64, NSIS `-setup.exe`, tauri-cli 2.10.1 and
+`tauri-plugin-updater` 2.10.1. Its direct patches were 98.2520% and 98.2523% of
+Full, recorded as a negative efficiency result rather than a savings claim.
+Windows MSI, ARM64 and Authenticode-signed E2E remain unproven and are not
+included in the support claim.

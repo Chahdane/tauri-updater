@@ -60,7 +60,7 @@ surface without improving the security boundary.
 
 P4 does not perform any of these steps.
 
-## Windows client — engine complete, real-install evidence pending
+## Windows client — NSIS x86_64 demonstrated
 
 The managed delta path exists on Windows. It did not before: the direct patch
 path read a base the shipping API never supplied, the cache gunzipped every
@@ -77,10 +77,15 @@ operating system (`docs/DECISIONS.md` #36).
 - The example application builds an NSIS installer on Windows, and a harness
   drives a real install/update/update ladder with the selected path asserted.
 
-**Not yet claimed as supported.** Windows support is claimed only when the
-acceptance criteria in the 2026-09-22 audit are all met on a Windows runner,
-including the patch ratio recorded honestly. Until the NSIS end-to-end has run
-green, this section describes work, not evidence.
+**Supported for the demonstrated target:** Windows x86_64, NSIS `-setup.exe`,
+tauri-cli 2.10.1 and `tauri-plugin-updater` 2.10.1. CI run 139 completed the
+real Full -> relaunch -> DirectDelta ladder, exact installed-executable checks,
+request-log checks, and corrupt-cache fallback on `windows-latest`.
+
+The measured direct patches were 98.2520% and 98.2523% of Full. That is an
+honest negative efficiency result: the path is correct, but these solid-LZMA
+NSIS pairs save almost no bytes. MSI, ARM64 and Authenticode-signed E2E remain
+outside the demonstrated support boundary.
 
 ## After macOS v0.1
 
