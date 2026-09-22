@@ -4,19 +4,36 @@ What a release publishes, what has been proven about it, and what has not.
 
 ## The published asset set
 
-A macOS release publishes exactly these, and nothing else:
+A release publishes exactly these, and nothing else:
 
-| Asset | Who reads it | Present when |
-| --- | --- | --- |
-| `DeltaUpdaterExample.app.tar.gz` | Tauri's updater, on a full download | always |
-| `DeltaUpdaterExample.app.tar.gz.sig` | the wider Tauri ecosystem | always |
-| `manifest.json` | Tauri's `check()`, and this plugin | always |
-| `<old>-to-<new>.zst` | this plugin, direct delta path | a usable predecessor exists |
-| `<old>-to-<new>.tar.zst` | this plugin, tar-layer path | a usable predecessor exists |
+| Asset | Platform | Who reads it | Present when |
+| --- | --- | --- | --- |
+| `DeltaUpdaterExample.app.tar.gz` | macOS | Tauri's updater, on a full download | always |
+| `DeltaUpdaterExample.app.tar.gz.sig` | macOS | the wider Tauri ecosystem | always |
+| `<old>-to-<new>.zst` | macOS | this plugin, direct delta path | a usable predecessor exists |
+| `<old>-to-<new>.tar.zst` | macOS | this plugin, tar-layer path | a usable predecessor exists |
+| `DeltaUpdaterExample_<v>_x64-setup.exe` | Windows | Tauri's updater, on a full download | always |
+| `DeltaUpdaterExample_<v>_x64-setup.exe.sig` | Windows | the wider Tauri ecosystem | always |
+| `<old>-to-<new>-windows.zst` | Windows | this plugin, direct delta path | a usable predecessor exists |
+| `manifest.json` | both | Tauri's `check()`, and this plugin | always |
+
+**One manifest, not two.** The Windows job runs after the macOS one and folds
+its platform entry into the document that job produced. A release has one
+`version` field; two documents would be two answers to "what is the latest
+release". If the Windows job fails, the release keeps a macOS-only manifest,
+which is a valid release rather than a broken one.
+
+**No tar layer on Windows, and `--require-tar-layer` must not be passed there.**
+An NSIS installer is not a gzipped tarball and nothing here can rebuild one
+byte-for-byte from its contents, so the release publishes an `opaque-v1` direct
+patch and the client's cache holds the exact official installer as its base. The
+saving that produces depends entirely on what changed between the two
+installers; NSIS compresses solid with LZMA, so a small source change can move
+most of the archive. Measure it, record it, and do not promise it.
 
 Nothing from the artifact cache, the tar layer's scratch directory, or
-`research/` is uploaded. The upload step names the five patterns explicitly
-rather than globbing a directory.
+`research/` is uploaded. Each upload step names its patterns explicitly rather
+than globbing a directory.
 
 The `.sig` file is not required for updates — the updater reads signatures out of
 the manifest — but every other tool in the Tauri ecosystem expects to find one
@@ -187,6 +204,55 @@ for the dry run; push a `v*` tag for the real thing. It needs a
 `CARGO_REGISTRY_TOKEN` repository secret and runs the full test suite before
 anything irreversible happens, because a crates.io publication cannot be undone
 — a yank leaves the version occupied forever.
+
+## Rehearsing the Windows path
+
+The release workflow's Windows job is the same three steps the harness runs,
+with a real tag instead of a loopback server. Rehearse them locally on a Windows
+machine before tagging:
+
+```sh
+./examples/desktop-app/e2e/build-three-versions-windows.sh /c/delta-nsis-e2e
+./examples/desktop-app/e2e/run-nsis-e2e.sh                /c/delta-nsis-e2e
+```
+
+The first builds three real versions and publishes two releases through
+`delta-release`. The second installs 1.0.0 from its own NSIS installer and moves
+that installation to 1.0.1 and then to 1.0.2, requiring the first transition to
+select **Full** and the second to select **DirectDelta**.
+
+Both assertions matter and neither is the installed hash. Both transitions
+install the published installer, so a hash-only harness would pass twice on an
+updater that downloaded everything — which is exactly what the first real macOS
+run did (`DECISIONS.md` #22).
+
+**How the selected path is read on Windows.** It cannot be read from the return
+value: `tauri_plugin_updater::Update::install` calls `ShellExecuteW` and then
+`std::process::exit(0)`, so the process is gone before the update returns and
+`GET /trigger` never answers. The plugin writes the chosen path to the file
+named by `DELTA_E2E_INSTALL_JOURNAL` immediately before the handoff — the last
+moment at which it exists — and the artifact server's request log is the
+independent second witness for what was *not* fetched.
+
+This runs in CI on every push as the `windows nsis e2e` job.
+
+## Authenticode, and what this repository does not sign
+
+The same distinction as the Apple one below, one platform over.
+
+| | Tauri updater signature | Authenticode |
+| --- | --- | --- |
+| Algorithm | minisign (Ed25519) with an authenticated release identity | Microsoft's PE signature over a code-signing certificate |
+| Covers | the `-setup.exe` bytes | the executable's own integrity and publisher |
+| Checked by | this plugin, before installing | SmartScreen and Windows policy, on run |
+| Key from | `tauri signer generate` | a CA-issued code-signing certificate |
+| This repo has | **yes**, demonstrated | **no** |
+
+The example application is **not** Authenticode signed, and nothing in this
+repository claims it is. An unsigned installer will draw a SmartScreen warning
+on a real user's machine; that is a property of the example, not of the delta
+mechanism, and signing it is a credential-bound step exactly as notarization is
+on macOS.
 
 ## Toolchain, and why it is pinned
 
