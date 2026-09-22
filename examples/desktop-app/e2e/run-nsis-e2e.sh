@@ -43,28 +43,49 @@ case "$(uname -s)" in
 esac
 [ -d "$OUT/v1.0.2" ] || { echo "FATAL: run build-three-versions-windows.sh first" >&2; exit 1; }
 
-INSTALL_DIR="$(cygpath -u "$LOCALAPPDATA")/$PRODUCT"
+INSTALL_DIR=""
 APP_EXE=""
 
-# The installed executable is named by Tauri's `mainBinaryName`, which defaults
-# to `productName` but is a configuration value rather than a fact. Discovered
-# rather than assumed, and required to be unambiguous: a harness that guessed
-# the name would report "nothing was installed" for a rename.
+# Where an NSIS `currentUser` install puts things, and what it calls the binary,
+# are both *configuration* rather than facts: `installMode` decides the root and
+# `mainBinaryName` decides the name. Discovered rather than assumed, and on
+# failure the candidate roots are listed -- a harness that guessed would report
+# "nothing was installed" for what is really a rename, and say nothing useful
+# about where to look instead.
 find_app_exe() {
   shopt -s nullglob
-  local candidates=()
-  local f
-  for f in "$INSTALL_DIR"/*.exe; do
-    case "$(basename "$f")" in
-      uninstall.exe|Uninstall.exe) continue ;;
-    esac
-    candidates+=("$f")
+  local roots=(
+    "$(cygpath -u "$LOCALAPPDATA")/$PRODUCT"
+    "$(cygpath -u "$LOCALAPPDATA")/Programs/$PRODUCT"
+    "$(cygpath -u "${PROGRAMFILES:-/c/Program Files}")/$PRODUCT"
+  )
+  local root f
+  for root in "${roots[@]}"; do
+    [ -d "$root" ] || continue
+    local candidates=()
+    for f in "$root"/*.exe; do
+      case "$(basename "$f")" in
+        uninstall.exe|Uninstall.exe|unins*.exe) continue ;;
+      esac
+      candidates+=("$f")
+    done
+    if [ "${#candidates[@]}" -eq 1 ]; then
+      INSTALL_DIR="$root"
+      APP_EXE="${candidates[0]}"
+      return 0
+    fi
+    if [ "${#candidates[@]}" -gt 1 ]; then
+      echo "FATAL: $root holds ${#candidates[@]} executables; cannot tell which is the app" >&2
+      ls -la "$root" >&2
+      return 1
+    fi
   done
-  if [ "${#candidates[@]}" -ne 1 ]; then
-    echo "FATAL: expected one installed executable in $INSTALL_DIR, found ${#candidates[@]}" >&2
-    return 1
-  fi
-  APP_EXE="${candidates[0]}"
+  echo "FATAL: no installed executable under any of:" >&2
+  for root in "${roots[@]}"; do
+    echo "         $root" >&2
+    [ -d "$root" ] && ls -la "$root" >&2
+  done
+  return 1
 }
 
 H_100="$(sha256sum "$OUT/v1.0.0/$PRODUCT.exe" | awk '{print $1}')"
@@ -135,12 +156,19 @@ run_installer() { # $1 = path to a -setup.exe
 }
 
 uninstall_if_present() {
-  if [ -f "$INSTALL_DIR/uninstall.exe" ]; then
-    ps_run "Start-Process -FilePath '$(cygpath -w "$INSTALL_DIR/uninstall.exe")' -ArgumentList '/S' -Wait" \
-      >/dev/null 2>&1 || true
-    sleep 2
-  fi
-  rm -rf "$INSTALL_DIR" 2>/dev/null || true
+  local root
+  for root in \
+    "$(cygpath -u "$LOCALAPPDATA")/$PRODUCT" \
+    "$(cygpath -u "$LOCALAPPDATA")/Programs/$PRODUCT"; do
+    if [ -f "$root/uninstall.exe" ]; then
+      ps_run "Start-Process -FilePath '$(cygpath -w "$root/uninstall.exe")' -ArgumentList '/S' -Wait" \
+        >/dev/null 2>&1 || true
+      sleep 2
+    fi
+    rm -rf "$root" 2>/dev/null || true
+  done
+  INSTALL_DIR=""
+  APP_EXE=""
 }
 
 # The artifact server, logging every request so a test can assert on what was
@@ -182,10 +210,15 @@ launch() { # $1 = manifest file name served by the artifact server
   DELTA_E2E_INSTALL_JOURNAL="$(cygpath -w "$JOURNAL")" \
   "$APP_EXE" >>"$SCRATCH/app.log" 2>&1 &
   APP_PID=$!
-  for _ in $(seq 1 120); do [ -s "$SCRATCH/.ctl" ] && break; sleep 0.5; done
+  # A cold runner's first launch initialises WebView2, which is slow and only
+  # slow once. Generous rather than tight: a timeout here reads as "the harness
+  # is broken" and costs a whole CI round to find out otherwise.
+  for _ in $(seq 1 360); do [ -s "$SCRATCH/.ctl" ] && break; sleep 0.5; done
   CTL="$(cat "$SCRATCH/.ctl" 2>/dev/null)"
   if [ -z "$CTL" ]; then
-    echo "FATAL: the app never opened its control surface (see $SCRATCH/app.log)" >&2
+    echo "FATAL: the app never opened its control surface" >&2
+    echo "       app.log:" >&2
+    tail -40 "$SCRATCH/app.log" >&2 2>/dev/null || echo "       (empty)" >&2
     kill_app
     kill "$SERVER_PID" 2>/dev/null
     exit 1
@@ -348,6 +381,7 @@ uninstall_if_present
 rm -rf "$CACHE"; mkdir -p "$CACHE"
 run_installer "$OUT/v1.0.0/$PRODUCT-setup.exe"
 kill_app
+find_app_exe || exit 1
 launch "manifest-1.0.1.served.json"
 trigger
 wait_for_installed "$H_101" || true
