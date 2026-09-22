@@ -138,6 +138,26 @@ PY
     ls -la "$ROOT/target/release"/*.exe >&2 2>/dev/null || true
     exit 1
   fi
+
+  # tauri-bundler patches this marker to identify an NSIS build, bundles that
+  # patched executable, then restores target/release to its original bytes.
+  # The copy above therefore still carries UNK while the executable extracted
+  # by the installer carries NSS. Mirror the bundler's deterministic, same-size
+  # replacement so the expected hash describes the bytes NSIS actually ships.
+  python - "$OUT/v$version/$PRODUCT.exe" <<'PY'
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+unknown = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+nsis = b"__TAURI_BUNDLE_TYPE_VAR_NSS"
+data = path.read_bytes()
+count = data.count(unknown)
+if count != 1:
+    raise SystemExit(
+        f"FATAL: expected exactly one Tauri bundle marker in {path}, found {count}"
+    )
+path.write_bytes(data.replace(unknown, nsis))
+PY
 }
 
 build_version 1.0.0
