@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use tauri_updater_delta_release::signing::SigningKey;
+use tauri_updater_delta_release::version_contract::{check_app_version, AppVersionSources};
 use tauri_updater_delta_release::{
     build_release, load_manifest, write_manifest, Predecessor, ReleaseRequest, Result,
     TarLayerOptions,
@@ -58,8 +59,23 @@ struct Args {
     /// can refuse an artifact belonging to a different application signed with
     /// the same key. Required rather than inferred: reading it out of a bundle
     /// works for exactly one format on one platform.
+    ///
+    /// Prefer `--app-config`, which reads this from the same file the build
+    /// reads and additionally checks that the application's own version is the
+    /// one being released.
+    #[arg(long, required_unless_present = "app_config")]
+    app_id: Option<String>,
+
+    /// The application's `tauri.conf.json`.
+    ///
+    /// Supplies `--app-id`, and enforces the release-version contract: the
+    /// version in that file, the version in the application crate's
+    /// `Cargo.toml`, and `--target-version` must all be the same. Without it a
+    /// release can sign an artifact under a version the application will
+    /// contradict the moment it launches. See
+    /// `tauri_updater_delta_release::version_contract`.
     #[arg(long)]
-    app_id: String,
+    app_config: Option<PathBuf>,
 
     /// Installer that users on --from-version already have.
     #[arg(long, requires = "from_version")]
@@ -136,8 +152,9 @@ struct Args {
     ///
     /// Production clients refuse a non-HTTPS artifact URL, so a manifest
     /// carrying one is rejected by every client that fetches it. This flag
-    /// exists so the loopback harness can still run; it accepts `127.0.0.1`,
-    /// `localhost` and `[::1]` and refuses every other host.
+    /// exists so the loopback harness can still run; it accepts any loopback
+    /// address — `127.0.0.0/8`, `::1` and the name `localhost` — and refuses
+    /// every other host. `release-check` applies the identical rule.
     #[arg(long)]
     dangerously_allow_loopback_http_urls: bool,
 
@@ -159,6 +176,38 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let args = Args::parse();
+
+    // The version contract, checked before the key is even loaded: a release
+    // that signs the wrong version is not recoverable once published, and the
+    // cheapest, most informative refusal should come first.
+    let app_id = match &args.app_config {
+        Some(config) => {
+            let sources = AppVersionSources::beside(config);
+            let facts = check_app_version(&args.target_version, &sources)?;
+            if let Some(explicit) = &args.app_id {
+                if explicit != &facts.app_id {
+                    return Err(tauri_updater_delta_release::Error::Request(format!(
+                        "--app-id is {explicit:?} but {} says the application is {:?}",
+                        sources.tauri_conf.display(),
+                        facts.app_id,
+                    )));
+                }
+            }
+            println!(
+                "version contract: {} and {} agree on {}",
+                sources.tauri_conf.display(),
+                sources.cargo_manifest.display(),
+                facts.version,
+            );
+            facts.app_id
+        }
+        // clap's `required_unless_present` guarantees one of the two is here.
+        None => args
+            .app_id
+            .clone()
+            .expect("clap requires --app-id when --app-config is absent"),
+    };
+
     let key = load_key(args.private_key.as_deref())?;
 
     let tar_layer = match (&args.tar_patch_out, &args.tar_patch_url) {
@@ -199,7 +248,7 @@ fn run() -> Result<()> {
         installer_url: &args.installer_url,
         notes: args.notes.as_deref(),
         pub_date: args.pub_date.as_deref(),
-        app_id: &args.app_id,
+        app_id: &app_id,
         predecessor,
         allow_insecure_urls: args.dangerously_allow_loopback_http_urls,
     };

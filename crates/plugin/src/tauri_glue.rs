@@ -13,10 +13,6 @@ use tauri::plugin::{Builder as PluginBuilder, TauriPlugin};
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::{Update as TauriUpdate, UpdaterExt as TauriUpdaterExt};
 use tauri_updater_delta_core::cache::{ArtifactCache, CacheLimits, Namespace, Reconciliation};
-use tauri_updater_delta_core::manifest::{
-    RECOMPRESSION_TAURI_APP_TAR_GZ_V1, REPRESENTATION_APP_TAR_GZ_V1,
-};
-use tauri_updater_delta_core::release_identity::current_platform;
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 
 use crate::flow::{
@@ -43,6 +39,8 @@ struct RuntimeConfig {
     endpoint_override: Option<String>,
     #[cfg(feature = "test-support")]
     base_override: Option<PathBuf>,
+    #[cfg(feature = "test-support")]
+    install_journal: Option<PathBuf>,
 }
 
 struct PluginState {
@@ -98,6 +96,8 @@ pub struct Builder {
     endpoint_override: Option<String>,
     #[cfg(feature = "test-support")]
     base_override: Option<PathBuf>,
+    #[cfg(feature = "test-support")]
+    install_journal: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Builder {
@@ -132,6 +132,8 @@ impl Default for Builder {
             endpoint_override: None,
             #[cfg(feature = "test-support")]
             base_override: None,
+            #[cfg(feature = "test-support")]
+            install_journal: None,
         }
     }
 }
@@ -228,12 +230,30 @@ impl Builder {
     /// Supply the direct-delta base used by this repository's legacy harness.
     ///
     /// Normal applications do not possess the exact official artifact they are
-    /// currently running and should rely on the managed cache's TarDelta path.
-    /// This method is absent unless the non-default `test-support` feature is
-    /// enabled.
+    /// currently running, and do not need to: the managed cache holds it and
+    /// supplies it to the direct patch path itself. This method predates that
+    /// and is absent unless the non-default `test-support` feature is enabled.
     #[cfg(feature = "test-support")]
     pub fn direct_base_artifact_for_tests(mut self, path: impl Into<PathBuf>) -> Self {
         self.base_override = Some(path.into());
+        self
+    }
+
+    /// Record the chosen update path to `path` just before installation.
+    ///
+    /// This method does not exist unless the non-default `test-support` feature
+    /// is enabled, and it is not a logging facility: it exists because on
+    /// Windows `tauri_plugin_updater::Update::install` calls `ShellExecuteW` and
+    /// then `std::process::exit(0)`. The process is gone before `install()`
+    /// returns, so a harness driving a real Windows update can never read the
+    /// `Outcome` — and "which path ran" is exactly the assertion that separates
+    /// a working delta updater from one that silently downloads everything
+    /// (`docs/DECISIONS.md` #22).
+    ///
+    /// One line, overwritten each run: `full`, `delta` or `tar-delta`.
+    #[cfg(feature = "test-support")]
+    pub fn install_journal_for_tests(mut self, path: impl Into<PathBuf>) -> Self {
+        self.install_journal = Some(path.into());
         self
     }
 
@@ -274,14 +294,14 @@ impl RuntimeConfig {
             builder.work_dir.clone(),
         );
 
-        let namespace = Namespace {
-            bundle_id: app_id.clone(),
-            platform: current_platform(),
-            arch: std::env::consts::ARCH.to_owned(),
-            pubkey_fingerprint: FileHash::of_bytes(pubkey.as_bytes()).to_hex(),
-            representation: REPRESENTATION_APP_TAR_GZ_V1.to_owned(),
-            recompression: RECOMPRESSION_TAURI_APP_TAR_GZ_V1.to_owned(),
-        };
+        // Derived from the platform, not hard-coded. This used to name
+        // `app-tar-gz-v1` / `tauri-app-tar-gz-v1` on every operating system, so
+        // a Windows cache claimed to hold macOS bundles -- the fourth of the
+        // four linked blockers that made a Windows delta unreachable.
+        let namespace = Namespace::for_current_platform(
+            &app_id,
+            &FileHash::of_bytes(pubkey.as_bytes()).to_hex(),
+        );
 
         let mut diagnostics = Vec::new();
         let cache = match ArtifactCache::open(&paths.cache_dir, namespace, builder.cache_limits) {
@@ -338,6 +358,8 @@ impl RuntimeConfig {
             endpoint_override: builder.endpoint_override.clone(),
             #[cfg(feature = "test-support")]
             base_override: builder.base_override.clone(),
+            #[cfg(feature = "test-support")]
+            install_journal: builder.install_journal.clone(),
         })
     }
 }
@@ -586,11 +608,19 @@ impl Update {
             .map_err(|e| Error::Fetch(format!("building the HTTP client: {e}")))?;
 
         let progress = |phase| {
+            // Written before the handoff, because on Windows the handoff does
+            // not return: see Builder::install_journal_for_tests.
+            #[cfg(feature = "test-support")]
+            if let (FlowPhase::Installing { source }, Some(path)) =
+                (phase, self.config.install_journal.as_ref())
+            {
+                let _ = std::fs::write(path, source);
+            }
             let event = match phase {
                 FlowPhase::Downloading => ProgressEvent::Downloading,
                 FlowPhase::Reconstructing => ProgressEvent::Reconstructing,
                 FlowPhase::Verifying => ProgressEvent::Verifying,
-                FlowPhase::Installing => ProgressEvent::Installing,
+                FlowPhase::Installing { .. } => ProgressEvent::Installing,
             };
             (self.progress)(event);
         };

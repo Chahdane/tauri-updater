@@ -19,6 +19,10 @@ pub mod signing;
 
 pub mod tar_layer;
 
+pub mod url_policy;
+
+pub mod version_contract;
+
 pub mod verify;
 
 use std::path::Path;
@@ -378,34 +382,16 @@ pub fn build_release(
 /// Refuse a URL a production client would not fetch.
 ///
 /// The client's transport policy is the authority here and this only mirrors it,
-/// so the two cannot disagree about what "publishable" means. `allow_insecure`
-/// narrows to loopback rather than permitting anything: the harness needs
-/// `127.0.0.1`, and no release needs `http://` to somewhere else.
+/// so the two cannot disagree about what "publishable" means. The rule itself
+/// lives in [`url_policy`], which the independent checker calls too — see that
+/// module for why one shared function replaced two that had drifted apart.
 fn check_url(what: &str, url: &str, allow_insecure: bool) -> Result<()> {
-    if url.starts_with("https://") {
-        return Ok(());
-    }
-    if let Some(rest) = url.strip_prefix("http://") {
-        let host = rest.split(['/', ':']).next().unwrap_or_default();
-        if allow_insecure && matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
-            return Ok(());
-        }
-        if allow_insecure {
-            return Err(Error::Request(format!(
-                "{what} is plain HTTP to {host:?}. The insecure opt-in covers \
-                 loopback only; a release served from anywhere else must use https."
-            )));
-        }
-        return Err(Error::Request(format!(
-            "{what} is plain HTTP ({url}). Production clients refuse a non-HTTPS \
-             artifact URL, so this release would be rejected by every client that \
-             fetched it. Use https, or enable the loopback-only insecure opt-in if \
-             this is the local end-to-end harness."
-        )));
-    }
-    Err(Error::Request(format!(
-        "{what} is not an http(s) URL ({url})"
-    )))
+    url_policy::check_url(
+        what,
+        url,
+        url_policy::HttpPolicy::from_insecure_flag(allow_insecure),
+    )
+    .map_err(Error::Request)
 }
 
 /// Generate the direct patch, then prove it reconstructs the target exactly.
@@ -450,6 +436,13 @@ fn generate_direct_patch(
         patch_url: pred.patch_url.to_owned(),
         patch_blake3: FileHash::of_file(pred.patch_out)?.to_hex(),
         patch_size: file_size(pred.patch_out)?,
+        // The base this patch was actually generated against, so a client whose
+        // base comes from its own cache can reject a mismatch before paying for
+        // the patch. The tar layer has published this since it existed; the
+        // direct path did not need it while its base was always handed in by
+        // the host, and needs it now that the managed cache supplies one.
+        base_installer_blake3: Some(FileHash::of_file(pred.installer)?.to_hex()),
+        base_installer_size: Some(file_size(pred.installer)?),
     })
 }
 

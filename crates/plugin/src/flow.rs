@@ -52,7 +52,22 @@ pub(crate) enum FlowPhase {
     Downloading,
     Reconstructing,
     Verifying,
-    Installing,
+    /// About to hand the verified artifact to the installer, having chosen
+    /// `source`.
+    ///
+    /// The payload is not exposed to applications -- they see
+    /// [`crate::ProgressEvent::Installing`], which is a phase and nothing more.
+    /// It exists because on Windows `Update::install` calls `ShellExecuteW` and
+    /// then `std::process::exit(0)`, so the process is gone before `install()`
+    /// returns and no harness can ever read the `Outcome`. This is the last
+    /// moment at which the chosen path can be observed at all, and asserting
+    /// the chosen path is the whole difference between a working delta updater
+    /// and one that silently downloads everything (`docs/DECISIONS.md` #22).
+    Installing {
+        /// `"tar-delta"`, `"delta"` or `"full"`, matching
+        /// [`crate::client::UpdateSource::path_name`].
+        source: &'static str,
+    },
 }
 
 /// The ordinary flow result plus details that must not turn a successful
@@ -226,7 +241,9 @@ pub(crate) fn run_update_detailed(
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
             check_release_identity(ctx, identity, &verified)?;
             let cache_write_error = stage(ctx, identity, &verified, &signature);
-            progress(FlowPhase::Installing);
+            progress(FlowPhase::Installing {
+                source: "tar-delta",
+            });
             handoff.install(&verified)?;
             Ok(RunReport {
                 outcome: Outcome::InstalledFromTarDelta {
@@ -249,7 +266,7 @@ pub(crate) fn run_update_detailed(
             let verified = verify_rebuilt(&artifact, &signature, ctx.pubkey)?;
             check_release_identity(ctx, identity, &verified)?;
             let cache_write_error = stage(ctx, identity, &verified, &signature);
-            progress(FlowPhase::Installing);
+            progress(FlowPhase::Installing { source: "delta" });
             handoff.install(&verified)?;
             // No explicit cleanup: dropping _workspace removes the whole
             // per-update directory, artifact included.
@@ -291,7 +308,7 @@ pub(crate) fn run_update_detailed(
 
             let downloaded = verified.len() as u64;
             let cache_write_error = stage(ctx, identity, &verified, &signature);
-            progress(FlowPhase::Installing);
+            progress(FlowPhase::Installing { source: "full" });
             handoff.install(&verified)?;
             // No explicit cleanup: dropping `space` removes the directory and
             // the artifact inside it.

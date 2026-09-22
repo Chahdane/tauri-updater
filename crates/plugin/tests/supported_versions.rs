@@ -98,6 +98,7 @@ fn the_readme_states_the_representation_and_recipe_identifiers() {
     let readme = read("README.md");
     contains("README", &readme, "app-tar-gz-v1");
     contains("README", &readme, "tauri-app-tar-gz-v1");
+    contains("README", &readme, "opaque-v1");
 
     assert_eq!(
         tauri_updater_delta_core::manifest::REPRESENTATION_APP_TAR_GZ_V1,
@@ -106,6 +107,10 @@ fn the_readme_states_the_representation_and_recipe_identifiers() {
     assert_eq!(
         tauri_updater_delta_core::manifest::RECOMPRESSION_TAURI_APP_TAR_GZ_V1,
         "tauri-app-tar-gz-v1"
+    );
+    assert_eq!(
+        tauri_updater_delta_core::release_identity::REPRESENTATION_OPAQUE_V1,
+        "opaque-v1"
     );
 }
 
@@ -116,16 +121,18 @@ fn the_readme_states_the_delta_backend() {
 }
 
 #[test]
-fn the_readme_does_not_claim_client_support_for_linux_or_windows() {
-    // The engine is tested on all three platforms and the application path is
-    // demonstrated on exactly one. Those are different claims and the README
-    // must not let the first imply the second.
-    let readme = read("README.md").to_lowercase();
+fn the_readme_limits_client_support_to_demonstrated_targets() {
+    // Engine coverage on every desktop OS is not client evidence. Windows is a
+    // supported client only at the boundary the real installer E2E proved;
+    // Linux still has no corresponding application run.
+    let source = read("README.md");
+    contains("README", &source, "Windows NSIS `-setup.exe`");
+    contains("README", &source, "Windows `x86_64` **demonstrated**");
+
+    let readme = source.to_lowercase();
     for forbidden in [
         "supports linux",
-        "supports windows",
         "linux support",
-        "windows support",
         "production ready",
         "production-ready",
     ] {

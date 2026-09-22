@@ -589,8 +589,9 @@ State ratios per platform, never as one number:
 - **Linux / AppImage** — the intended case, and the engine performs as designed.
 - **macOS** — correct but not yet worth enabling; wait for the uncompressed-tar
   work.
-- **Windows** — unmeasured. NSIS `.exe` and `.msi` are also compressed
-  containers, so expect something closer to macOS than Linux until measured.
+- **Windows** — later measured for NSIS in F38: two controlled direct patches
+  were 98.2520% and 98.2523% of Full, confirming the compressed-container
+  expectation. MSI remains unmeasured.
 
 A single "delta updates for Tauri" claim that quietly averages these would
 overpromise on two platforms out of three.
@@ -1608,3 +1609,161 @@ would be a UI promise the implementation cannot keep.
 support their frontend UX, or upstream exposes stable progress primitives that
 permit accurate totals. Neither condition licenses exposing identity or install
 handoff construction.
+
+## 35. Two release tracks, two tag namespaces
+
+**Decided:** 2026-09-22 · **Status:** active · **Gate:** release baseline
+
+**Decision:** `v*` publishes the three crates at the workspace version. `app-v*`
+publishes the demonstration application at *its* version. No tag means both, and
+no release signs an artifact whose version was not read out of the files the
+build read.
+
+### The failure this closes
+
+The workspace is `0.1.0`. The example application is `1.0.0`, in both
+`examples/desktop-app/Cargo.toml` and its `tauri.conf.json`. The release
+workflow derived `--target-version` from the git tag and compared it against
+nothing else. So:
+
+| Tag | Builds | Signs it as | Correct? |
+| --- | --- | --- | --- |
+| `v0.1.0` | the 1.0.0 app | release identity `0.1.0` | no |
+| `v1.0.0` | the 1.0.0 app | release identity `1.0.0` | yes — but it is not the crate release |
+
+The first row is the interesting one because **every cryptographic check
+passes**. The manifest says 0.1.0, the signature's authenticated identity says
+0.1.0, the artifact digest matches, `release-check` is satisfied — and the
+application inside reports `1.0.0` the moment it launches. A client on 1.0.0
+offered 0.1.0 sees a downgrade and refuses. A client that installed it comes
+back up as 1.0.0, so the cache's launch reconciliation discards the PENDING
+entry it just staged, and no later update on that installation can ever take a
+delta. The release is simultaneously well-formed and false.
+
+`release-check` could not have caught it. Everything it compares — tag,
+manifest, signature identity, artifact bytes — was derived from that one
+`--target-version`, so those four agree with each other by construction. The one
+thing nobody compared was the version *inside* the thing being built.
+
+### The two halves of the fix
+
+1. **Separate namespaces**, so producing the wrong release takes two mistakes
+   rather than one, and so a crate release cannot trigger an application
+   release at all.
+2. **`--app-config`**, on both `delta-release` and `release-check`. It reads the
+   identifier, the public key and the version out of `tauri.conf.json`, requires
+   the application crate's `Cargo.toml` to state the same version, and requires
+   both to equal the version being released. The rule lives in
+   `crates/delta-release/src/version_contract.rs`, so both binaries apply one
+   implementation of it, and the workflow runs it once before the build and
+   again at the publish gate.
+
+### Alternatives considered
+
+- **Read the version out of the built bundle.** The most direct answer to "what
+  did we actually build", and it is one bundle format on one platform:
+  `Contents/Info.plist` says nothing about an NSIS installer. It also answers
+  after a twenty-minute build rather than before it.
+- **Make the example app inherit the workspace version.** One number, no
+  contract needed — and it makes every crate release a release of the demo
+  application, which is the conflation rather than a fix for it.
+  `version_contract` refuses `version.workspace = true` on the application for
+  exactly this reason.
+- **A shell check in the workflow.** Fast and free, and a second implementation
+  of a rule that already has one. The URL policy had two implementations that
+  drifted apart (finding A-6, `url_policy`); repeating that shape deliberately
+  is not a trade worth making. `--only-version-contract` gives the workflow its
+  fast pre-check by running the same code.
+
+**Revisit when:** the demonstration application is removed from this repository,
+or a real per-platform release matrix makes "the application's version" a
+question with more than one answer.
+
+## 36. The cache knows what it is holding
+
+**Decided:** 2026-09-22 · **Status:** active · **Gate:** Windows client
+
+**Decision:** the artifact cache has two representations. `app-tar-gz-v1` is the
+macOS path, unchanged: the artifact is expanded once at staging so the tar
+layer can reject a wrong base cheaply. `opaque-v1` is everything else — a
+Windows NSIS installer or MSI, a Linux AppImage — stored and reused exactly as
+published, never opened. The representation is derived from the platform, and
+only an `opaque-v1` cache supplies a base to the direct patch path.
+
+### The four linked blockers
+
+A Windows delta was unreachable through the shipping API, and no one of these
+was the cause:
+
+1. `Update::install_blocking` set the direct-patch base to `None` in every
+   non-`test-support` build, and nothing else could supply one.
+2. `plan_update` read the managed cache only for the tar path. The direct path
+   read `ctx.base` and stopped.
+3. `stage_pending` gunzipped every verified artifact to record a tar digest, so
+   an NSIS `.exe` could not be persisted at all. Cache persistence is
+   deliberately non-fatal, so the install still succeeded — and every later
+   update silently stayed cache-cold.
+4. `RuntimeConfig` hard-coded the namespace to `app-tar-gz-v1` /
+   `tauri-app-tar-gz-v1` on every operating system, so a Windows cache claimed
+   to hold macOS bundles.
+
+The expected Windows behaviour was therefore Full, then Full, then Full, for
+ever, and nothing went red. That is the shape of `#22` again: a delta updater
+that always falls back is indistinguishable from one that works, unless
+something asserts which path ran.
+
+### Why only `opaque-v1` supplies a direct base
+
+This is an economics decision, not a safety one. The gate that decides whether
+a reconstruction is correct is the target digest, and it applies identically to
+both.
+
+For a `.app.tar.gz`, the tar path has already had its turn by the time the
+direct path is reached. A direct patch between two gzip streams measured
+95–96% of a full download (#15). Taking it when the tar path declined would
+download a patch the size of the artifact, apply it, and report a successful
+`DirectDelta` — relabelling a failed TarDelta as a success, which is precisely
+the mislabelling #22 is about. An opaque artifact has no cheaper path to
+decline in favour of, so for it the direct patch *is* the delta path.
+
+### Why the base is declared in the manifest now
+
+`TarPatch` has always carried `base_installer_blake3` and `base_installer_size`,
+because the tar path's base comes from the cache and a client must be able to
+decide whether what it holds is the right base before spending anything. The
+direct `Patch` did not need them while its base was always handed in by the
+host — the host either had the right file or did not.
+
+Now that the base comes from the cache, the same question arises, so `Patch`
+carries the same two fields. They are optional and additive, exactly as the tar
+layer is: a manifest without them is valid and a client without them falls back.
+A *half*-declared base is refused at parse time, because a digest with no size
+is a base that cannot be checked while looking like one that can.
+
+### Why the on-disk format version moved to 2
+
+`CacheEntry`'s tar digest and size became one `Option`, which is a different
+document. A version-1 cache is stepped over and emptied rather than
+reinterpreted — one full download on one launch, which is the outcome every
+other unreadable-cache case already has.
+
+`Option` rather than empty strings because "there is no tar" and "the tar hashes
+to nothing" are different claims and only one of them is true.
+
+### Alternatives considered
+
+- **Read the installed `.exe` as the base.** It is right there, and it is the
+  wrong file: the patch was generated against the *installer*, and the
+  installed executable is what the installer produced. Only the cached official
+  artifact is guaranteed to match.
+- **Keep one representation and skip the tar fields when they are empty.** The
+  namespace is what the cache is bound to; leaving it identical across
+  representations means a client that changed representation reads the old
+  entries as if they described the new ones. The namespace mismatch has to be
+  the thing that empties the cache.
+- **Let the direct path use an `app-tar-gz` cache too.** See above: correct,
+  useless, and it would make every macOS tar failure look like a delta success.
+
+**Revisit when:** an inner representation for a Windows installer is measured
+to be worth rebuilding byte-for-byte, which needs a reproducible recompression
+recipe for NSIS or MSI. Until then `opaque-v1` is the honest description.
