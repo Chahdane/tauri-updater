@@ -968,8 +968,12 @@ fn a_representation_this_build_does_not_implement_makes_the_cache_unusable() {
     let mut ns = opaque_namespace(&k.fingerprint);
     ns.representation = "squashfs-appimage-v9".to_owned();
 
-    let err = ArtifactCache::open(dir.path(), ns, CacheLimits::default())
-        .expect_err("an uninterpretable namespace must not open");
+    // Matched rather than `expect_err`: the Ok side is an ArtifactCache, which
+    // holds a BlobStore and a StateStore and is deliberately not Debug.
+    let err = match ArtifactCache::open(dir.path(), ns, CacheLimits::default()) {
+        Ok(_) => panic!("an uninterpretable namespace must not open"),
+        Err(err) => err,
+    };
     assert!(err.to_string().contains("does not implement"), "got: {err}");
 
     // A recompression recipe that does not go with the representation is the
