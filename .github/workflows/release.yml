@@ -519,6 +519,7 @@ jobs:
             --installer-url "$base/$(basename "$new_installer")"
             --manifest dist/manifest.json
             --signature-out "$new_installer.sig"
+            --max-direct-patch-percent 30
           )
 
           if [ "${{ needs.release.outputs.has_previous }}" = "true" ] \
