@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Prepared as the **macOS v0.1 release candidate**. Not tagged or published: the
-version is left at `0.1.0` for an independent audit to run against.
+## [0.1.0] - 2026-09-24
+
+First published pre-release: macOS `.app.tar.gz` and Windows x86_64 NSIS
+`-setup.exe`. The independent security audit (Gate P5) has not happened yet.
+
+### Small Windows deltas (2026-09-24)
+
+- **The Windows updater build disables NSIS compression.** Solid LZMA re-encoded
+  nearly the whole installer on any change, so direct patches were ~98% of
+  Full. With `"compression": "none"` unchanged bytes stay reusable; controlled
+  example-app patches are roughly 5% of Full. The Full installer is larger.
+- **`delta-release` publishes a direct patch only below a size limit.**
+  `--max-direct-patch-percent` (default 30, strict) deletes an oversized patch
+  and leaves a valid Full-only release. `--require-direct-patch` turns a missed
+  limit into an error; the Windows E2E uses it.
 
 ### Release baseline (2026-09-22)
 

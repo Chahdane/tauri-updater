@@ -1,8 +1,8 @@
 # Roadmap
 
-The current v0.1 target is the demonstrated macOS `.app.tar.gz` path. Engine
-tests run on all three desktop CI platforms, but that is not a Linux or Windows
-client-support claim.
+v0.1 covers the demonstrated macOS `.app.tar.gz` and Windows x86_64 NSIS
+`-setup.exe` paths. Engine tests run on all three desktop CI platforms, but
+that is not a Linux client-support claim.
 
 ## Foundation — complete
 
@@ -82,12 +82,15 @@ tauri-cli 2.10.1 and `tauri-plugin-updater` 2.10.1. CI run 139 completed the
 real Full -> relaunch -> DirectDelta ladder, exact installed-executable checks,
 request-log checks, and corrupt-cache fallback on `windows-latest`.
 
-The measured direct patches were 98.2520% and 98.2523% of Full. That is an
-honest negative efficiency result: the path is correct, but these solid-LZMA
-NSIS pairs save almost no bytes. MSI, ARM64 and Authenticode-signed E2E remain
-outside the demonstrated support boundary.
+With Tauri's default solid-LZMA NSIS compression the measured direct patches
+were 98.2520% and 98.2523% of Full: correct, but saving almost no bytes. The
+Windows updater build now sets `"compression": "none"`, so unchanged bytes stay
+reusable, and `delta-release` publishes a direct patch only when it is strictly
+below 30% of Full. On controlled example-app pairs the patch is roughly 5% of
+Full; a real application's ratio depends on what changed. MSI, ARM64 and
+Authenticode-signed E2E remain outside the demonstrated support boundary.
 
-## After macOS v0.1
+## After v0.1
 
 - Linux client integration and real AppImage install evidence.
 - Windows MSI as a separately demonstrated target; it is not inferred from NSIS.

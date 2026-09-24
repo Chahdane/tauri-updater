@@ -166,7 +166,7 @@ platform-independent tests.
 | Platform | Artifact | Cache representation | Delta path | Notes |
 | --- | --- | --- | --- | --- |
 | macOS | `.app.tar.gz` | `app-tar-gz-v1` | TarDelta, then DirectDelta is declined | Supported v0.1 path. The cache expands the old artifact, patches the tar, and exactly reproduces Tauri's gzip write topology before final verification and the real Tauri install. |
-| Windows | NSIS `-setup.exe` | `opaque-v1` | DirectDelta | Supported for demonstrated x86_64 NSIS builds. The cache holds the exact official installer; a real Full -> DirectDelta install ladder passed. Controlled patches were ~98.25% of Full, so this is correctness support, not a savings promise. |
+| Windows | NSIS `-setup.exe` | `opaque-v1` | DirectDelta | Supported for demonstrated x86_64 NSIS builds. The cache holds the exact official installer; a real Full -> DirectDelta install ladder passed. With solid-LZMA NSIS, controlled patches were ~98.25% of Full; the updater build now disables NSIS compression so unchanged bytes stay reusable, and the release tool publishes a direct patch only below 30% of Full. |
 | Linux | `.AppImage` | `opaque-v1` | DirectDelta | Same mechanism as Windows. Engine and release fixtures only; no real-install evidence. |
 
 ### Why the direct patch is declined on macOS
