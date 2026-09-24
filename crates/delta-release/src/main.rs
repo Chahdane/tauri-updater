@@ -436,23 +436,6 @@ fn patch_is_below_percent_limit(patch: u64, full: u64, limit: u8) -> bool {
     (patch as u128) * 100 < (full as u128) * (limit as u128)
 }
 
-#[cfg(test)]
-mod patch_limit_tests {
-    use super::patch_is_below_percent_limit;
-
-    #[test]
-    fn the_limit_is_strict_and_does_not_round() {
-        assert!(patch_is_below_percent_limit(29, 100, 30));
-        assert!(!patch_is_below_percent_limit(30, 100, 30));
-        assert!(!patch_is_below_percent_limit(30_004, 100_000, 30));
-    }
-
-    #[test]
-    fn ratio_math_cannot_overflow_at_u64_sizes() {
-        assert!(!patch_is_below_percent_limit(u64::MAX, u64::MAX, 30));
-    }
-}
-
 /// Resolve the signing key from `--private-key` or the Tauri environment
 /// variables, accepting either an inline key or a path to one.
 fn load_key(explicit: Option<&str>) -> Result<SigningKey> {
@@ -472,5 +455,22 @@ fn load_key(explicit: Option<&str>) -> Result<SigningKey> {
         SigningKey::from_file(&path, password)
     } else {
         SigningKey::from_str(&source, password)
+    }
+}
+
+#[cfg(test)]
+mod patch_limit_tests {
+    use super::patch_is_below_percent_limit;
+
+    #[test]
+    fn the_limit_is_strict_and_does_not_round() {
+        assert!(patch_is_below_percent_limit(29, 100, 30));
+        assert!(!patch_is_below_percent_limit(30, 100, 30));
+        assert!(!patch_is_below_percent_limit(30_004, 100_000, 30));
+    }
+
+    #[test]
+    fn ratio_math_cannot_overflow_at_u64_sizes() {
+        assert!(!patch_is_below_percent_limit(u64::MAX, u64::MAX, 30));
     }
 }
