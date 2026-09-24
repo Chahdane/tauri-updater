@@ -33,6 +33,11 @@ delta-release \
 Every generated patch is applied before its metadata is written: a manifest
 never describes a patch nobody has proven reconstructs the release.
 
+Direct patches must also earn their download. By default, a patch is published
+only when it is strictly smaller than 30% of Full; an oversized patch is deleted
+and the manifest remains a valid Full-only release. CI can add
+`--require-direct-patch` when missing that target must fail the build.
+
 Pre-release software. See the
 [repository](https://github.com/Chahdane/tauri-updater) for the full release
 procedure.

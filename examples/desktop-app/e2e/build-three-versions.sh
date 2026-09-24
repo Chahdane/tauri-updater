@@ -137,6 +137,8 @@ cargo build -q --release -p tauri-updater-delta-release --manifest-path "$ROOT/C
 publish() {
   local from="$1" to="$2"
   echo "==> publishing $from -> $to"
+  # This harness records direct-vs-tar measurements, so retain the direct
+  # control patch. Production keeps delta-release's strict 30% default.
   "$ROOT/target/release/delta-release" \
     --platform "$PLATFORM" \
     --app-config "$OUT/v$to/app-config/tauri.conf.json" \
@@ -146,6 +148,7 @@ publish() {
     --installer-url "http://127.0.0.1:0/v$to/$APP_NAME.tar.gz" \
     --patch-url     "http://127.0.0.1:0/patch-$from-$to.zst" \
     --patch-out     "$OUT/patch-$from-$to.zst" \
+    --max-direct-patch-percent 100 \
     --dangerously-allow-loopback-http-urls \
     --tar-patch-url "http://127.0.0.1:0/tar-$from-$to.zst" \
     --tar-patch-out "$OUT/tar-$from-$to.zst" \

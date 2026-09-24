@@ -43,7 +43,20 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Lint
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --all-targets --all-features --locked -- -D warnings 2>&1 | tee clippy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            python - <<'PY'
+          from pathlib import Path
+          text = "\n".join(Path("clippy.log").read_text(errors="replace").splitlines()[-80:])
+          text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print(f"::error title=Clippy failed::{text}")
+          PY
+          fi
+          exit "$status"
       # Every other cargo invocation in this workflow passes --all-features, so
       # nothing compiled the configuration a consumer actually gets. That became
       # a real risk when the plugin gained ~15 `cfg(feature = "test-support")`
