@@ -252,6 +252,11 @@ for name, r in record["releases"].items():
     print(f"    {name}: installer {r['installer_size']} bytes, "
           f"direct patch {r['direct_patch_size']} "
           f"({r['direct_patch_percent']}% of a full download)")
+print("::notice title=Windows NSIS delta sizes::" + ", ".join(
+    f"{name}: {r['direct_patch_percent']}% "
+    f"({r['direct_patch_size']}/{r['installer_size']} bytes)"
+    for name, r in record["releases"].items()
+))
 print()
 print("    These controlled pairs must be strictly below 30%. A real")
 print("    application's ratio still depends on what changed; delta-release")

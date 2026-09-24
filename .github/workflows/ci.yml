@@ -275,18 +275,6 @@ jobs:
             cat "$f"
             echo "----- END $(basename "$f") -----"
           done
-          if [ -f /c/delta-nsis-e2e/versions.json ]; then
-            python - <<'PY'
-          import json
-          path = "/c/delta-nsis-e2e/versions.json"
-          releases = json.load(open(path, encoding="utf-8"))["releases"]
-          measured = ", ".join(
-              f"{transition}: {facts['direct_patch_percent']}%"
-              for transition, facts in releases.items()
-          )
-          print(f"::notice title=Windows NSIS delta sizes::{measured}")
-          PY
-          fi
           {
             echo "### Windows NSIS end-to-end"
             echo ""
