@@ -279,52 +279,58 @@ fn run() -> Result<()> {
     let (mut manifest, summary) = build_release(&request, &key, existing)?;
 
     let mut direct_patch_omitted = None;
-    if let (Some(from_version), Some(patch_size), Some(patch_out)) = (
+    let oversized_direct_patch = match (
         args.from_version.as_deref(),
         summary.patch_size,
         args.patch_out.as_deref(),
     ) {
-        if !patch_is_below_percent_limit(
-            patch_size,
-            summary.installer_size,
-            args.max_direct_patch_percent,
-        ) {
-            let percent = summary.ratio_percent().unwrap_or(0.0);
-            let reason = format!(
-                "direct patch is {percent:.2}% of Full; it must be strictly below {}%",
-                args.max_direct_patch_percent
-            );
-
-            // A generated-but-unpublished file is dangerous in a release
-            // directory: a later glob can upload it even though the manifest
-            // correctly omitted it. Delete it before reporting or returning.
-            match std::fs::remove_file(patch_out) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(tauri_updater_delta_release::Error::Io(format!(
-                        "removing oversized patch {}: {error}",
-                        patch_out.display()
-                    )))
-                }
-            }
-
-            if let Some(entry) = manifest
-                .delta
-                .as_mut()
-                .and_then(|delta| delta.platforms.get_mut(&args.platform))
-            {
-                entry.patches.remove(from_version);
-            }
-            manifest.validate()?;
-
-            if args.require_direct_patch {
-                return Err(tauri_updater_delta_release::Error::Request(format!(
-                    "{reason}; refusing the release because --require-direct-patch was set"
-                )));
-            }
-            direct_patch_omitted = Some(reason);
+        (Some(from_version), Some(patch_size), Some(patch_out))
+            if !patch_is_below_percent_limit(
+                patch_size,
+                summary.installer_size,
+                args.max_direct_patch_percent,
+            ) =>
+        {
+            Some((from_version, patch_out))
         }
+        _ => None,
+    };
+    if let Some((from_version, patch_out)) = oversized_direct_patch {
+        let percent = summary.ratio_percent().unwrap_or(0.0);
+        let reason = format!(
+            "direct patch is {percent:.2}% of Full; it must be strictly below {}%",
+            args.max_direct_patch_percent
+        );
+
+        // A generated-but-unpublished file is dangerous in a release
+        // directory: a later glob can upload it even though the manifest
+        // correctly omitted it. Delete it before reporting or returning.
+        match std::fs::remove_file(patch_out) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(tauri_updater_delta_release::Error::Io(format!(
+                    "removing oversized patch {}: {error}",
+                    patch_out.display()
+                )))
+            }
+        }
+
+        if let Some(entry) = manifest
+            .delta
+            .as_mut()
+            .and_then(|delta| delta.platforms.get_mut(&args.platform))
+        {
+            entry.patches.remove(from_version);
+        }
+        manifest.validate()?;
+
+        if args.require_direct_patch {
+            return Err(tauri_updater_delta_release::Error::Request(format!(
+                "{reason}; refusing the release because --require-direct-patch was set"
+            )));
+        }
+        direct_patch_omitted = Some(reason);
     }
 
     if let Some(path) = &args.signature_out {
