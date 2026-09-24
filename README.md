@@ -44,20 +44,19 @@ Authenticode-signed end-to-end tests remain credential-bound validation gaps. Se
 ### 1. Prerequisites
 
 - Rust 1.88 or newer.
-- A Tauri v2 macOS application already using updater artifacts.
+- A Tauri v2 application already using updater artifacts: a macOS
+  `.app.tar.gz` and/or a Windows x86_64 NSIS `-setup.exe`.
 - `tauri-plugin-updater` 2.10.1. The delta plugin deliberately supports
   `>=2.10.1, <2.11.0` because its security assumptions were verified against
   that upstream implementation.
-- An HTTPS location for `manifest.json`, the full `.app.tar.gz`, and patches.
+- An HTTPS location for `manifest.json`, the full artifacts, and patches.
 - A Tauri updater signing key. Keep the private key out of source control.
 
-The plugin and release tool are not published yet. Add them from Git while v0.1
-is under review:
+Add both plugins from crates.io:
 
 ```sh
 cargo add tauri-plugin-updater@=2.10.1
-cargo add tauri-plugin-updater-delta \
-  --git https://github.com/Chahdane/tauri-updater.git
+cargo add tauri-plugin-updater-delta
 ```
 
 ### 2. Register both plugins
@@ -169,11 +168,10 @@ them accurately. An `Err` is the failure signal.
 
 ### 5. Produce release artifacts
 
-Install the repository's release tool, or run the same package from a checkout:
+Install the release tool:
 
 ```sh
-cargo install --locked --git https://github.com/Chahdane/tauri-updater.git \
-  --package tauri-updater-delta-release
+cargo install --locked tauri-updater-delta-release
 ```
 
 Use the same private key Tauri uses:
@@ -223,6 +221,29 @@ delta-release \
   --signature-out dist/MyApp.app.tar.gz.sig \
   --manifest dist/manifest.json
 ```
+
+For a Windows NSIS release, fold the `windows-x86_64` entry into the same
+`manifest.json`. There is no tar layer on Windows, so omit the `--tar-patch-*`
+flags and never pass `--require-tar-layer`:
+
+```sh
+delta-release \
+  --app-id com.example.myapp \
+  --platform windows-x86_64 \
+  --target-version 1.0.2 \
+  --from-version 1.0.1 \
+  --previous-installer dist/MyApp_1.0.1_x64-setup.exe \
+  --new-installer dist/MyApp_1.0.2_x64-setup.exe \
+  --installer-url https://releases.example.com/v1.0.2/MyApp_1.0.2_x64-setup.exe \
+  --patch-url https://releases.example.com/v1.0.2/1.0.1-to-1.0.2-windows.zst \
+  --patch-out dist/1.0.1-to-1.0.2-windows.zst \
+  --signature-out dist/MyApp_1.0.2_x64-setup.exe.sig \
+  --manifest dist/manifest.json
+```
+
+A Windows direct patch is published only when it is strictly below 30% of the
+full installer (`--max-direct-patch-percent`); otherwise it is deleted and the
+release stays a valid Full-only update for that platform.
 
 Use `darwin-x86_64` for an Intel build. `--app-id`, platform, and target version
 are explicit because they enter the cryptographically authenticated release
