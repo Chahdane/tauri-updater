@@ -319,7 +319,7 @@ fn run() -> Result<()> {
         if let Some(entry) = manifest
             .delta
             .as_mut()
-            .and_then(|delta| delta.platforms.get_mut(&args.platform))
+            .and_then(|delta| delta.platforms.get_mut(args.platform.as_str()))
         {
             entry.patches.remove(from_version);
         }
