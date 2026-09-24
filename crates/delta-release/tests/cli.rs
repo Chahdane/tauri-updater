@@ -134,6 +134,8 @@ fn every_documented_flag_is_accepted() {
         "--installer-url",
         "--patch-url",
         "--patch-out",
+        "--max-direct-patch-percent",
+        "--require-direct-patch",
         "--manifest",
         "--notes",
         "--pub-date",

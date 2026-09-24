@@ -23,10 +23,11 @@
 # carries an `opaque-v1` direct patch, and the client's job is to hold the exact
 # official installer so that patch has the base it was generated against.
 #
-# The ratio that produces is a **measurement**, not a target. NSIS compresses
-# solid with LZMA by default, so a small source change can move most of the
-# archive. versions.json records what it actually was; nothing here assumes it
-# is good.
+# The Windows updater bundle deliberately disables NSIS compression. Tauri's
+# default solid LZMA made the demonstrated direct patches ~98.25% of Full: valid
+# reconstructions, but useless downloads. These controlled builds are required
+# to stay strictly below 30%; a real application's release job uses the same
+# limit but safely omits an oversized patch and publishes Full instead.
 
 set -euo pipefail
 
@@ -200,6 +201,8 @@ publish() {
     --installer-url "http://127.0.0.1:0/v$to/$PRODUCT-setup.exe" \
     --patch-url     "http://127.0.0.1:0/patch-$from-$to.zst" \
     --patch-out     "$OUT/patch-$from-$to.zst" \
+    --max-direct-patch-percent 30 \
+    --require-direct-patch \
     --dangerously-allow-loopback-http-urls \
     --manifest      "$OUT/manifest-$to.json"
 }
@@ -250,9 +253,9 @@ for name, r in record["releases"].items():
           f"direct patch {r['direct_patch_size']} "
           f"({r['direct_patch_percent']}% of a full download)")
 print()
-print("    That percentage is a measurement of these two builds, not a claim")
-print("    about any application. NSIS compresses solid with LZMA, so a small")
-print("    source change can move most of the archive.")
+print("    These controlled pairs must be strictly below 30%. A real")
+print("    application's ratio still depends on what changed; delta-release")
+print("    omits any direct patch that misses the configured size limit.")
 PY
 
 echo

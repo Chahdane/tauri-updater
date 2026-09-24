@@ -121,6 +121,20 @@ fn the_readme_states_the_delta_backend() {
 }
 
 #[test]
+fn the_windows_example_builds_a_delta_friendly_updater() {
+    let config = read("examples/desktop-app/tauri.windows.conf.json");
+    contains("Windows Tauri config", &config, r#""compression": "none""#);
+
+    let harness = read("examples/desktop-app/e2e/build-three-versions-windows.sh");
+    contains(
+        "Windows E2E harness",
+        &harness,
+        "--max-direct-patch-percent 30",
+    );
+    contains("Windows E2E harness", &harness, "--require-direct-patch");
+}
+
+#[test]
 fn the_readme_limits_client_support_to_demonstrated_targets() {
     // Engine coverage on every desktop OS is not client evidence. Windows is a
     // supported client only at the boundary the real installer E2E proved;

@@ -26,10 +26,12 @@ which is a valid release rather than a broken one.
 **No tar layer on Windows, and `--require-tar-layer` must not be passed there.**
 An NSIS installer is not a gzipped tarball and nothing here can rebuild one
 byte-for-byte from its contents, so the release publishes an `opaque-v1` direct
-patch and the client's cache holds the exact official installer as its base. The
-saving that produces depends entirely on what changed between the two
-installers; NSIS compresses solid with LZMA, so a small source change can move
-most of the archive. Measure it, record it, and do not promise it.
+patch and the client's cache holds the exact official installer as its base.
+The Windows updater build disables NSIS compression: the larger Full artifact
+keeps unchanged bytes reusable by later patches. `delta-release` publishes a
+direct patch only when it is strictly below 30% of Full; otherwise it deletes
+the patch and leaves a valid Full-only release. The Windows E2E additionally
+uses `--require-direct-patch`, turning a missed target into a CI failure.
 
 Nothing from the artifact cache, the tar layer's scratch directory, or
 `research/` is uploaded. Each upload step names its patterns explicitly rather
