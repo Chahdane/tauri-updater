@@ -6,6 +6,7 @@
     ],
     "windows": {
       "nsis": {
+        "compression": "none",
         "installMode": "currentUser",
         "displayLanguageSelector": false,
         "languages": [
