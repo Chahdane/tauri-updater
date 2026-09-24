@@ -20,9 +20,10 @@ and release gate have not happened yet.
   promoted only after relaunch, then completed `1.0.1 -> 1.0.2` via
   DirectDelta. A corrupt cached installer degraded to Full and still installed
   the exact expected executable.
-- The two controlled NSIS direct patches were 98.2520% and 98.2523% of Full.
-  Windows support is therefore a correctness claim, not a bandwidth-savings
-  claim; solid LZMA compression makes opaque installer patches expensive.
+- The original solid-LZMA NSIS experiment produced patches that were 98.2520%
+  and 98.2523% of Full. The Windows updater artifact now disables NSIS
+  compression so unchanged bytes remain reusable, and the release tool refuses
+  to publish a direct patch unless it is strictly below 30% of Full.
 - On controlled example-app pairs, a direct compressed-artifact patch was
   95.5–96.1% of a Full download while a tar-layer patch was 16.0–16.1%
   (release-candidate build, 2026-08-14; earlier controlled runs measured
@@ -94,6 +95,25 @@ The existing Tauri updater configuration remains authoritative:
   }
 }
 ```
+
+For Windows NSIS updater artifacts, use a platform configuration such as
+`tauri.windows.conf.json` to disable solid installer compression:
+
+```json
+{
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "compression": "none"
+      }
+    }
+  }
+}
+```
+
+This trades a larger Full updater artifact for much smaller later deltas. The
+first update from an older solid-LZMA release may use Full; that successful
+update seeds the delta-friendly installer used as the next release's base.
 
 The public key must be present in `tauri.conf.json`; the delta plugin reads the
 same configured value. There is no delta-specific manifest URL and no second
