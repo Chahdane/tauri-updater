@@ -800,3 +800,29 @@ pair, on one platform, patching the compressed representation, and no controlled
 comparison against the uncompressed tar layer was run. F13 remains a hypothesis.
 Note also that no client consumed this patch in the run — it was measured at
 generation time, because the client took the full path.
+
+### F39 — A first update can rebuild its tar base from the installed bundle · **DEMONSTRATED ON FIXTURES; UNPROVEN ON A REAL INSTALL**
+
+With nothing cached, the tar path repeats `tauri-bundler`'s `tar::Builder`
+call over the installed `.app` and uses the result only when the tar and its
+`tauri-app-tar-gz-v1` recompression match the base the patch declares
+(DECISIONS #37).
+
+*Demonstrated, on fixtures:* an untouched bundle reproduces the bundler's
+exact tar; a modified bundle, a missing bundle and an oversized rebuild are
+each rejected, the first two before any patch is downloaded; an empty cache
+plus an untouched bundle installs the published bytes via TarDelta without
+fetching the full artifact; and a usable cache is preferred to the bundle.
+*Evidence:* `crates/delta-core/src/recompress.rs` tests,
+`crates/plugin/tests/tar_delta_flow.rs` (`a_first_update_rebuilds_its_base_…`
+and the four cases beside it).
+
+*Not demonstrated:* that a real application installed from a DMG still matches
+its published tar. Tar headers carry mtime, uid, gid and mode and follow
+`read_dir` order, so the answer depends on how the installation copied the
+bundle. An app installed by Tauri's own updater is known **not** to match
+(directory mtimes are reset by per-entry unpacking), which is harmless because
+that installation already has a cache. The settling experiment: build two
+releases, install the first by mounting its DMG and copying the `.app` with
+Finder, run the update against an empty cache, and require the request log to
+show the tar patch fetched and the full artifact not fetched.

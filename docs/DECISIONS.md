@@ -1768,3 +1768,81 @@ to nothing" are different claims and only one of them is true.
 **Revisit when:** an inner representation for a Windows installer is measured
 to be worth rebuilding byte-for-byte, which needs a reproducible recompression
 recipe for NSIS or MSI. Until then `opaque-v1` is the honest description.
+
+## 37. The first update may rebuild its base from the installed bundle
+
+**Decided:** 2026-09-25 · **Status:** active · **Gate:** first-update delta
+
+**Decision:** on macOS, when the managed cache cannot supply the base a tar
+patch was made against, the tar path may rebuild that base from the installed
+`.app`. It repeats `tauri-bundler`'s own call over the bundle directory —
+`tar::Builder`, `follow_symlinks(false)`, `append_dir_all(<bundle name>, ..)`,
+default `HeaderMode::Complete` — and uses the result only if:
+
+1. the rebuilt tar's size and BLAKE3 equal the patch's `base_tar_size` and
+   `base_tar_blake3`, and
+2. that tar, recompressed with `tauri-app-tar-gz-v1`, has the size and BLAKE3
+   the patch declares for its base installer.
+
+Anything else — a missing bundle, a modified one, a different layout, a rebuild
+larger than the declared base — is an ordinary fallback: Full, as before. The
+verified ACTIVE cache is always tried first.
+
+### Why this is safe
+
+The base of a patch has never been a trust anchor. What is installed is
+decided by the target digest, the minisign signature over the target, and the
+authenticated release identity (#6, #10, #27), and a base can only influence
+whether reconstruction *reaches* those gates. A wrong base fails the target
+digest and falls back; it cannot make a wrong artifact verify. The two base
+checks above exist for economy, not safety: they reject a base that cannot
+work *before* the patch is downloaded.
+
+"The authenticated release" in the original request is read here as the
+target release. The previous release's own signature is not available to the
+client — nothing retains it outside the cache — so the base digests come from
+the patch metadata, which is as unauthenticated as every other manifest field.
+That is acceptable for the reason above, and is stated rather than blurred.
+
+### Why the rebuilt base is not cached
+
+The cache re-verifies every entry's signature against the configured key on
+reuse (#24, #30). There is no signature for an artifact rebuilt from disk, so
+caching it would either weaken that rule or store an entry that can never be
+read. The verified *target* is staged as PENDING exactly as on every other
+path, so the cache is warm from the next update on.
+
+### When it can work, and when it cannot
+
+The tar headers record mtime, uid, gid and mode, and entries follow
+`read_dir` order (read from `tar` 0.4.46 `header.rs` and `builder.rs`). So the
+rebuild matches only when the installation preserved all of them:
+
+| How the app got there | Expected |
+| --- | --- |
+| Dragged from a DMG built from the same `.app` | **Plausible, unproven.** Finder copies preserve mtimes and modes; owner and `read_dir` order depend on the machine. |
+| Installed by Tauri's updater (`tar` unpack) | **Will not match.** Entries are unpacked one by one, so directory mtimes become the extraction time (`updater.rs:1236`). This is the cached case anyway. |
+| Renamed bundle, modified or re-signed bundle, app that writes into its own bundle | Will not match. |
+
+This is why it is not claimed as demonstrated. Engine and flow tests prove the
+mechanism and every fallback on fixtures; only a real DMG install followed by an
+update can show how often the first row holds.
+
+### Cost
+
+On a miss the client reads and hashes the whole bundle once, bounded by the
+declared base size (itself bounded by `Limits::max_tar_bytes`), and only when
+the cache had no usable base — in practice, once per installation.
+
+### Alternatives considered
+
+- **Keep the first update Full.** Simple and correct, and it pays the largest
+  download exactly when a user has just installed the app.
+- **Patch against a normalised tar** (fixed owners and mtimes). Would match far
+  more installs, but changes what releases publish and needs a new
+  representation identifier (#25). Worth revisiting if real installs show the
+  exact rebuild rarely matches.
+- **Ship the old artifact inside the app.** Doubles the install size.
+
+**Revisit when:** a real DMG install/update run has been measured, or
+`tauri-bundler` changes how it writes the archive.
