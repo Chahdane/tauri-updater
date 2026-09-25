@@ -1,8 +1,8 @@
-//! Release-time tooling: turn two installers into a patch and a manifest.
+//! Release-time tooling: turn previous installers into patches and a manifest.
 //!
 //! This is the half of the system that runs on CI, once per release. It takes
-//! the installer users already have and the installer they are moving to, and
-//! produces everything a client needs to make that move cheaply:
+//! the installers users already have and the installer they are moving to, and
+//! produces everything a client needs to make those moves cheaply:
 //!
 //! - the patch itself,
 //! - the digests that prove a reconstruction is correct,
@@ -25,6 +25,7 @@ pub mod version_contract;
 
 pub mod verify;
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use tauri_updater_delta_core::backend::{PatchBackend, ZstdBackend};
@@ -89,11 +90,11 @@ pub struct ReleaseRequest<'a> {
     /// `identifier`; the release workflow reads it from the same file.
     pub app_id: &'a str,
 
-    /// The release users are upgrading **from**, when there is one.
+    /// The releases that users are upgrading **from**, when there are any.
     ///
     /// # Why this is optional, and why that is the whole of blocker B5
     ///
-    /// These four fields used to be required, so a release with no predecessor
+    /// These fields used to be required, so a release with no predecessor
     /// could not be *expressed* — not merely "produced no patch". The workflow
     /// dealt with that by skipping the whole release step when no previous tag
     /// existed, which skipped the manifest with it. A first release therefore
@@ -101,10 +102,11 @@ pub struct ReleaseRequest<'a> {
     /// every client that checked for updates found nothing to check.
     ///
     /// The delta layer is the optional part of a release. The updater document
-    /// is not: it is the thing Tauri reads. Making the predecessor an `Option`
-    /// puts that distinction in the type, so "no previous release" produces a
+    /// is not: it is the thing Tauri reads. An empty slice therefore produces a
     /// complete, signed, Full-only manifest and cannot silently produce nothing.
-    pub predecessor: Option<Predecessor<'a>>,
+    /// Every listed predecessor gets its own direct-to-current patch; schema 1
+    /// never chains patches through intermediate releases.
+    pub predecessors: &'a [Predecessor<'a>],
 
     /// Permit `http://` URLs in the generated manifest.
     ///
@@ -169,10 +171,19 @@ pub struct TarLayerOptions<'a> {
 /// What a release run produced, beyond the manifest itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchSummary {
-    /// Size of the generated patch, when there was a predecessor to patch from.
-    pub patch_size: Option<u64>,
     /// Size of the target installer in bytes.
     pub installer_size: u64,
+    /// One result for every predecessor supplied to [`build_release`].
+    pub patches: Vec<PredecessorPatchSummary>,
+}
+
+/// What one predecessor contributed to a release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PredecessorPatchSummary {
+    /// Version this patch upgrades from.
+    pub from_version: String,
+    /// Size of the generated direct patch.
+    pub patch_size: u64,
     /// Size of the tar-layer patch, if one was published.
     pub tar_patch_size: Option<u64>,
     /// Why no tar layer was published, when one was asked for.
@@ -182,16 +193,13 @@ pub struct PatchSummary {
     pub tar_layer_skipped: Option<String>,
 }
 
-impl PatchSummary {
+impl PredecessorPatchSummary {
     /// Patch size as a percentage of a full download.
-    ///
-    /// `None` when this release published no patch, which is a different thing
-    /// from a patch of zero bytes.
-    pub fn ratio_percent(&self) -> Option<f64> {
-        match self.patch_size {
-            Some(_) if self.installer_size == 0 => Some(0.0),
-            Some(patch) => Some(patch as f64 / self.installer_size as f64 * 100.0),
-            None => None,
+    pub fn ratio_percent(&self, installer_size: u64) -> f64 {
+        if installer_size == 0 {
+            0.0
+        } else {
+            self.patch_size as f64 / installer_size as f64 * 100.0
         }
     }
 }
@@ -202,8 +210,8 @@ impl PatchSummary {
 /// only supports patching *to the latest release*, a manifest describing an
 /// older version is replaced rather than merged — its patches reconstruct an
 /// artifact that is no longer current. A manifest for the same version has the
-/// new upgrade path added alongside the ones already there, which is what lets a
-/// release publish several `from` versions by calling this repeatedly.
+/// new upgrade paths added alongside the ones already there. Every predecessor
+/// in this request is generated and round-tripped before its metadata is added.
 pub fn build_release(
     req: &ReleaseRequest<'_>,
     key: &SigningKey,
@@ -214,10 +222,43 @@ pub fn build_release(
         req.installer_url,
         req.allow_insecure_urls,
     )?;
-    if let Some(pred) = &req.predecessor {
+    let mut from_versions = HashSet::new();
+    let mut patch_urls = HashSet::new();
+    let mut patch_outputs = HashSet::new();
+    for pred in req.predecessors {
+        if !from_versions.insert(pred.from_version) {
+            return Err(Error::Request(format!(
+                "predecessor {} was supplied more than once",
+                pred.from_version
+            )));
+        }
         check_url("the patch URL", pred.patch_url, req.allow_insecure_urls)?;
+        if !patch_urls.insert(pred.patch_url) {
+            return Err(Error::Request(format!(
+                "patch URL {} was supplied more than once",
+                pred.patch_url
+            )));
+        }
+        if !patch_outputs.insert(pred.patch_out) {
+            return Err(Error::Request(format!(
+                "patch output {} was supplied more than once",
+                pred.patch_out.display()
+            )));
+        }
         if let Some(tar) = &pred.tar_layer {
             check_url("the tar-patch URL", tar.patch_url, req.allow_insecure_urls)?;
+            if !patch_urls.insert(tar.patch_url) {
+                return Err(Error::Request(format!(
+                    "patch URL {} was supplied more than once",
+                    tar.patch_url
+                )));
+            }
+            if !patch_outputs.insert(tar.patch_out) {
+                return Err(Error::Request(format!(
+                    "patch output {} was supplied more than once",
+                    tar.patch_out.display()
+                )));
+            }
         }
     }
 
@@ -227,7 +268,7 @@ pub fn build_release(
             req.new_installer.display()
         )));
     }
-    if let Some(pred) = &req.predecessor {
+    for pred in req.predecessors {
         if pred.from_version == req.version {
             return Err(Error::Request(format!(
                 "cannot patch {} to itself",
@@ -270,14 +311,14 @@ pub fn build_release(
     // The direct patch, generated and then *proven* before it is described.
     // Blocker B7: this used to emit metadata for a patch nobody had ever
     // applied. See `generate_direct_patch`.
-    let direct = match &req.predecessor {
-        Some(pred) => Some(generate_direct_patch(
-            pred,
-            req.new_installer,
-            installer_digest,
-        )?),
-        None => None,
-    };
+    let direct = req
+        .predecessors
+        .iter()
+        .map(|pred| {
+            generate_direct_patch(pred, req.new_installer, installer_digest)
+                .map(|patch| (pred, patch))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let mut manifest = match existing {
         Some(existing) if existing.version == req.version => existing,
@@ -331,50 +372,61 @@ pub fn build_release(
     entry.target_installer_size = installer_size;
     entry.signature = signature;
 
-    let mut patch_size = None;
-    if let (Some(pred), Some(patch)) = (&req.predecessor, direct) {
-        patch_size = Some(patch.patch_size);
-        entry.patches.insert(pred.from_version.to_owned(), patch);
+    for (pred, patch) in &direct {
+        entry
+            .patches
+            .insert(pred.from_version.to_owned(), patch.clone());
     }
 
-    // The tar layer is strictly additive: if anything about it fails, the entry
-    // above is already complete and the release publishes without it.
-    let mut tar_patch_size = None;
-    let mut tar_layer_skipped = None;
-    if let Some((pred, options)) = req
-        .predecessor
-        .as_ref()
-        .and_then(|p| p.tar_layer.as_ref().map(|t| (p, t)))
-    {
-        match build_tar_layer(req, pred, options, entry.tar_layer.take()) {
-            Ok((layer, size)) => {
-                tar_patch_size = Some(size);
-                entry.tar_layer = Some(layer);
-            }
-            Err(reason) => {
-                let reason = reason.to_string();
-                if options.required {
-                    return Err(Error::Request(format!(
-                        "a tar layer was required and could not be produced: {reason}"
-                    )));
+    // The tar layer is strictly additive. A failed optional path does not erase
+    // paths already proven for this target during this run. An inherited layer
+    // is cleared if the first requested tar path fails, because an existing
+    // manifest for the same semantic version can still describe different
+    // artifact bytes.
+    let mut summaries = Vec::with_capacity(direct.len());
+    let mut tar_layer = entry.tar_layer.take();
+    let mut tar_layer_proven_for_target = false;
+    for (pred, patch) in direct {
+        let mut tar_patch_size = None;
+        let mut tar_layer_skipped = None;
+        if let Some(options) = &pred.tar_layer {
+            match build_tar_layer(req, pred, options, tar_layer.clone()) {
+                Ok((layer, size)) => {
+                    tar_patch_size = Some(size);
+                    tar_layer = Some(layer);
+                    tar_layer_proven_for_target = true;
                 }
-                // Leave the entry with no tar layer at all rather than a stale
-                // one: a layer describing the previous release would tell every
-                // client to reconstruct the wrong tar.
-                tar_layer_skipped = Some(reason);
+                Err(reason) => {
+                    let reason = reason.to_string();
+                    if options.required {
+                        return Err(Error::Request(format!(
+                            "a tar layer from {} was required and could not be produced: {reason}",
+                            pred.from_version
+                        )));
+                    }
+                    if !tar_layer_proven_for_target {
+                        tar_layer = None;
+                    }
+                    tar_layer_skipped = Some(reason);
+                }
             }
         }
+        summaries.push(PredecessorPatchSummary {
+            from_version: pred.from_version.to_owned(),
+            patch_size: patch.patch_size,
+            tar_patch_size,
+            tar_layer_skipped,
+        });
     }
+    entry.tar_layer = tar_layer;
 
     manifest.validate()?;
 
     Ok((
         manifest,
         PatchSummary {
-            patch_size,
             installer_size,
-            tar_patch_size,
-            tar_layer_skipped,
+            patches: summaries,
         },
     ))
 }

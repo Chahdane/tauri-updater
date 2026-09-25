@@ -11,8 +11,8 @@
 //! | State | Predecessor | Must publish |
 //! | --- | --- | --- |
 //! | **A** | none | signed Full-only manifest |
-//! | **B** | exists, unusable for delta | signed Full-only manifest |
-//! | **C** | exists and is usable | Full **and** delta metadata |
+//! | **B** | one or more exist, unusable for delta | signed Full-only manifest |
+//! | **C** | one or more exist and are usable | Full **and** per-predecessor delta metadata |
 //!
 //! None of the three is a failure. Two of them used to be indistinguishable from
 //! one, because "no delta" and "no release document" went down the same branch.
@@ -132,7 +132,7 @@ fn state_a_no_predecessor_still_publishes_a_complete_updater_release() {
             notes: Some("the first one"),
             pub_date: Some("2026-08-14T00:00:00Z"),
             app_id: APP_ID,
-            predecessor: None,
+            predecessors: &[],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -151,8 +151,7 @@ fn state_a_no_predecessor_still_publishes_a_complete_updater_release() {
         .and_then(|d| d.platforms.get(PLATFORM))
         .is_some_and(|e| !e.patches.is_empty());
     assert!(!has_patches, "a first release must publish no patches");
-    assert_eq!(summary.patch_size, None);
-    assert_eq!(summary.ratio_percent(), None);
+    assert!(summary.patches.is_empty());
 
     let identity = check(&manifest, &new, &pair, "v1.0.0");
     assert!(
@@ -179,7 +178,7 @@ fn state_a_survives_a_round_trip_through_json() {
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: None,
+            predecessors: &[],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -215,7 +214,7 @@ fn state_b_an_unusable_predecessor_still_publishes_a_complete_updater_release() 
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: None,
+            predecessors: &[],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -224,7 +223,7 @@ fn state_b_an_unusable_predecessor_still_publishes_a_complete_updater_release() 
     .expect("an unusable predecessor is not a release failure");
 
     assert_tauri_can_use_it(&manifest, "1.0.1");
-    assert_eq!(summary.patch_size, None);
+    assert!(summary.patches.is_empty());
     check(&manifest, &new, &pair, "v1.0.1");
 }
 
@@ -248,13 +247,13 @@ fn state_b_a_predecessor_that_does_not_exist_is_a_loud_failure_not_a_silent_one(
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &dir.path().join("nothing-here.bin"),
                 patch_url: &format!("{BASE}/p.zst"),
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -286,13 +285,13 @@ fn state_c_a_usable_predecessor_publishes_full_and_delta() {
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &old,
                 patch_url: &format!("{BASE}/1.0.0-to-1.0.1.zst"),
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -302,7 +301,7 @@ fn state_c_a_usable_predecessor_publishes_full_and_delta() {
 
     // Everything state A publishes, plus the delta.
     assert_tauri_can_use_it(&manifest, "1.0.1");
-    assert!(summary.patch_size.is_some());
+    assert_eq!(summary.patches.len(), 1);
     assert!(patch.is_file(), "the patch file must actually be written");
 
     let entry = manifest
@@ -331,6 +330,141 @@ fn state_c_a_usable_predecessor_publishes_full_and_delta() {
     .expect("publishable");
     assert_eq!(report.direct_patch_from, vec!["1.0.0".to_owned()]);
     assert!(report.tar_patch_from.is_empty(), "these are not tarballs");
+}
+
+/// A real `.app.tar.gz`, written the way `tauri-bundler` writes one.
+fn app_bundle(dir: &Path, name: &str, binary: &[u8]) -> PathBuf {
+    let root = dir.join(format!("{name}-src"));
+    std::fs::create_dir_all(root.join("Contents/MacOS")).expect("mkdir");
+    std::fs::write(root.join("Contents/Info.plist"), b"<plist/>").expect("write plist");
+    std::fs::write(root.join("Contents/MacOS/app"), binary).expect("write binary");
+
+    let out = dir.join(format!("{name}.app.tar.gz"));
+    let encoder = flate2::write::GzEncoder::new(
+        std::fs::File::create(&out).expect("create"),
+        flate2::Compression::default(),
+    );
+    let mut builder = tar::Builder::new(encoder);
+    builder.follow_symlinks(false);
+    builder
+        .append_dir_all("DeltaExample.app", &root)
+        .expect("append");
+    builder
+        .into_inner()
+        .expect("finish tar")
+        .finish()
+        .expect("finish gzip");
+    out
+}
+
+#[test]
+fn state_c_several_predecessors_each_get_a_proven_tar_patch_in_one_layer() {
+    // One release, two macOS predecessors. Both tar patches must land in the
+    // single tar layer for this target, and each must have been round-tripped
+    // to the exact published artifact -- otherwise a client two releases
+    // behind would silently take Full.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let binary = |seed: u32| -> Vec<u8> {
+        (0..200_000u32)
+            .map(|i| (i.wrapping_mul(2654435761).wrapping_add(seed) % 251) as u8)
+            .collect()
+    };
+    let v100 = binary(1);
+    let mut v101 = v100.clone();
+    v101[50_000..50_064].copy_from_slice(&[1u8; 64]);
+    let mut v102 = v101.clone();
+    v102[150_000..150_064].copy_from_slice(&[2u8; 64]);
+
+    let old_100 = app_bundle(dir.path(), "1.0.0", &v100);
+    let old_101 = app_bundle(dir.path(), "1.0.1", &v101);
+    let new = app_bundle(dir.path(), "1.0.2", &v102);
+
+    let out = |name: &str| dir.path().join(name);
+    let (p101, t101, p100, t100) = (
+        out("1.0.1-to-1.0.2.zst"),
+        out("1.0.1-to-1.0.2.tar.zst"),
+        out("1.0.0-to-1.0.2.zst"),
+        out("1.0.0-to-1.0.2.tar.zst"),
+    );
+    let tar = |url: &'static str, patch_out| {
+        Some(TarLayerOptions {
+            patch_url: url,
+            patch_out,
+            work_dir: None,
+            max_tar_bytes: 64 * 1024 * 1024,
+            required: true,
+        })
+    };
+
+    let (manifest, summary) = build_release(
+        &ReleaseRequest {
+            platform: PLATFORM,
+            version: "1.0.2",
+            new_installer: &new,
+            installer_url: &format!("{BASE}/app.app.tar.gz"),
+            notes: None,
+            pub_date: None,
+            app_id: APP_ID,
+            predecessors: &[
+                Predecessor {
+                    from_version: "1.0.1",
+                    installer: &old_101,
+                    patch_url: &format!("{BASE}/1.0.1-to-1.0.2.zst"),
+                    patch_out: &p101,
+                    tar_layer: tar("https://releases.example.com/1.0.1-to-1.0.2.tar.zst", &t101),
+                },
+                Predecessor {
+                    from_version: "1.0.0",
+                    installer: &old_100,
+                    patch_url: &format!("{BASE}/1.0.0-to-1.0.2.zst"),
+                    patch_out: &p100,
+                    tar_layer: tar("https://releases.example.com/1.0.0-to-1.0.2.tar.zst", &t100),
+                },
+            ],
+            allow_insecure_urls: false,
+        },
+        &signing_key(&pair),
+        None,
+    )
+    .expect("both tar paths are required and must be produced");
+
+    assert_eq!(summary.patches.len(), 2);
+    for patch in &summary.patches {
+        assert!(
+            patch.tar_patch_size.is_some(),
+            "{} must have a tar patch: {:?}",
+            patch.from_version,
+            patch.tar_layer_skipped
+        );
+    }
+    for path in [&p101, &t101, &p100, &t100] {
+        assert!(path.is_file(), "{} must be written", path.display());
+    }
+
+    let layer = manifest.delta.as_ref().expect("delta layer").platforms[PLATFORM]
+        .tar_layer
+        .as_ref()
+        .expect("one tar layer for this target");
+    let mut from: Vec<_> = layer.patches.keys().cloned().collect();
+    from.sort();
+    assert_eq!(from, ["1.0.0", "1.0.1"]);
+
+    let report = verify_release(
+        &manifest,
+        &ReleaseUnderTest {
+            tag: "v1.0.2",
+            app_id: APP_ID,
+            platform: PLATFORM,
+            artifact: &new,
+            pubkey: &public_key_base64(&pair),
+            allow_insecure_urls: false,
+        },
+    )
+    .expect("publishable");
+    let mut tar_from = report.tar_patch_from.clone();
+    tar_from.sort();
+    assert_eq!(tar_from, ["1.0.0", "1.0.1"]);
 }
 
 #[test]
@@ -391,13 +525,13 @@ fn publishable() -> Publishable {
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &old,
                 patch_url: &format!("{BASE}/1.0.0-to-1.0.1.zst"),
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),
@@ -881,13 +1015,13 @@ fn build_with_urls(
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &old,
                 patch_url,
                 patch_out: &patch,
                 tar_layer,
-            }),
+            }],
             allow_insecure_urls,
         },
         &signing_key(&pair),

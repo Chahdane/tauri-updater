@@ -203,7 +203,7 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &old,
                 patch_url: PATCH_URL,
@@ -217,7 +217,7 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
                     // get built, so make that a failure rather than a surprise.
                     required: true,
                 }),
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &key,
@@ -226,7 +226,7 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
     .expect("release should build");
 
     assert!(
-        summary.tar_patch_size.is_some(),
+        summary.patches[0].tar_patch_size.is_some(),
         "the fixture must have a tar layer"
     );
 

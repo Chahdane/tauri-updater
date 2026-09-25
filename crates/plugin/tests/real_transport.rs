@@ -135,13 +135,13 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: &server.url("/patch.zst"),
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             // The only harness that serves real HTTP: this builds releases whose
             // URLs point at a loopback test server. The opt-in accepts 127.0.0.1
             // and refuses every other host, so it cannot stand in for a release.

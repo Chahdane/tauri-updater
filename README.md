@@ -201,22 +201,29 @@ delta-release \
   --manifest dist/manifest.json
 ```
 
-For a later release with a usable predecessor, add both direct and tar-layer
-outputs:
+For a later release, repeat the predecessor flags to add direct-to-current
+patches from every previous version you want to retain. On macOS, add one
+tar-layer output pair for each predecessor in the same order:
 
 ```sh
 delta-release \
   --app-id com.example.myapp \
   --platform darwin-aarch64 \
-  --target-version 1.0.2 \
+  --target-version 1.0.3 \
+  --new-installer dist/MyApp.app.tar.gz \
+  --installer-url https://releases.example.com/v1.0.3/MyApp.app.tar.gz \
+  --from-version 1.0.2 \
+  --previous-installer dist/MyApp-1.0.2.app.tar.gz \
+  --patch-url https://releases.example.com/v1.0.3/1.0.2-to-1.0.3.zst \
+  --patch-out dist/1.0.2-to-1.0.3.zst \
+  --tar-patch-url https://releases.example.com/v1.0.3/1.0.2-to-1.0.3.tar.zst \
+  --tar-patch-out dist/1.0.2-to-1.0.3.tar.zst \
   --from-version 1.0.1 \
   --previous-installer dist/MyApp-1.0.1.app.tar.gz \
-  --new-installer dist/MyApp.app.tar.gz \
-  --installer-url https://releases.example.com/v1.0.2/MyApp.app.tar.gz \
-  --patch-url https://releases.example.com/v1.0.2/1.0.1-to-1.0.2.zst \
-  --patch-out dist/1.0.1-to-1.0.2.zst \
-  --tar-patch-url https://releases.example.com/v1.0.2/1.0.1-to-1.0.2.tar.zst \
-  --tar-patch-out dist/1.0.1-to-1.0.2.tar.zst \
+  --patch-url https://releases.example.com/v1.0.3/1.0.1-to-1.0.3.zst \
+  --patch-out dist/1.0.1-to-1.0.3.zst \
+  --tar-patch-url https://releases.example.com/v1.0.3/1.0.1-to-1.0.3.tar.zst \
+  --tar-patch-out dist/1.0.1-to-1.0.3.tar.zst \
   --require-tar-layer \
   --signature-out dist/MyApp.app.tar.gz.sig \
   --manifest dist/manifest.json
@@ -241,9 +248,15 @@ delta-release \
   --manifest dist/manifest.json
 ```
 
-A Windows direct patch is published only when it is strictly below 30% of the
-full installer (`--max-direct-patch-percent`); otherwise it is deleted and the
-release stays a valid Full-only update for that platform.
+The four direct-patch predecessor flags must be repeated the same number of
+times, in matching order. The two tar-patch flags are either omitted or repeated
+once per predecessor. Every direct and tar patch is applied and checked before
+its metadata is published.
+
+Each direct patch is published only when it is strictly below 30% of the full
+installer (`--max-direct-patch-percent`). Oversized patches are deleted
+independently: other qualifying versions retain their patches, while a client on
+an omitted version safely uses Full.
 
 Use `darwin-x86_64` for an Intel build. `--app-id`, platform, and target version
 are explicit because they enter the cryptographically authenticated release

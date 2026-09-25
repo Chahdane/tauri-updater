@@ -177,15 +177,20 @@ impl World {
     fn bytes(&self, version: &str) -> Vec<u8> {
         std::fs::read(&self.installers[version]).expect("read installer")
     }
+
+    fn patch_size(&self, from: &str, to: &str) -> u64 {
+        self.patch_sizes[&format!("{from}->{to}")]
+    }
 }
 
-/// Build 1.0.0, 1.0.1 and 1.0.2 and release the two transitions between them.
+/// Build four versions. The latest release supports the last two predecessors,
+/// while 0.9.0 is deliberately unlisted so the Full path stays covered.
 fn world(dir: &Path, pair: &KeyPair) -> World {
     let key = SigningKey::from_str(&pair.sk.to_box(None).expect("box key").into_string(), None)
         .expect("load key");
 
     let mut installers = HashMap::new();
-    for (i, version) in ["1.0.0", "1.0.1", "1.0.2"].iter().enumerate() {
+    for (i, version) in ["0.9.0", "1.0.0", "1.0.1", "1.0.2"].iter().enumerate() {
         installers.insert(
             (*version).to_owned(),
             installer(dir, version, 1_000 + i as u32 * 7),
@@ -193,7 +198,12 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
     }
 
     // Distinct bytes, or every assertion below passes vacuously.
-    for (a, b) in [("1.0.0", "1.0.1"), ("1.0.1", "1.0.2"), ("1.0.0", "1.0.2")] {
+    for (a, b) in [
+        ("0.9.0", "1.0.0"),
+        ("1.0.0", "1.0.1"),
+        ("1.0.1", "1.0.2"),
+        ("1.0.0", "1.0.2"),
+    ] {
         assert_ne!(
             std::fs::read(&installers[a]).expect("read"),
             std::fs::read(&installers[b]).expect("read"),
@@ -205,8 +215,28 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
     let mut manifests = HashMap::new();
     let mut patch_sizes = HashMap::new();
 
-    for (from, to) in [("1.0.0", "1.0.1"), ("1.0.1", "1.0.2")] {
-        let patch_out = dir.join(format!("{from}-to-{to}.zst"));
+    for (from_versions, to) in [(vec!["1.0.0"], "1.0.1"), (vec!["1.0.0", "1.0.1"], "1.0.2")] {
+        let patch_outputs = from_versions
+            .iter()
+            .map(|from| dir.join(format!("{from}-to-{to}.zst")))
+            .collect::<Vec<_>>();
+        let patch_urls = from_versions
+            .iter()
+            .map(|from| patch_url(from, to))
+            .collect::<Vec<_>>();
+        let predecessors = from_versions
+            .iter()
+            .enumerate()
+            .map(|(index, from)| Predecessor {
+                from_version: from,
+                installer: &installers[*from],
+                patch_url: &patch_urls[index],
+                patch_out: &patch_outputs[index],
+                // No tar layer: these artifacts are not tarballs, which is the
+                // entire point of the representation under test.
+                tar_layer: None,
+            })
+            .collect::<Vec<_>>();
         let (manifest, summary) = build_release(
             &ReleaseRequest {
                 platform: &current_platform(),
@@ -216,15 +246,7 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
                 notes: None,
                 pub_date: None,
                 app_id: APP_ID,
-                predecessor: Some(Predecessor {
-                    from_version: from,
-                    installer: &installers[from],
-                    patch_url: &patch_url(from, to),
-                    patch_out: &patch_out,
-                    // No tar layer: these artifacts are not tarballs, which is
-                    // the entire point of the representation under test.
-                    tar_layer: None,
-                }),
+                predecessors: &predecessors,
                 allow_insecure_urls: false,
             },
             &key,
@@ -232,16 +254,14 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
         )
         .expect("release should build");
 
-        assert!(
-            summary.patch_size.is_some(),
-            "the fixture must publish a direct patch"
-        );
-        patch_sizes.insert(to.to_owned(), summary.patch_size.expect("patch size"));
-
-        files.insert(
-            patch_url(from, to),
-            std::fs::read(&patch_out).expect("read patch"),
-        );
+        assert_eq!(summary.patches.len(), from_versions.len());
+        for (index, from) in from_versions.iter().enumerate() {
+            patch_sizes.insert(format!("{from}->{to}"), summary.patches[index].patch_size);
+            files.insert(
+                patch_url(from, to),
+                std::fs::read(&patch_outputs[index]).expect("read patch"),
+            );
+        }
         files.insert(
             installer_url(to),
             std::fs::read(&installers[to]).expect("read installer"),
@@ -409,7 +429,7 @@ fn the_full_relaunch_direct_delta_ladder_completes() {
             downloaded,
             saved_against,
         } => {
-            assert_eq!(downloaded, w.patch_sizes["1.0.2"]);
+            assert_eq!(downloaded, w.patch_size("1.0.1", "1.0.2"));
             assert_eq!(saved_against, w.bytes("1.0.2").len() as u64);
         }
         other => panic!("expected a direct delta, got {}", other.path_name()),
@@ -428,6 +448,72 @@ fn the_full_relaunch_direct_delta_ladder_completes() {
     let state = cache.state().expect("state");
     assert_eq!(state.pending.expect("staged").version, "1.0.2");
     assert_eq!(state.active.expect("active").version, "1.0.1");
+}
+
+#[test]
+fn a_client_two_versions_behind_uses_its_direct_patch() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair, "1.0.0");
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run(
+        &w,
+        "1.0.0",
+        "1.0.2",
+        Some(&cache),
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("two-version jump");
+
+    match outcome {
+        Outcome::InstalledFromDelta {
+            downloaded,
+            saved_against,
+        } => {
+            assert_eq!(downloaded, w.patch_size("1.0.0", "1.0.2"));
+            assert_eq!(saved_against, w.bytes("1.0.2").len() as u64);
+        }
+        other => panic!("expected DirectDelta, got {}", other.path_name()),
+    }
+    assert!(w.server.fetched(&patch_url("1.0.0", "1.0.2")));
+    assert!(!w.server.fetched(&installer_url("1.0.2")));
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
+}
+
+#[test]
+fn a_client_without_a_published_patch_uses_full() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair, "0.9.0");
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run(
+        &w,
+        "0.9.0",
+        "1.0.2",
+        Some(&cache),
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("unlisted predecessor falls back");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert!(w.server.fetched(&installer_url("1.0.2")));
+    assert!(
+        !w.server
+            .requested
+            .borrow()
+            .iter()
+            .any(|url| url.ends_with(".zst")),
+        "an unlisted version must choose Full before fetching any patch"
+    );
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
 }
 
 #[test]
