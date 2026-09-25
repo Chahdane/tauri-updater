@@ -145,6 +145,9 @@ pub enum Error {
 pub enum UpdateSource {
     /// The complete official artifact was downloaded.
     Full,
+    /// A compressed copy of the complete official artifact was downloaded and
+    /// rebuilt byte-for-byte before verification.
+    CompressedFull,
     /// A patch against the compressed official artifact was applied.
     DirectDelta,
     /// A cached official artifact was expanded, patched at the tar layer, and
@@ -157,6 +160,7 @@ impl UpdateSource {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Full => "full",
+            Self::CompressedFull => "compressed-full",
             Self::DirectDelta => "direct-delta",
             Self::TarDelta => "tar-delta",
         }
@@ -186,6 +190,17 @@ pub enum Outcome {
         /// Non-fatal cache observations. Installation still succeeded.
         diagnostics: Vec<Diagnostic>,
     },
+    /// Installed after downloading a compressed copy of the complete official
+    /// artifact and rebuilding it exactly. It is verified and installed exactly
+    /// as a Full download is; only the transfer was smaller.
+    InstalledFromCompressedFullDownload {
+        /// Bytes of the compressed copy downloaded.
+        downloaded: u64,
+        /// Size of the official artifact, which an uncompressed download costs.
+        full_download_size: u64,
+        /// Non-fatal cache observations. Installation still succeeded.
+        diagnostics: Vec<Diagnostic>,
+    },
     /// Installed after applying a patch to the compressed official artifact.
     InstalledFromDirectDelta {
         /// Patch bytes downloaded.
@@ -212,6 +227,7 @@ impl Outcome {
         match self {
             Self::UpToDate { .. } => None,
             Self::InstalledFromFullDownload { .. } => Some(UpdateSource::Full),
+            Self::InstalledFromCompressedFullDownload { .. } => Some(UpdateSource::CompressedFull),
             Self::InstalledFromDirectDelta { .. } => Some(UpdateSource::DirectDelta),
             Self::InstalledFromTarDelta { .. } => Some(UpdateSource::TarDelta),
         }
@@ -227,6 +243,7 @@ impl Outcome {
         match self {
             Self::UpToDate { diagnostics }
             | Self::InstalledFromFullDownload { diagnostics, .. }
+            | Self::InstalledFromCompressedFullDownload { diagnostics, .. }
             | Self::InstalledFromDirectDelta { diagnostics, .. }
             | Self::InstalledFromTarDelta { diagnostics, .. } => diagnostics,
         }
@@ -237,6 +254,7 @@ impl Outcome {
         match self {
             Self::UpToDate { .. } => None,
             Self::InstalledFromFullDownload { downloaded, .. }
+            | Self::InstalledFromCompressedFullDownload { downloaded, .. }
             | Self::InstalledFromDirectDelta { downloaded, .. }
             | Self::InstalledFromTarDelta { downloaded, .. } => Some(*downloaded),
         }
@@ -250,7 +268,10 @@ impl Outcome {
         match self {
             Self::UpToDate { .. } => None,
             Self::InstalledFromFullDownload { downloaded, .. } => Some(*downloaded),
-            Self::InstalledFromDirectDelta {
+            Self::InstalledFromCompressedFullDownload {
+                full_download_size, ..
+            }
+            | Self::InstalledFromDirectDelta {
                 full_download_size, ..
             }
             | Self::InstalledFromTarDelta {
@@ -271,10 +292,14 @@ impl Outcome {
         )
     }
 
-    /// Full artifact size used as the delta comparison, when a delta installed.
+    /// Full artifact size used as the comparison, when a delta or a compressed
+    /// full copy installed.
     pub fn full_download_size(&self) -> Option<u64> {
         match self {
-            Self::InstalledFromDirectDelta {
+            Self::InstalledFromCompressedFullDownload {
+                full_download_size, ..
+            }
+            | Self::InstalledFromDirectDelta {
                 full_download_size, ..
             }
             | Self::InstalledFromTarDelta {
@@ -424,6 +449,21 @@ mod tests {
             (Some(40), Some(300), Some(260))
         );
         assert_eq!(oversized.bytes_saved(), Some(0), "never wraps below zero");
+        let compressed = Outcome::InstalledFromCompressedFullDownload {
+            downloaded: 90,
+            full_download_size: 300,
+            diagnostics: Vec::new(),
+        };
+        assert_eq!(compressed.source(), Some(UpdateSource::CompressedFull));
+        assert_eq!(compressed.path_name(), "compressed-full");
+        assert_eq!(
+            (
+                compressed.downloaded_bytes(),
+                compressed.full_artifact_size(),
+                compressed.bytes_saved()
+            ),
+            (Some(90), Some(300), Some(210))
+        );
         assert_eq!(
             (
                 none.downloaded_bytes(),

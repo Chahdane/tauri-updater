@@ -202,6 +202,10 @@ pub fn verify_release(
             direct_patch_from.push(from.clone());
         }
 
+        if let Some(full) = &entry.compressed_full {
+            check_url("the compressed full-download URL", &full.url, release)?;
+        }
+
         if let Some(layer) = &entry.tar_layer {
             // The representation is a manifest claim; the signature also states
             // one. Requiring them to agree is what stops a document describing

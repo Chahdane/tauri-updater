@@ -212,6 +212,37 @@ pub struct DeltaPlatform {
     /// ordinary — every reader falls back to `patches`, then to a full download.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tar_layer: Option<TarLayer>,
+
+    /// An optional compressed copy of the full installer, for clients that
+    /// must download it whole.
+    ///
+    /// Absent means the full download uses the Tauri layer's URL, as it always
+    /// has. Clients that do not know this field ignore it. See
+    /// `docs/DECISIONS.md` #40.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_full: Option<CompressedFull>,
+}
+
+/// A compressed copy of a platform's full installer.
+///
+/// Encoded as a patch from an **empty** base with [`backend_id`], so a client
+/// rebuilds it with the same bounded, digest-gated reconstruction a patch goes
+/// through, and the result must equal
+/// [`DeltaPlatform::target_installer_blake3`] exactly before anything else
+/// looks at it. The signature still covers the uncompressed installer only.
+///
+/// [`backend_id`]: CompressedFull::backend_id
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompressedFull {
+    /// Backend that decodes it, as for [`Patch::backend_id`]. An unknown value
+    /// is valid and simply unused.
+    pub backend_id: String,
+    /// Where to download the compressed copy.
+    pub url: String,
+    /// BLAKE3 of the compressed file, checked before decompression.
+    pub blake3: String,
+    /// Size in bytes of the compressed file.
+    pub size: u64,
 }
 
 /// A single patch, from one previous version to the release.
@@ -400,6 +431,14 @@ impl DeltaPlatform {
             unsupported => Err(unsupported),
         }
     }
+
+    /// The compressed full copy, if one is published in an encoding this build
+    /// can decode.
+    pub fn compressed_full(&self) -> Option<&CompressedFull> {
+        self.compressed_full
+            .as_ref()
+            .filter(|full| full.backend_id == crate::backend::ZstdBackend::ID)
+    }
 }
 
 impl Manifest {
@@ -506,6 +545,15 @@ impl Manifest {
 
             if let Some(tar) = &entry.tar_layer {
                 validate_tar_layer(platform, &entry.target_version, tar)?;
+            }
+
+            if let Some(full) = &entry.compressed_full {
+                FileHash::from_hex(&full.blake3)?;
+                if full.size == 0 || full.url.is_empty() {
+                    return Err(Error::Manifest(format!(
+                        "the compressed full copy for {platform} declares no size or no URL"
+                    )));
+                }
             }
         }
 
@@ -633,6 +681,7 @@ mod tests {
                             },
                         )]),
                         tar_layer: None,
+                        compressed_full: None,
                     },
                 )]),
             }),

@@ -30,7 +30,8 @@ use std::path::Path;
 
 use tauri_updater_delta_core::backend::{PatchBackend, ZstdBackend};
 use tauri_updater_delta_core::manifest::{
-    DeltaLayer, DeltaPlatform, Manifest, Patch, TauriPlatform, HASH_ALGO, SCHEMA_VERSION,
+    CompressedFull, DeltaLayer, DeltaPlatform, Manifest, Patch, TauriPlatform, HASH_ALGO,
+    SCHEMA_VERSION,
 };
 use tauri_updater_delta_core::FileHash;
 
@@ -362,6 +363,7 @@ pub fn build_release(
             signature: signature.clone(),
             patches: Default::default(),
             tar_layer: None,
+            compressed_full: None,
         });
 
     // Re-signing produces a different signature each run (minisign includes
@@ -524,6 +526,77 @@ pub fn prove_patch_reconstructs(base: &Path, patch: &Path, expected: FileHash) -
         )));
     }
     Ok(())
+}
+
+/// Publish a compressed copy of the full installer on `platform`'s delta entry.
+///
+/// The copy is a zstd patch against an **empty** base, generated at the same
+/// level as every other patch and round-tripped through the client's own apply
+/// before it is described, exactly like a direct patch (#33). It is attached
+/// only when it is strictly smaller than the installer; otherwise nothing is
+/// written, the file at `out` is removed, and `Ok(None)` says why nothing was
+/// published. See `docs/DECISIONS.md` #40.
+///
+/// Call after [`build_release`], on the manifest it returned.
+pub fn add_compressed_full(
+    manifest: &mut Manifest,
+    platform: &str,
+    installer: &Path,
+    url: &str,
+    out: &Path,
+    allow_insecure_urls: bool,
+) -> Result<Option<CompressedFull>> {
+    check_url("the compressed full URL", url, allow_insecure_urls)?;
+    let entry = manifest
+        .delta
+        .as_mut()
+        .and_then(|delta| delta.platforms.get_mut(platform))
+        .ok_or_else(|| {
+            Error::Request(format!(
+                "no delta entry for {platform}; build the release before compressing it"
+            ))
+        })?;
+
+    let expected = FileHash::of_file(installer)?;
+    if expected.to_hex() != entry.target_installer_blake3 {
+        return Err(Error::Request(format!(
+            "{} is not the installer this release describes",
+            installer.display()
+        )));
+    }
+
+    if let Some(parent) = out.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::Io(format!("creating {}: {e}", parent.display())))?;
+        }
+    }
+    let scratch = tempfile::Builder::new()
+        .prefix("delta-release-full-")
+        .tempdir()
+        .map_err(|e| Error::Io(format!("creating a scratch directory: {e}")))?;
+    let empty = scratch.path().join("empty.base");
+    std::fs::write(&empty, []).map_err(|e| Error::Io(format!("creating an empty base: {e}")))?;
+
+    ZstdBackend::new().diff(&empty, installer, out)?;
+    prove_patch_reconstructs(&empty, out, expected)?;
+
+    let size = file_size(out)?;
+    if size >= entry.target_installer_size {
+        let _ = std::fs::remove_file(out);
+        entry.compressed_full = None;
+        return Ok(None);
+    }
+
+    let full = CompressedFull {
+        backend_id: ZstdBackend::ID.to_owned(),
+        url: url.to_owned(),
+        blake3: FileHash::of_file(out)?.to_hex(),
+        size,
+    };
+    entry.compressed_full = Some(full.clone());
+    manifest.validate()?;
+    Ok(Some(full))
 }
 
 /// Generate the tar layer for one upgrade path, or say why not.

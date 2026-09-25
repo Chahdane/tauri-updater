@@ -69,6 +69,7 @@ pub async fn run<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     let label = match outcome {
         Outcome::InstalledFromTarDelta { .. } => "installed-from-tar-delta",
         Outcome::InstalledFromDirectDelta { .. } => "installed-from-delta",
+        Outcome::InstalledFromCompressedFullDownload { .. } => "installed-from-compressed-full",
         Outcome::InstalledFromFullDownload { .. } => "installed-from-full-download",
         Outcome::UpToDate { .. } => return Ok("up-to-date".to_owned()),
         _ => "update-completed",

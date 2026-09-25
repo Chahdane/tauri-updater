@@ -49,12 +49,12 @@ pub mod release_identity;
 pub mod signature;
 
 pub use backend::PatchBackend;
-pub use client::{plan_update, Fetch, UpdateSource};
+pub use client::{compressed_full_for, fetch_compressed_full, plan_update, Fetch, UpdateSource};
 pub use error::{Error, Result};
 pub use hash::FileHash;
 pub use identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 pub use limits::{Limits, DEFAULT_MAX_TARGET_BYTES};
-pub use manifest::{Manifest, TarLayer, TarPatch, TarSupport};
+pub use manifest::{CompressedFull, Manifest, TarLayer, TarPatch, TarSupport};
 pub use reconstruct::{try_reconstruct, Reconstruction, TargetSpec};
 pub use release_identity::{IdentityError, ReleaseBinding, ReleaseIdentity};
 pub use signature::{advisory_binding, verify_artifact, verify_artifact_file, VerifiedArtifact};
