@@ -428,7 +428,7 @@ jobs:
       # one release, one updater manifest, one `version` field. Two documents
       # would be two answers to "what is the latest release".
       - name: Hand the manifest and predecessor set to the Windows job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manifest-macos
           path: |
@@ -497,7 +497,7 @@ jobs:
           echo "Built $(basename "${bundles[0]}")"
 
       - name: Take the manifest the macOS job published
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: manifest-macos
           path: dist
