@@ -862,24 +862,95 @@ comment for a tab-separated `version:` field (`signed_version`,
 `verify_signed_version`), with an opt-in `requireSignedVersion`. This
 project's `delta-v1` identity has no such field (DECISIONS #39).
 
-*Not yet shown:* the plugin's test suite passing against 2.11.0. The
-`upstream updater / range-max` CI job runs it; it had not run when this entry
-was written.
+*Since shown:* the plugin's whole test suite passes against 2.11.0 in the
+`upstream updater / range-max` CI job, on every PR since #36.
 
-### F42 — Patch sizes for an app with a realistic payload · **UNPROVEN: benchmark built, not yet run**
+### F42 — Patch sizes for an app with a realistic payload · **DEMONSTRATED for the benchmark app**
 
-Every ratio above comes from releases that differ by a version string, or by
-a small frontend change, in a ~4–13 MB app. That says little about an app that
-ships tens of megabytes of assets and changes some of them.
+`examples/desktop-app/e2e/benchmark.sh`, CI run
+[36181326029](https://github.com/Chahdane/tauri-updater/actions/runs/36181326029)
+on `main` at `55acaf2` (after DECISIONS #42 and #43), tauri-cli 2.10.1
+`--locked`. The app bundles ~88 MiB of seeded resources: 32 × 2 MiB of
+incompressible "media" and 24 × 1 MiB of JSON. 1.0.1 changes only the version;
+1.0.2 replaces two media files, adds one, edits ~2% of the lines in five JSON
+files, deletes one, and changes the frontend. "Download" is what the plugin
+fetches: the tar patch on macOS, the direct patch on Windows.
 
-`examples/desktop-app/e2e/benchmark.sh` (run by the manual `Delta size
-benchmark` workflow on macOS and Windows) builds three releases with ~88 MiB of
-seeded, bundled resources: 1.0.1 changes only the version; 1.0.2 replaces two
-2 MiB media files, adds one, edits ~2% of the lines in five 1 MiB JSON files,
-deletes one, and changes the frontend. 1.0.2 is published from both 1.0.1 and
-1.0.0. The payload generator was checked to be deterministic and to change
-exactly those files; the builds themselves have not run.
+| Platform | Change | Full | Download | / Full | bsdiff (reference) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Windows NSIS (`compression: "none"`) | version only | 104,993,535 | 558,917 | 0.53% | 172,936 |
+| | feature change | 106,042,145 | 7,045,600 | 6.64% | 6,596,232 |
+| | two releases behind | 106,042,145 | 7,049,183 | 6.65% | 6,594,810 |
+| macOS `.app.tar.gz` | version only | 76,132,814 | 636,564 | 0.84% | 388,110 |
+| | feature change | 78,027,384 | 6,875,621 | 8.81% | 6,638,274 |
+| | two releases behind | 78,027,384 | 6,995,737 | 8.97% | 6,726,740 |
 
-Expect the incompressible replaced and added media (6 MiB) to dominate any
-patch. That is a property of the payload, not a result. Record the measured
-`benchmark.json` here when the workflow has run, with its run link.
+About 6 MiB of each feature-change patch is the replaced and added media,
+which no diff can shrink; that is the floor these numbers sit near. Two
+releases behind costs almost exactly one release, because each predecessor
+gets its own direct-to-current patch (item 1). The macOS direct patch
+(19% of Full) is not what clients download; it is published only as the
+fallback when the tar layer cannot be used.
+
+*Scope:* one synthetic but realistically shaped payload, one change shape, GitHub
+runners. A real application's ratio depends on how much of it changes. Before
+DECISIONS #43 the Windows feature-change patch was 31.4% of Full (F43), over
+the publish limit.
+
+### F43 — zstd needs match tables sized to the reference for large installers · **DEMONSTRATED**
+
+On the benchmark's real Windows installers (105 MB, `compression: "none"`,
+CI run [36168262483](https://github.com/Chahdane/tauri-updater/actions/runs/36168262483)),
+for the feature-change pair:
+
+| Setting | Patch | / Full | Time |
+| --- | ---: | ---: | ---: |
+| level 19, full window, LDM (as shipped in 0.1.0) | 33,260,824 | 31.38% | 18.5 s |
+| same, window = old + new | 33,259,613 | 31.38% | 18.3 s |
+| same, hash and chain logs = window | 7,266,609 | 6.86% | 19.7 s |
+| bsdiff4 | 6,971,853 | 6.58% | ~50 s |
+
+The window was never the problem; the match finder's tables were. Fixed in
+DECISIONS #43. On macOS's inner tar the same change moved 6.78% to 6.64%, so the
+effect is specific to how much of a large reference the default tables miss.
+
+### F44 — The tar-layer recipe depends on the bundler's compressor build · **DEMONSTRATED**
+
+tauri-cli 2.10.1 installed with `--locked` bundles with flate2 1.1.1 /
+zlib-rs 0.5.0 / tar 0.4.43; installed without it, it resolved flate2 1.1.9 /
+zlib-rs 0.6.7 in August 2026. The two produce different gzip bytes: the
+plugin, then on 0.6.7, could not rebuild the benchmark app's `--locked`
+artifact, and with 0.5.0 it cannot rebuild the earlier fixture. Pinning the
+plugin to the `--locked` versions made the macOS benchmark's
+`--require-tar-layer` pass (run
+[36175835119](https://github.com/Chahdane/tauri-updater/actions/runs/36175835119)),
+and the regenerated fixture's signature verifies against its rebuild.
+DECISIONS #42.
+
+### F45 — NSIS compression settings, measured together · **DEMONSTRATED for the example app**
+
+`measure-nsis-compression.sh`, CI run
+[36167683814](https://github.com/Chahdane/tauri-updater/actions/runs/36167683814),
+example app, 1.0.0 → 1.0.1 with a rewritten page and a new 64 KB script:
+
+| Setting | Full | Direct patch | / Full |
+| --- | ---: | ---: | ---: |
+| LZMA, solid (Tauri default) | 3,176,862 | 3,124,018 | 98.34% |
+| zlib, solid | 4,382,085 | 3,991,491 | 91.09% |
+| LZMA, per file (custom template) | 3,180,712 | 3,051,593 | 95.94% |
+| none | 12,671,508 | 314,741 | 2.48% |
+
+Per-file compression does not help because the frontend is embedded in the
+executable, which changes every release. A zstd-19 copy of the uncompressed
+installer is 3,432,555 bytes, 8% more than solid LZMA; that is what DECISIONS
+#40 publishes for Full downloads.
+
+### F46 — The first Windows update is a delta from an installer kept at install time · **DEMONSTRATED ON A REAL WINDOWS X86_64 NSIS INSTALL**
+
+CI run [36168949264](https://github.com/Chahdane/tauri-updater/actions/runs/36168949264),
+`windows nsis e2e`: a real current-user NSIS install of 1.0.0 with an empty
+cache selected **DirectDelta** for 1.0.0 → 1.0.1, fetched the patch and not the
+installer, and installed the exact 1.0.1 executable. The installer hook had
+kept the 1.0.0 installer, and after the updater's silent install the kept
+file was the 1.0.1 installer. With the cache corrupted and the seed removed,
+the next update degraded to Full. DECISIONS #41.

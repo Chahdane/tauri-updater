@@ -2022,3 +2022,59 @@ new installer.
 
 **Revisit when:** Tauri offers a supported place for installer-side state, or
 the disk cost matters more than the first-update download.
+
+## 42. The recompression recipe pins the compressor the pinned tauri-cli builds with
+
+**Decided:** 2026-09-25 · **Status:** active · **Revises what #26 left "observed"**
+
+**Decision:** `tauri-updater-delta-core` pins `flate2 =1.1.1`,
+`libz-rs-sys =0.5.0`, `zlib-rs =0.5.0` and `tar =0.4.43` — the versions in
+tauri-cli 2.10.1's own lockfile, which is what
+`cargo install tauri-cli --version =2.10.1 --locked` builds the bundler with.
+The pins are declared dependencies, so an application's own lockfile resolves
+them too. They change only together with the pinned tauri-cli.
+
+### What went wrong
+
+#26 recorded "flate2's zlib-rs backend" as observed rather than contracted, and
+the fixture that proved the recipe had been built by a tauri-cli installed
+**without** `--locked`, which resolved flate2 1.1.9 and zlib-rs 0.6.7. Every
+workflow in this repository and `docs/RELEASING.md` install it **with**
+`--locked`, which gives flate2 1.1.1 and zlib-rs 0.5.0. The two write
+different gzip bytes. So a release made by this project's own release workflow
+would have failed its tar-layer proof — loudly, because `delta-release` proves
+the recipe before publishing, but on every release.
+
+The macOS benchmark found it: `--require-tar-layer` failed on an 88 MiB app.
+With the pins, the same benchmark passes and the fixture was regenerated from a
+`--locked` build (`make-macos-fixture.sh`, which records the toolchain).
+
+### What this does not solve
+
+The recipe matches one compressor build. An app whose tauri-cli resolved a
+different flate2 or zlib-rs — installed without `--locked`, or a future
+version — gets no tar layer: `delta-release` refuses it at release time and
+clients take the direct patch or Full. That is safe and visible, and it is
+why `RELEASING.md` says `--locked`.
+
+**Revisit when:** the pinned tauri-cli changes, or when supporting more than
+one compressor build becomes worth a second recipe identifier (#25).
+
+## 43. zstd's match tables are sized to the reference
+
+**Decided:** 2026-09-25 · **Status:** active
+
+**Decision:** when diffing, `ZstdBackend` sets `HashLog` and `ChainLog` to the
+window log, capped at 28 (about 1 GiB per table at release time).
+
+Level 19's default tables index only a fraction of a large prefix. On the
+benchmark's real 105 MB NSIS installers a feature release produced a patch of
+31.4% of Full — over the 30% publish limit, so clients would have taken Full.
+With the tables sized to the window it was 6.9%, against bsdiff's 6.6%, in the
+same time. Only patch generation changes: the patch format, the decoder and
+client memory are untouched, so 0.1.0 clients apply the new patches, and the
+pinned cross-platform fixture digest (F2) is unchanged.
+
+bsdiff was measured and not adopted: once zstd is configured properly it is
+within about 5% of bsdiff on both platforms, and a second backend would add a
+dependency, a format and a client code path for that margin.
