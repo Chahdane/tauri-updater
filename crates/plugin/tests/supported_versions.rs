@@ -44,10 +44,10 @@ fn the_readme_states_the_updater_range_the_plugin_actually_requires() {
     contains(
         "plugin Cargo.toml",
         &manifest,
-        r#"tauri-plugin-updater = ">=2.10.1, <2.11.0""#,
+        r#"tauri-plugin-updater = ">=2.10.1, <2.12.0""#,
     );
     let readme = read("README.md");
-    contains("README", &readme, ">=2.10.1, <2.11.0");
+    contains("README", &readme, ">=2.10.1, <2.12.0");
 }
 
 #[test]
