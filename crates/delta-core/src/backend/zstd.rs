@@ -34,6 +34,14 @@ const WINDOW_LOG_MIN: u32 = 10;
 /// Largest window log zstd accepts on this target: 2 GiB on 64-bit, 1 GiB on 32-bit.
 const WINDOW_LOG_MAX: u32 = if usize::BITS >= 64 { 31 } else { 30 };
 
+/// Largest hash and chain table log used when diffing.
+///
+/// Each table costs 4 bytes per entry, so 28 is about 1 GiB each at release
+/// time on CI — enough to index a 256 MiB installer in full. Larger artifacts
+/// still diff correctly, with tables that cover less of them. Clients never
+/// allocate these; they only apply patches.
+const MATCH_TABLE_LOG_MAX: u32 = if usize::BITS >= 64 { 28 } else { 26 };
+
 /// Bytes of patch data read per iteration while applying.
 const READ_CHUNK: usize = 128 * 1024;
 
@@ -129,6 +137,15 @@ impl PatchBackend for ZstdBackend {
         let mut cctx = zstd_safe::CCtx::create();
         set_c(&mut cctx, CParameter::CompressionLevel(self.level))?;
         set_c(&mut cctx, CParameter::WindowLog(window_log))?;
+        // Size the match finder to the reference, not to the level. Level 19's
+        // default tables cover a fraction of a large prefix, so most of an
+        // unchanged installer went unmatched: 31.4% of Full for a feature
+        // release of a 105 MB NSIS installer, against 6.9% with tables sized to
+        // the window (research F43, DECISIONS #43). Only patch generation
+        // changes; the patch format and the decoder's memory do not.
+        let table_log = window_log.min(MATCH_TABLE_LOG_MAX);
+        set_c(&mut cctx, CParameter::HashLog(table_log))?;
+        set_c(&mut cctx, CParameter::ChainLog(table_log))?;
         set_c(&mut cctx, CParameter::EnableLongDistanceMatching(true))?;
         cctx.ref_prefix(&old_data)
             .map_err(|code| backend_error("reference the old artifact", code))?;
