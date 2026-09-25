@@ -125,13 +125,13 @@ fn world(dir: &Path, pair: &KeyPair) -> World {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: PATCH_URL,
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &key,

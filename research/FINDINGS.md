@@ -766,8 +766,10 @@ source change (F15 remains unproven).
 
 ### F26 — Release tooling that round-trips its own patch catches a failure nothing else can · **DEMONSTRATED**
 
-`delta-release` applies its own tar patch, recompresses, and requires
-byte-identity with the artifact it was given, before writing any metadata.
+`delta-release` applies every generated direct patch and requires the target
+digest before writing its metadata. For each tar-layer patch it additionally
+recompresses the reconstructed tar and requires byte-identity with the artifact
+it was given.
 
 The failure it catches is invisible otherwise: if the recompression recipe does
 not reproduce *this release's* artifact — a property of the bundler's dependency
@@ -780,8 +782,9 @@ Both releases of the three-version build round-tripped against artifacts
 fixture: it shows the recipe works on the current toolchain, not only on one
 artifact retained from an earlier run.
 
-Closes Audit #2 blocker **B7 for the tar path only**. The direct-patch generator
-still does not round-trip its output.
+Closes Audit #2 blocker **B7 for both paths**. The multi-predecessor release test
+also re-applies both generated direct patches independently, so adding a second
+base does not reduce this to a one-patch assertion.
 
 ### F20 — The macOS `.app.tar.gz` ratio, measured with full provenance · **STRONG OBSERVATION**
 
