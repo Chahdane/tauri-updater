@@ -10,6 +10,10 @@ on:
         description: "Also measure bsdiff patches (research only)"
         type: boolean
         default: false
+      probe:
+        description: "Also compare zstd settings on the feature pair (research only)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,6 +65,7 @@ jobs:
         shell: bash
         env:
           DELTA_BENCH_BSDIFF: ${{ inputs.bsdiff && '1' || '0' }}
+          DELTA_BENCH_PROBE: ${{ inputs.probe && '1' || '0' }}
         run: ./examples/desktop-app/e2e/benchmark.sh "$RUNNER_TEMP/delta-benchmark"
 
       - name: Keep the measurements
@@ -70,4 +75,5 @@ jobs:
           path: |
             ${{ runner.temp }}/delta-benchmark/benchmark.json
             ${{ runner.temp }}/delta-benchmark/manifest-*.json
+            ${{ runner.temp }}/delta-benchmark/zstd-probe.txt
           if-no-files-found: error
