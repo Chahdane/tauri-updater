@@ -508,7 +508,6 @@ fn run_installed(
     w: &World,
     cache: Option<&ArtifactCache>,
     installed_app: &Path,
-    seeded_installer: None,
     handoff: &RecordingHandoff,
     work: &Path,
 ) -> tauri_plugin_updater_delta::Result<Outcome> {
@@ -533,7 +532,6 @@ fn plan_installed(
     w: &World,
     cache: Option<&ArtifactCache>,
     installed_app: &Path,
-    seeded_installer: None,
     work: &Path,
 ) -> UpdateSource {
     plan_update(
