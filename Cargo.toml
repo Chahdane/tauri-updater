@@ -20,11 +20,17 @@ homepage = "https://github.com/Chahdane/tauri-updater"
 [workspace.dependencies]
 blake3 = "1"
 thiserror = "2"
-zstd = "0.13"
+zstd = "0.14"
+# Held at 0.22: tauri-plugin-updater 2.10/2.11 decodes signatures with base64
+# 0.22, and the plugin's own check reproduces Tauri's verifier verbatim
+# (DECISIONS #6, #10). Move only together with the upstream it mirrors.
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 semver = "1"
 serde_json = "1"
+# Held at 0.7: 0.9 changes how key boxes are unlocked (an unencrypted box is
+# refused; encrypted empty-password keys behave differently), which is the
+# release signing path and DECISIONS #16. Needs its own design pass.
 minisign = "0.7"
 minisign-verify = "0.2"
 clap = { version = "4", features = ["derive"] }
