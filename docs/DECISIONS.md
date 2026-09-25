@@ -1472,8 +1472,9 @@ things went down one branch:
 | The updater document | **no** — it is the product |
 
 The gate was correct about the first and applied to both. So the fix is not a
-new branch, it is a type: `Option<Predecessor>` groups the four fields, absence
-is representable, and the manifest is produced unconditionally.
+new branch, it is a type: each `Predecessor` groups the four fields and the
+request carries a possibly empty predecessor slice. Absence is representable,
+and the manifest is produced unconditionally.
 
 `TarLayerOptions` moves inside `Predecessor` for the same reason. A tar patch is
 a patch between two artifacts; it cannot exist without a predecessor, and the

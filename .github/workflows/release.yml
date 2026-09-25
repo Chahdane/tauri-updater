@@ -17,7 +17,7 @@ name: Release the example application
 # namespaces are separate so the mistake needs two errors rather than one.
 #
 #   tag → checkout → toolchain → prove the recompression recipe on this runner
-#       → build the app → resolve the previous release → download its artifact
+#       → build the app → resolve previous releases → download their artifacts
 #       → generate + self-verify the patches → generate the manifest
 #       → verify the manifest describes this release → upload
 #
@@ -27,13 +27,13 @@ name: Release the example application
 # | --- | --- | --- |
 # | A | none | signed Full-only release |
 # | B | exists, no usable artifact | signed Full-only release |
-# | C | usable | Full + direct patch + tar-layer patch |
+# | C | one or more usable | Full + one direct/tar patch pair per predecessor |
 #
 # Blocker **B5** was that A and B produced *nothing*. The generate step was
 # gated on `has_previous`, so no predecessor meant no manifest and no signature,
 # and the upload published a bare artifact no client could find or verify. The
 # delta layer is the optional part of a release; the updater document is not.
-# `delta-release` now takes an optional predecessor and the step is ungated.
+# `delta-release` now takes a possibly empty predecessor set and the step is ungated.
 #
 # ## Manual prerequisites
 #
@@ -87,6 +87,9 @@ env:
   CARGO_TERM_COLOR: always
   MACOS_PLATFORM: darwin-aarch64
   WINDOWS_PLATFORM: windows-x86_64
+  # Repository variable, defaulting to three. It is validated below and capped
+  # at 20 so a configuration typo cannot turn one release into unbounded work.
+  PATCH_PREDECESSOR_COUNT: ${{ vars.PATCH_PREDECESSOR_COUNT || '3' }}
   # Pinned, not a caret range. The tar layer requires rebuilding the published
   # artifact byte-for-byte, and the recipe that does it was read out of
   # tauri-bundler 2.8.1 as shipped by this CLI version (docs/DECISIONS.md #26).
@@ -118,9 +121,9 @@ jobs:
         run: cargo test --locked -p tauri-updater-delta-release --test cli
 
       - name: Rehearse all three release states
-        # A: no predecessor. B: a predecessor with no usable artifact.
-        # C: a usable predecessor. Each must produce a manifest that passes the
-        # same publish gate the real job runs.
+        # A: no predecessor. B: predecessors with no usable artifacts.
+        # C: one or more usable predecessors. Each must produce a manifest that
+        # passes the same publish gate the real job runs.
         run: |
           cargo test --release --locked -p tauri-updater-delta-release \
             --test release_states -- --nocapture
@@ -145,9 +148,6 @@ jobs:
     runs-on: macos-latest
     outputs:
       version: ${{ steps.versions.outputs.version }}
-      has_previous: ${{ steps.versions.outputs.has_previous }}
-      previous_tag: ${{ steps.versions.outputs.previous_tag }}
-      previous_version: ${{ steps.versions.outputs.previous_version }}
     steps:
       - name: Require the signing key before doing any work
         env:
@@ -227,7 +227,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Resolve this and the previous release
+      - name: Resolve this and the previous releases
         id: versions
         env:
           GH_TOKEN: ${{ github.token }}
@@ -236,21 +236,29 @@ jobs:
           version="${GITHUB_REF_NAME#app-v}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          # The most recent published release that is not this tag. Empty on the
-          # first release, which is state A: normal, and no longer a state that
-          # publishes nothing.
-          previous_tag="$(gh release list --limit 20 --json tagName \
-            --jq '.[].tagName' | grep '^app-v' | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)"
+          if ! [[ "$PATCH_PREDECESSOR_COUNT" =~ ^[0-9]+$ ]] \
+             || [ "$PATCH_PREDECESSOR_COUNT" -gt 20 ]; then
+            echo "::error::PATCH_PREDECESSOR_COUNT must be an integer from 0 to 20"
+            exit 1
+          fi
 
-          if [ -z "$previous_tag" ]; then
+          mkdir -p dist
+          : > dist/previous-tags.txt
+          if [ "$PATCH_PREDECESSOR_COUNT" -gt 0 ]; then
+            gh release list --limit 100 --json tagName,isDraft \
+              --jq '.[] | select(.isDraft == false) | .tagName' \
+              | grep '^app-v' \
+              | grep -v "^${GITHUB_REF_NAME}$" \
+              | head -n "$PATCH_PREDECESSOR_COUNT" \
+              > dist/previous-tags.txt || true
+          fi
+
+          if [ ! -s dist/previous-tags.txt ]; then
             echo "::notice::State A: no previous release. Publishing a complete"
             echo "::notice::signed full-download release with no delta layer."
-            echo "has_previous=false" >> "$GITHUB_OUTPUT"
           else
-            echo "has_previous=true" >> "$GITHUB_OUTPUT"
-            echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
-            echo "previous_version=${previous_tag#app-v}" >> "$GITHUB_OUTPUT"
-            echo "Previous release: $previous_tag"
+            echo "Selected predecessor releases:"
+            sed 's/^/  - /' dist/previous-tags.txt
           fi
 
       - name: Build this version
@@ -285,24 +293,34 @@ jobs:
           fi
           echo "Built $(basename "${bundles[0]}")"
 
-      - name: Download the previous release's artifact
-        if: steps.versions.outputs.has_previous == 'true'
+      - name: Download previous release artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p previous
-          # State B: a previous release with no artifact for this platform. There
-          # is nothing to patch from, and that is recoverable -- publish a
-          # Full-only release -- so it must not fail the job.
-          if gh release download "${{ steps.versions.outputs.previous_tag }}" \
-               --pattern '*.app.tar.gz' --dir previous 2>/dev/null; then
-            echo "PREVIOUS_OK=true" >> "$GITHUB_ENV"
-          else
-            echo "::warning::State B: ${{ steps.versions.outputs.previous_tag }} has no"
-            echo "::warning::.app.tar.gz asset. Publishing without a delta layer."
-            echo "PREVIOUS_OK=false" >> "$GITHUB_ENV"
-          fi
+          : > previous-artifacts.tsv
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            previous_version="${tag#app-v}"
+            release_dir="previous/${previous_version}"
+            mkdir -p "$release_dir"
+            if gh release download "$tag" --pattern '*.app.tar.gz' \
+                 --dir "$release_dir" 2>/dev/null; then
+              shopt -s nullglob
+              bundles=("$release_dir"/*.app.tar.gz)
+              shopt -u nullglob
+              if [ "${#bundles[@]}" -eq 1 ]; then
+                printf '%s\t%s\n' "$previous_version" "${bundles[0]}" \
+                  >> previous-artifacts.tsv
+                continue
+              fi
+              echo "::warning::$tag has ${#bundles[@]} macOS updater artifacts; expected exactly one."
+            else
+              echo "::warning::State B: $tag has no .app.tar.gz asset."
+            fi
+            echo "::warning::Clients on $previous_version will use Full for this release."
+          done < dist/previous-tags.txt
 
       # Ungated, and that is blocker B5's fix. Every release produces a manifest;
       # only the delta arguments depend on there being a predecessor.
@@ -331,13 +349,12 @@ jobs:
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           )
 
-          if [ "${{ steps.versions.outputs.has_previous }}" = "true" ] \
-             && [ "${PREVIOUS_OK}" = "true" ]; then
-            previous_version="${{ steps.versions.outputs.previous_version }}"
-            previous_installer="$(ls previous/*.app.tar.gz | head -1)"
+          predecessor_count=0
+          while IFS=$'\t' read -r previous_version previous_installer; do
+            [ -n "$previous_version" ] || continue
             patch="dist/${previous_version}-to-${version}.zst"
             tar_patch="dist/${previous_version}-to-${version}.tar.zst"
-            echo "State C: patching from ${previous_version}"
+            echo "State C: patching directly from ${previous_version}"
             args+=(
               --from-version "$previous_version"
               --previous-installer "$previous_installer"
@@ -345,13 +362,16 @@ jobs:
               --patch-out "$patch"
               --tar-patch-url "$base/$(basename "$tar_patch")"
               --tar-patch-out "$tar_patch"
-              # The tar layer is the entire reason this project exists on macOS.
-              # A silently missing one looks like a working release in which
-              # every client downloads everything.
-              --require-tar-layer
             )
+            predecessor_count=$((predecessor_count + 1))
+          done < previous-artifacts.tsv
+
+          if [ "$predecessor_count" -gt 0 ]; then
+            # A silently missing tar path looks like a working release in which
+            # clients on that predecessor download everything.
+            args+=(--require-tar-layer)
           else
-            echo "State A or B: no predecessor. Publishing full-download only."
+            echo "State A or B: no usable predecessor. Publishing full-download only."
           fi
 
           ./target/release/delta-release "${args[@]}"
@@ -407,11 +427,13 @@ jobs:
       # The Windows job extends this document rather than writing a second one:
       # one release, one updater manifest, one `version` field. Two documents
       # would be two answers to "what is the latest release".
-      - name: Hand the manifest to the Windows job
+      - name: Hand the manifest and predecessor set to the Windows job
         uses: actions/upload-artifact@v4
         with:
           name: manifest-macos
-          path: dist/manifest.json
+          path: |
+            dist/manifest.json
+            dist/previous-tags.txt
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -480,25 +502,35 @@ jobs:
           name: manifest-macos
           path: dist
 
-      - name: Download the previous release's Windows installer
-        if: needs.release.outputs.has_previous == 'true'
+      - name: Download previous Windows installers
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           mkdir -p previous
-          # State B for this platform specifically: the previous release exists
-          # but has no Windows asset, which is exactly what the release before
-          # this workflow gained a Windows job looks like.
-          if gh release download "${{ needs.release.outputs.previous_tag }}" \
-               --pattern '*-setup.exe' --dir previous 2>/dev/null; then
-            echo "PREVIOUS_OK=true" >> "$GITHUB_ENV"
-          else
-            echo "::warning::${{ needs.release.outputs.previous_tag }} has no"
-            echo "::warning::-setup.exe asset. Publishing Windows without a delta layer."
-            echo "PREVIOUS_OK=false" >> "$GITHUB_ENV"
-          fi
+          : > previous-windows.tsv
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            previous_version="${tag#app-v}"
+            release_dir="previous/${previous_version}"
+            mkdir -p "$release_dir"
+            if gh release download "$tag" --pattern '*-setup.exe' \
+                 --dir "$release_dir" 2>/dev/null; then
+              shopt -s nullglob
+              installers=("$release_dir"/*-setup.exe)
+              shopt -u nullglob
+              if [ "${#installers[@]}" -eq 1 ]; then
+                printf '%s\t%s\n' "$previous_version" "${installers[0]}" \
+                  >> previous-windows.tsv
+                continue
+              fi
+              echo "::warning::$tag has ${#installers[@]} Windows updater artifacts; expected exactly one."
+            else
+              echo "::warning::$tag has no -setup.exe asset."
+            fi
+            echo "::warning::Windows clients on $previous_version will use Full for this release."
+          done < dist/previous-tags.txt
 
       - name: Add this platform to the release
         shell: bash
@@ -522,12 +554,11 @@ jobs:
             --max-direct-patch-percent 30
           )
 
-          if [ "${{ needs.release.outputs.has_previous }}" = "true" ] \
-             && [ "${PREVIOUS_OK}" = "true" ]; then
-            previous_version="${{ needs.release.outputs.previous_version }}"
-            previous_installer="$(ls previous/*-setup.exe | head -1)"
+          predecessor_count=0
+          while IFS=$'\t' read -r previous_version previous_installer; do
+            [ -n "$previous_version" ] || continue
             patch="dist/${previous_version}-to-${version}-windows.zst"
-            echo "Patching from ${previous_version}"
+            echo "Patching directly from ${previous_version}"
             args+=(
               --from-version "$previous_version"
               --previous-installer "$previous_installer"
@@ -537,7 +568,10 @@ jobs:
             # Deliberately no --require-tar-layer and no --tar-patch-*: an NSIS
             # installer has no inner tar this build can rebuild byte-for-byte,
             # so asking for one would fail the release for being correct.
-          else
+            predecessor_count=$((predecessor_count + 1))
+          done < previous-windows.tsv
+
+          if [ "$predecessor_count" -eq 0 ]; then
             echo "No usable Windows predecessor. Publishing full-download only."
           fi
 

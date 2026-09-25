@@ -33,8 +33,9 @@
 //! generator runs the client's exact path once and refuses to emit metadata it
 //! could not consume itself.
 //!
-//! That closes Audit #2 blocker B7 for this path specifically, and only for this
-//! path: the direct-patch generator still does not round-trip its own output.
+//! The direct-patch generator performs its own apply-and-digest proof too. The
+//! extra work here is specific to the inner representation: prove the tar, then
+//! prove deterministic recompression reproduces the signed installer bytes.
 
 use std::path::{Path, PathBuf};
 

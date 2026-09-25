@@ -177,6 +177,133 @@ fn the_tar_layer_flags_are_useless_without_each_other() {
 }
 
 #[test]
+fn repeated_predecessor_flags_must_have_matching_counts() {
+    let out = delta_release()
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .args([
+            "--platform",
+            "windows-x86_64",
+            "--target-version",
+            "1.0.2",
+            "--app-id",
+            "dev.example.testapp",
+            "--new-installer",
+            "new.exe",
+            "--installer-url",
+            "https://example.com/new.exe",
+            "--from-version",
+            "1.0.1",
+            "--from-version",
+            "1.0.0",
+            "--previous-installer",
+            "one.exe",
+            "--patch-url",
+            "https://example.com/one.zst",
+            "--patch-out",
+            "one.zst",
+        ])
+        .output()
+        .expect("run with mismatched repeated arguments");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("received 2 --from-version value(s), but 1 --previous-installer"),
+        "the error must identify the mismatched group: {stderr}"
+    );
+}
+
+#[test]
+fn repeated_tar_layer_flags_must_match_the_predecessor_count() {
+    let out = delta_release()
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .args([
+            "--platform",
+            "darwin-aarch64",
+            "--target-version",
+            "1.0.2",
+            "--app-id",
+            "dev.example.testapp",
+            "--new-installer",
+            "new.app.tar.gz",
+            "--installer-url",
+            "https://example.com/new.app.tar.gz",
+            "--from-version",
+            "1.0.1",
+            "--previous-installer",
+            "one.app.tar.gz",
+            "--patch-url",
+            "https://example.com/one.zst",
+            "--patch-out",
+            "one.zst",
+            "--from-version",
+            "1.0.0",
+            "--previous-installer",
+            "two.app.tar.gz",
+            "--patch-url",
+            "https://example.com/two.zst",
+            "--patch-out",
+            "two.zst",
+            "--tar-patch-url",
+            "https://example.com/one.tar.zst",
+            "--tar-patch-out",
+            "one.tar.zst",
+        ])
+        .output()
+        .expect("run with a partial repeated tar-layer group");
+
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("received 2 predecessor(s), but 1 tar-layer patch pair(s)"),
+        "the error must identify the incomplete tar-layer set: {stderr}"
+    );
+}
+
+#[test]
+fn repeated_predecessor_groups_reach_release_processing() {
+    let out = delta_release()
+        .env_remove("TAURI_SIGNING_PRIVATE_KEY")
+        .args([
+            "--platform",
+            "windows-x86_64",
+            "--target-version",
+            "1.0.2",
+            "--app-id",
+            "dev.example.testapp",
+            "--new-installer",
+            "new.exe",
+            "--installer-url",
+            "https://example.com/new.exe",
+            "--from-version",
+            "1.0.1",
+            "--previous-installer",
+            "one.exe",
+            "--patch-url",
+            "https://example.com/one.zst",
+            "--patch-out",
+            "one.zst",
+            "--from-version",
+            "1.0.0",
+            "--previous-installer",
+            "two.exe",
+            "--patch-url",
+            "https://example.com/two.zst",
+            "--patch-out",
+            "two.zst",
+        ])
+        .output()
+        .expect("run with two complete predecessor groups");
+
+    assert!(!out.status.success(), "the absent key should stop the run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no signing key"),
+        "complete repeated groups should pass argument validation: {stderr}"
+    );
+}
+
+#[test]
 fn an_unknown_flag_is_rejected_rather_than_ignored() {
     // A release tool that silently ignores a misspelled flag publishes a
     // manifest describing something other than what was asked for.

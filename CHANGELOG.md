@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `delta-release` accepts several predecessor groups in one invocation and
+  generates a direct-to-current patch for each. Every patch is round-tripped;
+  the strict direct-patch size limit is applied independently per predecessor.
+- The example application release workflow retains the latest three releases
+  by default (configurable with `PATCH_PREDECESSOR_COUNT`). Clients on a listed
+  version can use its delta; clients outside the window use Full.
+
 ## [0.1.0] - 2026-09-24
 
 First published pre-release: macOS `.app.tar.gz` and Windows x86_64 NSIS

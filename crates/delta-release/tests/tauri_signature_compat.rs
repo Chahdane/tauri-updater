@@ -117,13 +117,13 @@ fn publish(dir: &Path, pair: &KeyPair) -> (Manifest, std::path::PathBuf) {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: "https://example.com/patch.zst",
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(pair),
@@ -264,13 +264,13 @@ fn a_rebuilt_artifact_satisfies_the_same_signature() {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: "https://example.com/patch.zst",
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),

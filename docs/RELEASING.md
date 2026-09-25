@@ -10,11 +10,11 @@ A release publishes exactly these, and nothing else:
 | --- | --- | --- | --- |
 | `DeltaUpdaterExample.app.tar.gz` | macOS | Tauri's updater, on a full download | always |
 | `DeltaUpdaterExample.app.tar.gz.sig` | macOS | the wider Tauri ecosystem | always |
-| `<old>-to-<new>.zst` | macOS | this plugin, direct delta path | a usable predecessor exists |
-| `<old>-to-<new>.tar.zst` | macOS | this plugin, tar-layer path | a usable predecessor exists |
+| `<old>-to-<new>.zst` | macOS | this plugin, direct delta path | for each usable predecessor whose direct patch is below the size limit |
+| `<old>-to-<new>.tar.zst` | macOS | this plugin, tar-layer path | for each usable predecessor |
 | `DeltaUpdaterExample_<v>_x64-setup.exe` | Windows | Tauri's updater, on a full download | always |
 | `DeltaUpdaterExample_<v>_x64-setup.exe.sig` | Windows | the wider Tauri ecosystem | always |
-| `<old>-to-<new>-windows.zst` | Windows | this plugin, direct delta path | a usable predecessor exists |
+| `<old>-to-<new>-windows.zst` | Windows | this plugin, direct delta path | for each usable predecessor whose patch is below the size limit |
 | `manifest.json` | both | Tauri's `check()`, and this plugin | always |
 
 **One manifest, not two.** The Windows job runs after the macOS one and folds
@@ -28,10 +28,11 @@ An NSIS installer is not a gzipped tarball and nothing here can rebuild one
 byte-for-byte from its contents, so the release publishes an `opaque-v1` direct
 patch and the client's cache holds the exact official installer as its base.
 The Windows updater build disables NSIS compression: the larger Full artifact
-keeps unchanged bytes reusable by later patches. `delta-release` publishes a
-direct patch only when it is strictly below 30% of Full; otherwise it deletes
-the patch and leaves a valid Full-only release. The Windows E2E additionally
-uses `--require-direct-patch`, turning a missed target into a CI failure.
+keeps unchanged bytes reusable by later patches. `delta-release` applies the
+strict 30% rule independently to every direct patch; an oversized patch is
+deleted and only clients on that predecessor use Full. Other qualifying
+predecessors remain in the manifest. The Windows E2E additionally uses
+`--require-direct-patch`, turning any missed target into a CI failure.
 
 Nothing from the artifact cache, the tar layer's scratch directory, or
 `research/` is uploaded. Each upload step names its patterns explicitly rather
@@ -51,7 +52,7 @@ All three are normal. Two of them used to publish nothing (blocker B5).
 | --- | --- | --- |
 | **A** | none — the first release | signed Full-only release |
 | **B** | exists, but has no usable artifact | signed Full-only release |
-| **C** | exists and is usable | Full + direct patch + tar-layer patch |
+| **C** | one or more exist and are usable | Full + one patch set per usable predecessor |
 
 Rehearse all three locally, against real `cargo tauri build` output:
 
@@ -62,6 +63,33 @@ Rehearse all three locally, against real `cargo tauri build` output:
 
 That runs the same binaries with the same arguments the workflow passes, ending
 at the same publish gate. Only `gh` is absent.
+
+## How many previous releases are patched
+
+Schema 1 patches directly to the current release; it never chains through an
+intermediate version. The example workflow selects the latest three `app-v*`
+releases by default. Set the repository variable `PATCH_PREDECESSOR_COUNT` to a
+value from 0 through 20 to change that retention window without editing the
+workflow.
+
+Selection is shared by the macOS and Windows jobs, but artifact usability is
+per-platform. If one selected release lacks exactly one `.app.tar.gz` or NSIS
+`-setup.exe`, that version gets no patch for that platform and its clients use
+Full. The other selected versions are still patched.
+
+Each predecessor is supplied by repeating these four flags in matching order:
+`--from-version`, `--previous-installer`, `--patch-url`, and `--patch-out`. For
+macOS, repeat `--tar-patch-url` and `--tar-patch-out` once per predecessor in the
+same order. `delta-release` refuses mismatched counts, duplicate versions,
+duplicate URLs, and duplicate output paths.
+
+Before any patch is described in the manifest, the tool applies it to its own
+base and requires exact reconstruction of the published target. The tar path
+also recompresses and checks the final `.app.tar.gz`. After those correctness
+checks, the strict direct-patch size limit is applied to each predecessor
+independently. A client two releases behind gets its direct-to-current patch
+when that version is listed; a client outside the window has no patch entry and
+safely uses Full.
 
 ## Prerequisites
 
@@ -111,10 +139,11 @@ at the same publish gate. Only `gh` is absent.
 
 2. Build or install `delta-release`, then generate the release. The CLI examples
    in the [README quickstart](../README.md#5-produce-release-artifacts) show both
-   a first Full-only release and a later Full + direct + tar-layer release.
-   Predecessor flags are all-or-none. On macOS production workflows should pass
-   `--require-tar-layer` when a usable predecessor exists, so a silently missing
-   optimization fails at release time instead of sending every client Full.
+   a first Full-only release and a later release with several direct + tar-layer
+   paths. Predecessor flag counts must match. On macOS production workflows
+   should pass `--require-tar-layer` when usable predecessors exist, so a
+   silently missing optimization for any requested predecessor fails at release
+   time instead of sending those clients Full.
 
 3. Run `release-check` against the exact artifact, manifest, tag, app config,
    and platform that will be published. This is mandatory even though

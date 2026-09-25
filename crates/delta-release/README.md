@@ -30,13 +30,20 @@ delta-release \
   --manifest dist/manifest.json
 ```
 
-Every generated patch is applied before its metadata is written: a manifest
-never describes a patch nobody has proven reconstructs the release.
+Repeat `--from-version`, `--previous-installer`, `--patch-url`, and
+`--patch-out` in matching order to publish direct-to-current patches from
+several previous releases. Repeat the two `--tar-patch-*` flags in the same
+order when publishing macOS tar-layer patches. An empty predecessor set still
+produces a complete signed Full-only manifest.
 
-Direct patches must also earn their download. By default, a patch is published
-only when it is strictly smaller than 30% of Full; an oversized patch is deleted
-and the manifest remains a valid Full-only release. CI can add
-`--require-direct-patch` when missing that target must fail the build.
+Every generated patch from every predecessor is applied before its metadata is
+written: a manifest never describes a patch nobody has proven reconstructs the
+release.
+
+Direct patches must also earn their download. By default, each patch is
+published only when it is strictly smaller than 30% of Full; an oversized patch
+is deleted and clients on only that predecessor use Full. CI can add
+`--require-direct-patch` when any missed target must fail the build.
 
 Pre-release software. See the
 [repository](https://github.com/Chahdane/tauri-updater) for the full release
