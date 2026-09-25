@@ -25,7 +25,8 @@ use std::path::Path;
 
 use tauri_updater_delta_core::cache::ArtifactCache;
 use tauri_updater_delta_core::client::{
-    plan_update, transaction_workspace, Fetch, PlanContext, UpdateSource,
+    compressed_full_for, fetch_compressed_full, plan_update, transaction_workspace, Fetch,
+    PlanContext, UpdateSource,
 };
 use tauri_updater_delta_core::release_identity::current_platform;
 use tauri_updater_delta_core::{
@@ -70,7 +71,7 @@ pub(crate) enum FlowPhase {
     /// the chosen path is the whole difference between a working delta updater
     /// and one that silently downloads everything (`docs/DECISIONS.md` #22).
     Installing {
-        /// `"tar-delta"`, `"delta"` or `"full"`, matching
+        /// `"tar-delta"`, `"delta"`, `"compressed-full"` or `"full"`, matching
         /// [`crate::client::UpdateSource::path_name`].
         source: &'static str,
     },
@@ -132,6 +133,14 @@ pub enum Outcome {
         /// Bytes a full download would have cost.
         saved_against: u64,
     },
+    /// Installed after downloading a compressed copy of the whole artifact and
+    /// rebuilding it exactly (`docs/DECISIONS.md` #40).
+    InstalledFromCompressedFull {
+        /// Bytes downloaded.
+        downloaded: u64,
+        /// Size of the artifact, which an uncompressed download would have cost.
+        saved_against: u64,
+    },
     /// Installed after downloading the whole artifact.
     InstalledFromFullDownload,
     /// The release is already installed.
@@ -146,6 +155,7 @@ impl Outcome {
         match self {
             Self::InstalledFromTarDelta { .. } => "tar-delta",
             Self::InstalledFromDelta { .. } => "delta",
+            Self::InstalledFromCompressedFull { .. } => "compressed-full",
             Self::InstalledFromFullDownload => "full",
             Self::UpToDate => "up-to-date",
         }
@@ -309,11 +319,37 @@ pub(crate) fn run_update_detailed(
             // is removed when `space` drops — on the error paths too.
             let space = transaction_workspace(ctx.work_dir)
                 .map_err(|e| Error::Io(format!("creating the update workspace: {e}")))?;
-            let full = space.path().join("full.artifact");
+            let mut full = space.path().join("full.artifact");
 
-            fetch
-                .fetch(&url, &full)
-                .map_err(|e| Error::Fetch(format!("downloading the full artifact: {e}")))?;
+            // A compressed copy first, when the release published one this
+            // build can decode (docs/DECISIONS.md #40). It is transport only:
+            // the rebuilt bytes must already equal the declared installer digest,
+            // and the signature and release identity below are checked exactly
+            // as for the uncompressed download. Any failure here is an ordinary
+            // fallback to that download.
+            let mut compressed = None;
+            if let Some((copy, target)) = compressed_full_for(identity) {
+                match fetch_compressed_full(
+                    &copy,
+                    &target,
+                    ctx.limits,
+                    &space.path().join("compressed"),
+                    &fetch,
+                ) {
+                    Ok(rebuilt) => {
+                        full = rebuilt;
+                        compressed = Some(copy.size);
+                    }
+                    Err(reason) => log::info!(
+                        "compressed full copy unavailable ({reason}); downloading uncompressed"
+                    ),
+                }
+            }
+            if compressed.is_none() {
+                fetch
+                    .fetch(&url, &full)
+                    .map_err(|e| Error::Fetch(format!("downloading the full artifact: {e}")))?;
+            }
 
             let bytes = std::fs::read(&full)
                 .map_err(|e| Error::Io(format!("reading the downloaded artifact: {e}")))?;
@@ -321,16 +357,32 @@ pub(crate) fn run_update_detailed(
             let verified = verify_artifact(bytes, &signature, ctx.pubkey).map_err(classify)?;
             check_release_identity(ctx, identity, &verified)?;
 
-            let downloaded = verified.len() as u64;
+            let artifact_size = verified.len() as u64;
             let cache_write_error = stage(ctx, identity, &verified, &signature);
-            progress(FlowPhase::Installing { source: "full" });
+            progress(FlowPhase::Installing {
+                source: if compressed.is_some() {
+                    "compressed-full"
+                } else {
+                    "full"
+                },
+            });
             handoff.install(&verified)?;
             // No explicit cleanup: dropping `space` removes the directory and
             // the artifact inside it.
-            Ok(RunReport {
-                outcome: Outcome::InstalledFromFullDownload,
-                cache_write_error,
-                full_downloaded: Some(downloaded),
+            Ok(match compressed {
+                Some(downloaded) => RunReport {
+                    outcome: Outcome::InstalledFromCompressedFull {
+                        downloaded,
+                        saved_against: artifact_size,
+                    },
+                    cache_write_error,
+                    full_downloaded: None,
+                },
+                None => RunReport {
+                    outcome: Outcome::InstalledFromFullDownload,
+                    cache_write_error,
+                    full_downloaded: Some(artifact_size),
+                },
             })
         }
     }

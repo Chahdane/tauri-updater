@@ -116,7 +116,11 @@ For Windows NSIS updater artifacts, use a platform configuration such as
 }
 ```
 
-This trades a larger Full updater artifact for much smaller later deltas. The
+This trades a larger Full updater artifact for much smaller later deltas. Pass
+`--compressed-full-out` and `--compressed-full-url` to `delta-release` as well:
+plugin clients that need the whole installer then download a zstd copy and
+rebuild the exact installer from it, so they do not pay for the larger Full
+artifact. Stock Tauri clients keep using the uncompressed URL. The
 first update from an older solid-LZMA release may use Full; that successful
 update seeds the delta-friendly installer used as the next release's base.
 

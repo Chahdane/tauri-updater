@@ -693,6 +693,14 @@ fn public_outcome(report: RunReport, diagnostics: Vec<Diagnostic>) -> Outcome {
             full_download_size: saved_against,
             diagnostics,
         },
+        FlowOutcome::InstalledFromCompressedFull {
+            downloaded,
+            saved_against,
+        } => Outcome::InstalledFromCompressedFullDownload {
+            downloaded,
+            full_download_size: saved_against,
+            diagnostics,
+        },
         FlowOutcome::InstalledFromFullDownload => Outcome::InstalledFromFullDownload {
             // `run_update_detailed` always records this on the full path; the
             // fallback exists so a future variant cannot silently report a

@@ -14,6 +14,7 @@ A release publishes exactly these, and nothing else:
 | `<old>-to-<new>.tar.zst` | macOS | this plugin, tar-layer path | for each usable predecessor |
 | `DeltaUpdaterExample_<v>_x64-setup.exe` | Windows | Tauri's updater, on a full download | always |
 | `DeltaUpdaterExample_<v>_x64-setup.exe.sig` | Windows | the wider Tauri ecosystem | always |
+| `DeltaUpdaterExample_<v>_x64-setup.exe.zst` | Windows | this plugin, a compressed Full download (DECISIONS #40) | when smaller than the installer |
 | `<old>-to-<new>-windows.zst` | Windows | this plugin, direct delta path | for each usable predecessor whose patch is below the size limit |
 | `manifest.json` | both | Tauri's `check()`, and this plugin | always |
 
