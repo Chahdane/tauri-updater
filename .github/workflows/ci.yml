@@ -265,6 +265,43 @@ jobs:
         run: cargo check --workspace --all-targets --all-features --locked
 
   # ---------------------------------------------------------------------------
+  # The first macOS update of an app installed from its disk image, with an
+  # empty cache (docs/DECISIONS.md #37). Real bundle, real DMG, real Tauri
+  # install; the app is launched unmodified so the bundle the plugin rebuilds
+  # from is exactly what the user got. The report records which tar header
+  # fields the install preserved.
+  # ---------------------------------------------------------------------------
+  macos-dmg-e2e:
+    name: macos dmg first-update e2e
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore the pinned Tauri CLI
+        id: tauri-cli
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-${{ runner.os }}-${{ env.TAURI_CLI_VERSION }}
+
+      - name: Install the pinned Tauri CLI
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        run: cargo install tauri-cli --version "=${TAURI_CLI_VERSION}" --locked
+
+      - name: Build three versions, 1.0.0 also as a DMG
+        run: BUILD_DMG=1 ./examples/desktop-app/e2e/build-three-versions.sh /private/tmp/delta-dmg-e2e
+
+      - name: Install from the DMG and update once with an empty cache
+        run: ./examples/desktop-app/e2e/run-dmg-first-update-e2e.sh /private/tmp/delta-dmg-e2e
+
+      - name: Print the report
+        if: always()
+        run: cat /private/tmp/delta-dmg-e2e/dmg-first-update-report.json || true
+
+  # ---------------------------------------------------------------------------
   # The real Windows proof. Three `cargo tauri build` runs, two releases, one
   # installation moved 1.0.0 -> 1.0.1 -> 1.0.2 through the real NSIS installer
   # Tauri invokes.
