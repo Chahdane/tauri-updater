@@ -9,6 +9,17 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    # Pinned on purpose; a bump here needs a decision, not a PR.
+    # flate2, zlib-rs, libz-rs-sys and tar must match the compressor the pinned
+    # tauri-cli builds with (docs/DECISIONS.md #42). tauri-plugin-updater's
+    # range is widened only after its six load-bearing behaviours are re-read
+    # (#21, #39).
+    ignore:
+      - dependency-name: "flate2"
+      - dependency-name: "zlib-rs"
+      - dependency-name: "libz-rs-sys"
+      - dependency-name: "tar"
+      - dependency-name: "tauri-plugin-updater"
 
   - package-ecosystem: github-actions
     directory: /
