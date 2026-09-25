@@ -1107,6 +1107,10 @@ fn a_compressed_copy_cannot_install_bytes_the_signature_does_not_cover() {
         entry.compressed_full = older.compressed_full.clone();
         entry.target_installer_blake3 = older.target_installer_blake3.clone();
         entry.target_installer_size = older.target_installer_size;
+        // The real patches declare 1.0.1 as their base, which the forged target
+        // now equals, and validation would reject the whole delta layer. A
+        // forger publishes none, so the compressed copy is actually tried.
+        entry.patches.clear();
     }
 
     let handoff = RecordingHandoff::default();
@@ -1119,7 +1123,14 @@ fn a_compressed_copy_cannot_install_bytes_the_signature_does_not_cover() {
         &dir.path().join("work"),
     );
 
-    assert!(result.is_err(), "got {result:?}");
+    assert!(
+        w.server.fetched(&compressed_url("1.0.1")),
+        "the forged copy must actually be tried, or this test proves nothing"
+    );
+    assert!(
+        matches!(result, Err(Error::Signature(_))),
+        "a forged copy must fail closed on the signature, got {result:?}"
+    );
     assert!(
         handoff.installed.borrow().is_empty(),
         "nothing may be installed"
