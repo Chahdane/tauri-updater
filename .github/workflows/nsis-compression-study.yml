@@ -1,0 +1,42 @@
+name: NSIS compression study
+
+# A measurement, run by hand. It builds the example app eight times, so it does
+# not belong on every push. Results feed research/FINDINGS.md F40 and
+# research/NSIS_COMPRESSION.md; nothing here is published.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI_VERSION: "2.10.1"
+
+jobs:
+  study:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Not restored from a binary cache: the per-file variant reads Tauri's
+      # NSIS template out of the tauri-bundler source this install compiles.
+      - name: Install the pinned Tauri CLI from source
+        shell: bash
+        run: cargo install tauri-cli --version "=${TAURI_CLI_VERSION}" --locked --force
+
+      - name: Build and measure every compression variant
+        shell: bash
+        run: ./examples/desktop-app/e2e/measure-nsis-compression.sh /c/nsis-compression-study
+
+      - name: Keep the measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: nsis-compression-study
+          path: |
+            C:/nsis-compression-study/nsis-compression.json
+            C:/nsis-compression-study/*/manifest.json
+          if-no-files-found: error
