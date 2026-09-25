@@ -179,6 +179,24 @@ publish() {
 publish 1.0.1 1.0.0
 publish 1.0.2 1.0.1 1.0.0
 
+# Research only: zstd settings compared on the feature-change pair. On macOS
+# the tar layer is what gets patched, so the probe compares the inner tars.
+if [ "${DELTA_BENCH_PROBE:-0}" = 1 ]; then
+  probe_old="$OUT/v1.0.1/$ARTIFACT"
+  probe_new="$OUT/v1.0.2/$ARTIFACT"
+  if [ "$TAR_LAYER" = 1 ]; then
+    gzip -dc "$probe_old" > "$OUT/probe-1.0.1.tar"
+    gzip -dc "$probe_new" > "$OUT/probe-1.0.2.tar"
+    probe_old="$OUT/probe-1.0.1.tar"
+    probe_new="$OUT/probe-1.0.2.tar"
+  fi
+  DELTA_PROBE_OLD="$probe_old" DELTA_PROBE_NEW="$probe_new" \
+    cargo test -q --release -p tauri-updater-delta-core --test zstd_probe \
+      --manifest-path "$ROOT/Cargo.toml" -- --ignored --nocapture \
+    | tee "$OUT/zstd-probe.txt"
+  rm -f "$OUT"/probe-*.tar
+fi
+
 "$PYTHON" - "$OUT" "$PLATFORM" "$ARTIFACT" <<'PY'
 import json, os, subprocess, sys
 out, platform, artifact = sys.argv[1], sys.argv[2], sys.argv[3]
