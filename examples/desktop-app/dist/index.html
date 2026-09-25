@@ -20,10 +20,22 @@
   document.getElementById('check').addEventListener('click', async () => {
     const out = document.getElementById('outcome');
     out.textContent = 'Checking…';
+    // Poll the plugin's progress while the update runs: phases, and byte
+    // counts during downloads.
+    let done = false;
+    const poll = setInterval(async () => {
+      const line = await invoke('update_progress');
+      if (!done) out.textContent = line; // never overwrite the final result
+    }, 250);
     try {
-      out.textContent = await invoke('check_for_updates');
+      const result = await invoke('check_for_updates');
+      done = true;
+      out.textContent = result;
     } catch (e) {
+      done = true;
       out.textContent = 'Failed: ' + e;
+    } finally {
+      clearInterval(poll);
     }
   });
 </script>

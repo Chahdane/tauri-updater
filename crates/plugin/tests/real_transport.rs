@@ -671,3 +671,38 @@ fn a_failed_download_does_not_destroy_the_file_it_would_have_replaced() {
         "a failed download overwrote the file it was meant to replace"
     );
 }
+
+#[test]
+fn download_progress_counts_the_bytes_actually_received() {
+    let (server, dir) = transport_fixture();
+    let body: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
+    server.serve("/artifact", body.clone());
+    let fetch = test_fetch().build().expect("build");
+
+    let reports = RefCell::new(Vec::new());
+    fetch
+        .fetch_with_progress(
+            &server.url("/artifact"),
+            &dir.path().join("out"),
+            &|downloaded, total| reports.borrow_mut().push((downloaded, total)),
+        )
+        .expect("fetch");
+
+    let reports = reports.into_inner();
+    assert_eq!(reports.first().map(|r| r.0), Some(0), "starts at zero");
+    assert_eq!(
+        reports.last().copied(),
+        Some((body.len() as u64, Some(body.len() as u64))),
+        "ends at the full body and carries the advertised length"
+    );
+    assert!(
+        reports.windows(2).all(|w| w[0].0 < w[1].0),
+        "counts only ever increase: {reports:?}"
+    );
+    assert!(
+        reports.len() <= 2 + body.len() / (256 * 1024),
+        "reports are throttled, not per chunk: {} reports",
+        reports.len()
+    );
+    assert_eq!(read(&dir.path().join("out")), body);
+}

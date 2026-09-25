@@ -242,6 +242,35 @@ impl Outcome {
         }
     }
 
+    /// Size of the complete official artifact, whichever source installed it.
+    ///
+    /// For a Full download this is the bytes downloaded; for a delta, the size
+    /// of the artifact the patch rebuilt. `None` when nothing was installed.
+    pub fn full_artifact_size(&self) -> Option<u64> {
+        match self {
+            Self::UpToDate { .. } => None,
+            Self::InstalledFromFullDownload { downloaded, .. } => Some(*downloaded),
+            Self::InstalledFromDirectDelta {
+                full_download_size, ..
+            }
+            | Self::InstalledFromTarDelta {
+                full_download_size, ..
+            } => Some(*full_download_size),
+        }
+    }
+
+    /// Bytes not downloaded compared with a Full download.
+    ///
+    /// Zero for a Full download, and never negative: a patch larger than the
+    /// artifact would report zero rather than wrap. `None` when nothing was
+    /// installed.
+    pub fn bytes_saved(&self) -> Option<u64> {
+        Some(
+            self.full_artifact_size()?
+                .saturating_sub(self.downloaded_bytes()?),
+        )
+    }
+
     /// Full artifact size used as the delta comparison, when a delta installed.
     pub fn full_download_size(&self) -> Option<u64> {
         match self {
@@ -293,11 +322,12 @@ impl std::fmt::Display for Diagnostic {
     }
 }
 
-/// Coarse update phases for a progress indicator.
+/// Coarse update phases for a progress indicator, plus download byte counts.
 ///
-/// Percentages are deliberately absent because patch application, exact
-/// recompression, and installation do not expose reliable totals. Downloading
-/// and reconstruction may repeat when a delta attempt falls back safely.
+/// Only downloads report bytes. Patch application, exact recompression, and
+/// installation do not expose reliable totals, so they stay phases. Downloading
+/// and reconstruction may repeat when a delta attempt falls back safely, and
+/// each download's byte count starts again from zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProgressEvent {
@@ -305,6 +335,18 @@ pub enum ProgressEvent {
     Checking,
     /// An artifact or patch is being downloaded.
     Downloading,
+    /// Bytes received so far by the current download.
+    ///
+    /// Emitted at the start of each download, then about every 256 KiB, then
+    /// once at the end. `total` is the server's advertised `Content-Length`
+    /// when it sent one. It is for display only: it is unauthenticated, it
+    /// bounds nothing, and it can be absent or wrong.
+    DownloadProgress {
+        /// Bytes received so far for this download.
+        downloaded: u64,
+        /// Advertised size of this download, if the server stated one.
+        total: Option<u64>,
+    },
     /// A downloaded patch is being validated and applied; for TarDelta this
     /// includes exact recompression.
     Reconstructing,
@@ -343,6 +385,53 @@ mod tests {
         assert_eq!(full.path_name(), "full");
         assert_eq!(direct.path_name(), "direct-delta");
         assert_eq!(tar.path_name(), "tar-delta");
+    }
+
+    #[test]
+    fn every_installed_outcome_reports_its_bytes() {
+        let full = Outcome::InstalledFromFullDownload {
+            downloaded: 300,
+            diagnostics: Vec::new(),
+        };
+        let tar = Outcome::InstalledFromTarDelta {
+            downloaded: 40,
+            full_download_size: 300,
+            diagnostics: Vec::new(),
+        };
+        let oversized = Outcome::InstalledFromDirectDelta {
+            downloaded: 310,
+            full_download_size: 300,
+            diagnostics: Vec::new(),
+        };
+        let none = Outcome::UpToDate {
+            diagnostics: Vec::new(),
+        };
+
+        assert_eq!(
+            (
+                full.downloaded_bytes(),
+                full.full_artifact_size(),
+                full.bytes_saved()
+            ),
+            (Some(300), Some(300), Some(0))
+        );
+        assert_eq!(
+            (
+                tar.downloaded_bytes(),
+                tar.full_artifact_size(),
+                tar.bytes_saved()
+            ),
+            (Some(40), Some(300), Some(260))
+        );
+        assert_eq!(oversized.bytes_saved(), Some(0), "never wraps below zero");
+        assert_eq!(
+            (
+                none.downloaded_bytes(),
+                none.full_artifact_size(),
+                none.bytes_saved()
+            ),
+            (None, None, None)
+        );
     }
 
     #[test]
