@@ -293,7 +293,7 @@ jobs:
       # that version rather than rebuilt every run.
       - name: Restore the pinned Tauri CLI
         id: tauri-cli
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-tauri.exe
           key: cargo-tauri-${{ runner.os }}-${{ env.TAURI_CLI_VERSION }}

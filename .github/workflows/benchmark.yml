@@ -42,7 +42,7 @@ jobs:
 
       - name: Restore the pinned Tauri CLI
         id: tauri-cli
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/cargo-tauri
