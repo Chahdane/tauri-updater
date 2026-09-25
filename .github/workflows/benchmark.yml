@@ -56,7 +56,7 @@ jobs:
 
       # One interpreter on both platforms, so the script's python/python3
       # choice and pip agree, and macOS's Homebrew Python is not modified.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
