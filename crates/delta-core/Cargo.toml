@@ -37,7 +37,7 @@ serde_json.workspace = true
 # repeats its exact call (DECISIONS #37); the recompression tests also use it
 # as the reference writer. Already in every plugin build via
 # tauri-plugin-updater, so this adds no new code to the tree.
-tar = "0.4"
+tar = "=0.4.43"
 thiserror.workspace = true
 zstd.workspace = true
 

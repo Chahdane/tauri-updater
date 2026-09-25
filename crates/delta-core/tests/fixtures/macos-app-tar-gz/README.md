@@ -1,16 +1,24 @@
 # Controlled macOS `.app.tar.gz` fixture
 
 `official-1.0.1.app.tar.gz` is a **real artifact**, not a constructed one. It was
-produced by `cargo tauri build` (tauri-cli 2.10.1, tauri-bundler 2.8.1) from
-`examples/desktop-app` at source commit `908e1d2`, during the run recorded as
-`research/experiments/2026-08-13-macos-real-app-e2e-delta`, and retained
-unmodified since.
+produced by `cargo tauri build` of `examples/desktop-app` 1.0.1 on a GitHub
+`macos-latest` runner, with tauri-cli 2.10.1 installed by
+`cargo install tauri-cli --version =2.10.1 --locked` — the way every workflow
+and `docs/RELEASING.md` install it. That lockfile builds the bundler with
+flate2 1.1.1, zlib-rs 0.5.0 and tar 0.4.43, the versions this workspace pins.
+Regenerate it with `examples/desktop-app/e2e/make-macos-fixture.sh` (the
+`fixture` input of the manual benchmark workflow).
 
 | | |
 | --- | --- |
-| Size | 4,070,756 bytes |
-| BLAKE3 | `718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36` |
-| Contains | a 9,461,248-byte tar: 4 directories, 3 files, main binary 9,441,088 bytes |
+| Size | 4,047,020 bytes |
+| BLAKE3 | `8cb0401699c6872e89332834f5fb8ce246b8df434bf38882af95ca776c35344a` |
+| Contains | a 10,234,368-byte tar |
+| Built by | tauri-cli 2.10.1 (`--locked`), rustc 1.98.1, benchmark run 36175835119 |
+
+It replaces an earlier fixture built by a tauri-cli installed **without**
+`--locked`, whose bundler resolved flate2 1.1.9 / zlib-rs 0.6.7 and wrote
+different gzip bytes. See `docs/DECISIONS.md` #42.
 
 `official-1.0.1.json` carries the minisign signature over those exact bytes and
 the public key it was made with. The **private key is deliberately absent** — it
