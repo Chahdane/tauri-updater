@@ -73,7 +73,7 @@ fn the_fixture_is_the_artifact_the_experiment_recorded() {
     assert_eq!(f.official.len() as u64, f.declared_size);
     assert_eq!(FileHash::of_bytes(&f.official).to_hex(), f.declared_blake3);
     assert_eq!(
-        f.declared_blake3, "718c104bfdcc00aaa7b588519ad62c2719a182d8e7364c1daf260ed8fbf96f36",
+        f.declared_blake3, "8cb0401699c6872e89332834f5fb8ce246b8df434bf38882af95ca776c35344a",
         "the digest recorded by research/experiments/2026-08-13-macos-controlled-tar-layer"
     );
     verify_artifact(f.official.clone(), &f.signature, &f.pubkey)
@@ -91,8 +91,8 @@ fn rebuilds_a_real_published_app_tar_gz_byte_for_byte() {
     let tar = dir.path().join("exact.tar");
     let tar_size = decompress_bounded(&artifact, &tar, 64 * 1024 * 1024).expect("decompress");
     assert_eq!(
-        tar_size, 9_461_248,
-        "the tar inside the controlled artifact, as recorded by the tar-layer experiment"
+        tar_size, 10_234_368,
+        "the tar inside the controlled artifact, as recorded when it was regenerated (DECISIONS #42)"
     );
 
     let rebuilt_path = dir.path().join("rebuilt.app.tar.gz");
