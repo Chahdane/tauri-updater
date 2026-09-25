@@ -3947,7 +3947,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-updater-delta"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -4019,7 +4019,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-updater-delta-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4040,11 +4040,11 @@ dependencies = [
 
 [[package]]
 name = "tauri-updater-delta-fixtures"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "tauri-updater-delta-release"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "clap",

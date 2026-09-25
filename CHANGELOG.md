@@ -7,83 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.2.0] - 2026-09-25
 
-- **Large Windows installers produced oversized patches.** zstd's match tables
-  are now sized to the previous installer when diffing. On a 105 MB NSIS
-  installer a feature release went from 31.4% of Full (over the publish limit,
-  so clients took Full) to 6.9%. Release-side only; the patch format and
-  clients are unchanged. DECISIONS #43.
-- **The macOS tar layer failed for releases built with `tauri-cli --locked`.**
-  The recompression recipe now pins flate2 1.1.1, zlib-rs 0.5.0 and tar 0.4.43,
-  the compressor tauri-cli 2.10.1 builds with, and the fixture was regenerated
-  from such a build. DECISIONS #42.
+Deltas that apply more often, a first update that can be a delta on both
+platforms, and a Windows path that no longer costs more than stock Tauri. Still
+pre-release: the independent security audit (Gate P5) has not happened.
 
-### Added
-
-- **First Windows update as a delta.** An NSIS `installerHooks` file (see
-  `examples/desktop-app/windows/delta-seed.nsh`) keeps the installer in
-  `<install dir>\delta-seed\`. With no usable cached base, the direct path
-  uses it only if its size and BLAKE3 match the patch's declared base; it is
-  never cached. Engine: `PlanContext`/`Context` gain `seeded_installer`.
-  DECISIONS #41.
+Measured on a benchmark app with ~88 MiB of bundled assets and a feature-sized
+change: **6.6% of Full on Windows (7.0 of 106 MB) and 8.8% on macOS (6.9 of
+78 MB)**, and about the same for a client two releases behind (research F42).
+One controlled payload, not a promise.
 
 ### Added
 
-- **Compressed Full downloads.** A release may publish a zstd copy of the full
-  installer (`delta-release --compressed-full-out/--compressed-full-url`).
-  Plugin clients that must download the whole installer fetch the copy and
-  rebuild the exact installer, which is then verified exactly as before;
-  stock Tauri clients are unaffected. This removes most of the Full-size
-  cost of `compression: "none"` on Windows. New `Outcome` variant
-  `InstalledFromCompressedFullDownload` and `UpdateSource::CompressedFull`
-  (both enums are `#[non_exhaustive]`). DECISIONS #40.
-
-### Added
-
-- A realistic size benchmark: `examples/desktop-app/e2e/benchmark.sh` and the
-  manual `Delta size benchmark` workflow build three releases with ~88 MiB of
-  bundled assets on macOS and Windows. Not yet run; see research F42.
+- **Patches from several previous versions.** `delta-release` accepts repeated
+  predecessor groups and publishes a direct-to-current patch (and on macOS a
+  tar patch) for each, every one round-tripped before it is described; the
+  30% direct-patch limit applies per predecessor. The example release workflow
+  keeps the latest `PATCH_PREDECESSOR_COUNT` releases (default 3).
+- **First macOS update as a delta.** With no usable cached base, the tar path
+  rebuilds its base from the installed `.app` with `tauri-bundler`'s own
+  `tar::Builder` call, and uses it only if the tar and its recompression match
+  the base the patch declares; it is never cached. Demonstrated on a real DMG
+  install on a macOS CI runner (F39, DECISIONS #37).
+- **First Windows update as a delta.** An NSIS `installerHooks` file
+  (`examples/desktop-app/windows/delta-seed.nsh`) keeps the installer in
+  `<install dir>\delta-seed\`; the direct path uses it only if its size and
+  BLAKE3 match the patch's declared base, checked before download, and never
+  caches it. Demonstrated on a real Windows NSIS install (F46, DECISIONS #41).
+- **Compressed Full downloads.** `delta-release --compressed-full-out/--compressed-full-url`
+  publishes a zstd copy of the installer. Plugin clients that need the whole
+  installer download the copy, rebuild the exact installer and verify it as
+  before; stock Tauri clients are unaffected. For the example Windows app this
+  is 3.4 MB instead of 12.7 MB (F45, DECISIONS #40).
+- **Byte counts.** `ProgressEvent::DownloadProgress { downloaded, total }`
+  during downloads, and `Outcome::full_artifact_size()` / `bytes_saved()`
+  beside `downloaded_bytes()` (DECISIONS #38). The example app shows them.
+- New `Outcome::InstalledFromCompressedFullDownload` and
+  `UpdateSource::CompressedFull` (both enums are `#[non_exhaustive]`).
+- Measurement tooling: `e2e/benchmark.sh` (optional bsdiff and zstd-settings
+  comparison), `e2e/measure-nsis-compression.sh`, and manual workflows for both.
+- CI: a real macOS DMG first-update E2E, and a job testing the plugin against
+  the newest in-range and newest published `tauri-plugin-updater`.
 
 ### Changed
 
 - `tauri-plugin-updater` range widened to `>=2.10.1, <2.12.0` after re-reading
-  the six load-bearing upstream behaviours in 2.11.0. 2.12.0 stays excluded:
-  its verifier now reads a signed version from the trusted comment, which
-  interacts with this project's release identity (DECISIONS #39). A new CI
-  job tests the plugin against the newest in-range and newest published
-  updater.
+  the six load-bearing upstream behaviours in 2.11.0 and running the suite
+  against it. 2.12.0 is excluded: its verifier reads a signed version from the
+  trusted comment, where this project keeps its release identity (DECISIONS #39).
+- The Windows E2E now requires the first transition to be a DirectDelta from
+  the seeded installer.
+- Dependencies: zstd 0.14 (same libzstd; the pinned patch digest is identical),
+  blake3 1.8.7, clap 4.6.7, log 0.4.34, tauri 2.11.6; CI actions moved to their
+  Node 24 majors. base64 and minisign are held, with the reasons in `Cargo.toml`.
 
-### Added
+### Fixed
 
-- `ProgressEvent::DownloadProgress { downloaded, total }` reports bytes
-  received during each download (about every 256 KiB). `total` is the server's
-  advertised length, for display only. `Outcome::full_artifact_size()` and
-  `Outcome::bytes_saved()` join `downloaded_bytes()`. All additive; see
-  DECISIONS #38. The example app shows progress and the bytes saved.
-- Engine: `Fetch::fetch_with_progress`, with a default that reports nothing.
+- **Large Windows installers produced oversized patches.** zstd's match tables
+  are now sized to the previous installer when diffing: a feature release of a
+  105 MB NSIS installer went from 31.4% of Full (over the publish limit, so
+  clients took Full) to 6.6%. Release-side only (DECISIONS #43).
+- **The macOS tar layer failed for releases built with `tauri-cli --locked`.**
+  The recipe now pins flate2 1.1.1, zlib-rs 0.5.0 and tar 0.4.43, the
+  compressor tauri-cli 2.10.1 builds with; the fixture was regenerated from
+  such a build (DECISIONS #42).
 
-### Added
+### Breaking (engine crates only)
 
-- **First-update TarDelta on macOS (demonstrated on a real DMG install on a CI runner, F39).** With no
-  usable cached base, the tar path rebuilds the base tar from the installed
-  `.app` using `tauri-bundler`'s own `tar::Builder` call. It is used only if
-  the tar and its `tauri-app-tar-gz-v1` recompression match the size and
-  BLAKE3 the patch declares for its base; otherwise the update is Full. The
-  rebuilt base is never cached. See DECISIONS #37.
-- Engine API: `PlanContext` and the `test-support` `Context` gain an
-  `installed_app` field. `tauri-updater-delta-core` now depends on `tar`
-  (already present in every plugin build via `tauri-plugin-updater`). The
-  application-facing plugin API is unchanged.
-
-### Changed
-
-- `delta-release` accepts several predecessor groups in one invocation and
-  generates a direct-to-current patch for each. Every patch is round-tripped;
-  the strict direct-patch size limit is applied independently per predecessor.
-- The example application release workflow retains the latest three releases
-  by default (configurable with `PATCH_PREDECESSOR_COUNT`). Clients on a listed
-  version can use its delta; clients outside the window use Full.
+The application-facing plugin API is additive. `tauri-updater-delta-core`
+changes: `PlanContext` gains `installed_app` and `seeded_installer`,
+`manifest::DeltaPlatform` gains `compressed_full`, `Fetch` gains a defaulted
+`fetch_with_progress`, and flate2, zlib-rs, libz-rs-sys and tar are pinned
+exactly. Manifests stay schema 1; 0.1.0 clients ignore the new optional field
+and apply the new patches.
 
 ## [0.1.0] - 2026-09-24
 
@@ -460,7 +457,9 @@ a TUF-style framework.
 - Project documentation: architecture, roadmap, sprint tracking and contribution
   guide.
 
-[Unreleased]: https://github.com/Chahdane/tauri-updater/commits/main
+[Unreleased]: https://github.com/Chahdane/tauri-updater/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Chahdane/tauri-updater/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Chahdane/tauri-updater/releases/tag/v0.1.0
 
 ### Gate B — transport and resource safety
 
