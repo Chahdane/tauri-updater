@@ -120,8 +120,13 @@ maintains a plugin-owned cache:
    key every time it is reused.
 
 The first update after adopting the plugin, an install from a website, a cache
-miss, and cache corruption therefore take Full. A later compatible update may
-use ACTIVE for TarDelta. Cache persistence errors are non-fatal diagnostics:
+miss, and cache corruption therefore have no cached base. On macOS the tar path
+then tries one more source: it rebuilds the base tar from the installed `.app`
+with the bundler's own `tar::Builder` call, and uses it only if the tar and its
+recompressed `.app.tar.gz` match the sizes and digests the patch declares for
+its base. Otherwise the update takes Full. The rebuilt base is never cached; see
+`docs/DECISIONS.md` #37 for when it can match. A later compatible update may use
+ACTIVE for TarDelta. Cache persistence errors are non-fatal diagnostics:
 they cost a future fast path, not the current update.
 
 ## The `PatchBackend` trait

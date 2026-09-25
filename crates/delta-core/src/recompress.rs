@@ -204,6 +204,105 @@ pub fn decompress_reader_bounded<R: Read>(src: R, out: &Path, max_bytes: u64) ->
     Ok(written)
 }
 
+/// Rebuild the tar `tauri-bundler` would write from an installed `.app` bundle.
+///
+/// This reproduces the bundler's own call rather than a description of it:
+///
+/// ```text
+/// tar::Builder::new(..)
+///     .follow_symlinks(false)
+///     .append_dir_all(<bundle file name>, <bundle directory>)
+/// ```
+///
+/// with the default `HeaderMode::Complete`, so every header records the file's
+/// mtime, uid, gid and mode as the filesystem reports them *now*, and entries
+/// follow `read_dir` order. Whether that equals the tar the release published
+/// depends on the installation having preserved all of it — see
+/// `docs/DECISIONS.md` #37 for when it does and when it cannot. The result is a
+/// **candidate**: the caller must compare it with the digest the patch declares
+/// for its base before using it.
+///
+/// `max_bytes` bounds what is written. The installed bundle is the user's own
+/// files, but its size is not something a manifest can be allowed to make this
+/// client read without limit, so the caller passes the declared base size (which
+/// has already been checked against the local ceiling). Exceeding it stops at
+/// once and removes the partial file. Returns the number of bytes written.
+pub fn rebuild_tar_from_app_bundle(app: &Path, out: &Path, max_bytes: u64) -> Result<u64> {
+    let meta = std::fs::symlink_metadata(app).map_err(|e| Error::io("stat", app, e))?;
+    if !meta.is_dir() {
+        return Err(Error::Manifest(format!(
+            "the installed application {} is not a bundle directory",
+            app.display()
+        )));
+    }
+    let Some(name) = app.file_name() else {
+        return Err(Error::Manifest(format!(
+            "the installed application {} has no bundle name",
+            app.display()
+        )));
+    };
+
+    let file = std::fs::File::create(out).map_err(|e| Error::io("create", out, e))?;
+    let bounded = BoundedWriter {
+        inner: std::io::BufWriter::new(file),
+        written: 0,
+        limit: max_bytes,
+    };
+    let mut builder = tar::Builder::new(bounded);
+    builder.follow_symlinks(false);
+
+    // On error the builder is dropped (closing the file) before the partial
+    // output is removed; Windows cannot delete a file that is still open.
+    let built = match builder.append_dir_all(name, app) {
+        Ok(()) => builder.into_inner(),
+        Err(e) => {
+            drop(builder);
+            Err(e)
+        }
+    };
+    let mut bounded = match built {
+        Ok(bounded) => bounded,
+        Err(e) => {
+            let _ = std::fs::remove_file(out);
+            return Err(if e.kind() == std::io::ErrorKind::FileTooLarge {
+                Error::OutputTooLarge { limit: max_bytes }
+            } else {
+                Error::io("archive", app, e)
+            });
+        }
+    };
+    if let Err(e) = bounded.inner.flush() {
+        let _ = std::fs::remove_file(out);
+        return Err(Error::io("flush", out, e));
+    }
+    Ok(bounded.written)
+}
+
+/// A writer that refuses to grow past `limit` rather than truncating.
+struct BoundedWriter<W: Write> {
+    inner: W,
+    written: u64,
+    limit: u64,
+}
+
+impl<W: Write> Write for BoundedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.written + buf.len() as u64 > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "rebuilt tar exceeds its size bound",
+            ));
+        }
+        let n = self.inner.write(buf)?;
+        self.written += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 enum ReplayError {
     Io(std::io::Error),
     Malformed(String),
@@ -330,13 +429,11 @@ fn read_full<R: Read>(source: &mut R, buf: &mut [u8]) -> std::io::Result<usize> 
 mod tests {
     use super::*;
     use crate::FileHash;
+    use std::path::PathBuf;
 
     /// Build a tar the same way `tauri-bundler` does, through the real
     /// `tar::Builder`, so the expected bytes come from the writer rather than
     /// from this module's idea of the writer.
-    ///
-    /// Only available where the `tar` dev-dependency is, which is everywhere the
-    /// test suite runs.
     fn build_reference(files: &[(&str, &[u8])], dir: &Path) -> (Vec<u8>, Vec<u8>) {
         use std::io::Write as _;
 
@@ -513,5 +610,70 @@ mod tests {
         let err = recompress_with_limit(&path, &dir.path().join("out.gz"), 16)
             .expect_err("a tar over the ceiling must be refused");
         assert!(matches!(err, Error::DeclaredSizeTooLarge { .. }), "{err}");
+    }
+
+    /// An installed bundle, and the archive the bundler wrote from it.
+    fn installed_bundle(dir: &Path) -> (PathBuf, Vec<u8>) {
+        let app = dir.join("Applications").join("Bundle.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).expect("mkdir");
+        std::fs::write(app.join("Contents/Info.plist"), b"<plist/>").expect("plist");
+        std::fs::write(app.join("Contents/MacOS/app"), vec![7u8; 20_000]).expect("bin");
+
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.follow_symlinks(false);
+        builder.append_dir_all("Bundle.app", &app).expect("append");
+        (app, builder.into_inner().expect("finish tar"))
+    }
+
+    #[test]
+    fn an_untouched_installed_bundle_rebuilds_the_bundlers_exact_tar() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (app, published) = installed_bundle(dir.path());
+        let out = dir.path().join("rebuilt.tar");
+
+        let written =
+            rebuild_tar_from_app_bundle(&app, &out, published.len() as u64).expect("rebuild");
+
+        assert_eq!(written, published.len() as u64);
+        assert_eq!(std::fs::read(&out).expect("read"), published);
+    }
+
+    #[test]
+    fn a_modified_installed_bundle_rebuilds_different_bytes() {
+        // Not an error at this layer: a changed bundle is still a bundle. The
+        // caller's digest comparison is what rejects it.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (app, published) = installed_bundle(dir.path());
+        std::fs::write(app.join("Contents/MacOS/app"), vec![8u8; 20_000]).expect("modify");
+        let out = dir.path().join("rebuilt.tar");
+
+        rebuild_tar_from_app_bundle(&app, &out, published.len() as u64).expect("rebuild");
+
+        assert_ne!(std::fs::read(&out).expect("read"), published);
+    }
+
+    #[test]
+    fn a_missing_installed_bundle_is_an_error_and_writes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = dir.path().join("rebuilt.tar");
+
+        let err = rebuild_tar_from_app_bundle(&dir.path().join("Gone.app"), &out, 1 << 20)
+            .expect_err("nothing to rebuild from");
+
+        assert!(matches!(err, Error::Io { .. }), "got {err:?}");
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn a_bundle_larger_than_the_declared_base_stops_at_the_bound() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (app, published) = installed_bundle(dir.path());
+        let out = dir.path().join("rebuilt.tar");
+
+        let err = rebuild_tar_from_app_bundle(&app, &out, published.len() as u64 / 2)
+            .expect_err("the bound must hold");
+
+        assert!(matches!(err, Error::OutputTooLarge { .. }), "got {err:?}");
+        assert!(!out.exists(), "a partial tar must not be left behind");
     }
 }

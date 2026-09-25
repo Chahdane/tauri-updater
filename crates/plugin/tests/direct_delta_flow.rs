@@ -317,6 +317,7 @@ fn run(
             // of a direct base in the shipping API.
             base: None,
             cache,
+            installed_app: None,
             app_id: APP_ID,
             work_dir: work,
             limits: Limits::default(),
@@ -338,6 +339,7 @@ fn plan(
         &PlanContext {
             base: None,
             cache,
+            installed_app: None,
             pubkey: &w.pubkey,
             app_id: APP_ID,
             work_dir: work,
@@ -385,6 +387,7 @@ fn the_full_relaunch_direct_delta_ladder_completes() {
             pubkey: &w.pubkey,
             base: None,
             cache: Some(&cache),
+            installed_app: None,
             app_id: APP_ID,
             work_dir: &work,
             limits: Limits::default(),
@@ -844,6 +847,7 @@ fn a_tampered_final_artifact_installs_nothing() {
             pubkey: &w.pubkey,
             base: None,
             cache: Some(&cache),
+            installed_app: None,
             app_id: APP_ID,
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
@@ -877,6 +881,7 @@ fn an_artifact_signed_for_another_application_installs_nothing() {
             pubkey: &w.pubkey,
             base: None,
             cache: Some(&cache),
+            installed_app: None,
             app_id: "dev.example.a-different-product",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
@@ -956,6 +961,7 @@ fn an_oversized_target_is_refused_before_anything_is_fetched() {
         &PlanContext {
             base: None,
             cache: Some(&cache),
+            installed_app: None,
             pubkey: &w.pubkey,
             app_id: APP_ID,
             work_dir: &dir.path().join("work"),

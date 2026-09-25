@@ -100,8 +100,11 @@ impl InstallHandoff for RecordingHandoff {
 // ---- real artifacts ------------------------------------------------------
 
 /// A real `.app.tar.gz`, written the way `tauri-bundler` writes one.
+///
+/// The source directory is left in place and named like an installed bundle,
+/// so it can also stand in for the application a client is running from.
 fn bundle(dir: &Path, name: &str, binary: &[u8]) -> PathBuf {
-    let root = dir.join(format!("{name}-src"));
+    let root = installed_app_of(dir, name);
     std::fs::create_dir_all(root.join("Contents/MacOS")).expect("mkdir");
     std::fs::write(root.join("Contents/Info.plist"), b"<plist/>").expect("write plist");
     let mut f = std::fs::File::create(root.join("Contents/MacOS/app")).expect("create");
@@ -126,6 +129,11 @@ fn bundle(dir: &Path, name: &str, binary: &[u8]) -> PathBuf {
     out
 }
 
+/// Where [`bundle`] left the directory it archived.
+fn installed_app_of(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{name}-src")).join("DeltaExample.app")
+}
+
 fn binary(seed: u32, len: usize) -> Vec<u8> {
     (0..len as u32)
         .map(|i| (i.wrapping_mul(2654435761).wrapping_add(seed) % 256) as u8)
@@ -146,6 +154,8 @@ struct World {
     pubkey: String,
     old: PathBuf,
     new: PathBuf,
+    /// The 1.0.0 bundle directory [`bundle`] archived into `old`, untouched.
+    installed_old: PathBuf,
     manifest: Manifest,
     manifest_json: String,
     signature: String,
@@ -253,6 +263,7 @@ fn world_seeded(dir: &Path, pair: &KeyPair, seed: u32) -> World {
         pubkey: pubkey_b64(pair),
         old,
         new,
+        installed_old: installed_app_of(dir, "old"),
         signature: manifest.platforms[&platform()].signature.clone(),
         manifest_json: manifest.to_json().expect("serialise"),
         manifest,
@@ -312,6 +323,7 @@ fn run(
             // up as Full rather than silently succeeding down the other branch.
             base: None,
             cache,
+            installed_app: None,
             app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),
@@ -338,6 +350,7 @@ fn plan_with_limits(
         &PlanContext {
             base: None,
             cache,
+            installed_app: None,
             pubkey: &w.pubkey,
             app_id: "dev.example.testapp",
             work_dir: work,
@@ -487,6 +500,171 @@ fn a_full_download_populates_the_cache_for_next_time() {
     assert!(cache.active(&w.pubkey).expect("active").is_some());
 }
 
+// ---- the first update, from the installed bundle (DECISIONS #37) --------
+
+fn run_installed(
+    w: &World,
+    cache: Option<&ArtifactCache>,
+    installed_app: &Path,
+    handoff: &RecordingHandoff,
+    work: &Path,
+) -> tauri_plugin_updater_delta::Result<Outcome> {
+    run_update(
+        &w.identity("1.0.0"),
+        &Context {
+            pubkey: &w.pubkey,
+            base: None,
+            cache,
+            installed_app: Some(installed_app),
+            app_id: "dev.example.testapp",
+            work_dir: work,
+            limits: Limits::default(),
+        },
+        &w.server,
+        handoff,
+    )
+}
+
+fn plan_installed(
+    w: &World,
+    cache: Option<&ArtifactCache>,
+    installed_app: &Path,
+    work: &Path,
+) -> UpdateSource {
+    plan_update(
+        &w.identity("1.0.0"),
+        &PlanContext {
+            base: None,
+            cache,
+            installed_app: Some(installed_app),
+            pubkey: &w.pubkey,
+            app_id: "dev.example.testapp",
+            work_dir: work,
+            limits: Limits::default(),
+        },
+        &w.server,
+    )
+}
+
+#[test]
+fn a_first_update_rebuilds_its_base_from_an_untouched_installed_bundle() {
+    // Nothing cached: before this, the first update was always Full. The
+    // installed 1.0.0 bundle is exactly what the release archived, so the
+    // bundler's own tar call over it reproduces the declared base.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    assert!(cache.state().expect("state").active.is_none());
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run_installed(
+        &w,
+        Some(&cache),
+        &w.installed_old,
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert!(
+        matches!(outcome, Outcome::InstalledFromTarDelta { .. }),
+        "expected the tar path from the installed bundle, got {outcome:?}"
+    );
+    // With an empty cache the installed bundle is the only base there is, so
+    // this pair of assertions is what proves it was used.
+    assert!(w.server.fetched(TAR_PATCH_URL));
+    assert!(!w.server.fetched(INSTALLER_URL));
+    assert!(!w.server.fetched(PATCH_URL));
+    assert_eq!(handoff.installed.borrow()[0], w.released_bytes());
+
+    // The verified target is staged as usual; the rebuilt base is not cached,
+    // because no signature exists for the cache to re-check it against.
+    let state = cache.state().expect("state");
+    assert!(
+        state.active.is_none(),
+        "the rebuilt base must not become ACTIVE"
+    );
+    assert_eq!(state.pending.expect("pending").version, "1.0.1");
+}
+
+#[test]
+fn the_installed_bundle_is_a_base_even_without_a_managed_cache() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+
+    let source = plan_installed(&w, None, &w.installed_old, &dir.path().join("work"));
+
+    assert!(
+        matches!(source, UpdateSource::TarDelta { .. }),
+        "expected the tar path, got {source:?}"
+    );
+}
+
+#[test]
+fn a_modified_installed_bundle_falls_back_before_downloading_a_patch() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    let binary = w.installed_old.join("Contents/MacOS/app");
+    let mut bytes = std::fs::read(&binary).expect("read installed binary");
+    bytes[10] ^= 0xff;
+    std::fs::write(&binary, bytes).expect("modify installed binary");
+
+    let source = plan_installed(&w, Some(&cache), &w.installed_old, &dir.path().join("work"));
+
+    let reason = assert_fell_back_from_tar(&source);
+    assert!(reason.contains("installed application"), "got: {reason}");
+    assert!(
+        !w.server.fetched(TAR_PATCH_URL),
+        "a base that does not match must be rejected before the patch is fetched"
+    );
+}
+
+#[test]
+fn a_missing_installed_bundle_falls_back_to_full() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    let handoff = RecordingHandoff::default();
+
+    let outcome = run_installed(
+        &w,
+        Some(&cache),
+        &dir.path().join("Missing.app"),
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert!(w.server.fetched(INSTALLER_URL));
+    assert!(!w.server.fetched(TAR_PATCH_URL));
+    assert_eq!(handoff.installed.borrow()[0], w.released_bytes());
+}
+
+#[test]
+fn a_usable_cache_is_preferred_to_the_installed_bundle() {
+    // The bundle is gone, so succeeding proves the verified cache is used first
+    // and the bundle is only a fallback source.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    seed_active(&cache, &w, &pair);
+    std::fs::remove_dir_all(&w.installed_old).expect("remove installed bundle");
+
+    let source = plan_installed(&w, Some(&cache), &w.installed_old, &dir.path().join("work"));
+
+    assert!(
+        matches!(source, UpdateSource::TarDelta { .. }),
+        "expected the cached tar path, got {source:?}"
+    );
+}
+
 #[test]
 fn the_direct_patch_still_works_when_there_is_no_cache_at_all() {
     // The pre-cache behaviour, unchanged. A host that keeps no cache gets
@@ -502,6 +680,7 @@ fn the_direct_patch_still_works_when_there_is_no_cache_at_all() {
             pubkey: &w.pubkey,
             base: Some(&w.old),
             cache: None,
+            installed_app: None,
             app_id: "dev.example.testapp",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
@@ -904,6 +1083,7 @@ fn a_bad_signature_over_a_correctly_rebuilt_artifact_fails_closed() {
             pubkey: &w.pubkey,
             base: None,
             cache: Some(&cache),
+            installed_app: None,
             app_id: "dev.example.testapp",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
