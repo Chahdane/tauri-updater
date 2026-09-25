@@ -210,7 +210,11 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \n            libwebkit2gtk-4.1-dev \n            libgtk-3-dev \n            libayatana-appindicator3-dev \n            librsvg2-dev
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
       - uses: Swatinem/rust-cache@v2
         with:
           key: upstream-${{ matrix.target }}
@@ -219,11 +223,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = latest ]; then
-            latest="$(curl -fsSL -A "tauri-updater-delta-ci" \n              https://crates.io/api/v1/crates/tauri-plugin-updater \n              | python3 -c 'import json,sys; print(json.load(sys.stdin)["crate"]["max_stable_version"])')"
-            sed -i -E "s/^tauri-plugin-updater = .*/tauri-plugin-updater = \"=${latest}\"/" \n              crates/plugin/Cargo.toml
+            latest="$(curl -fsSL -A "tauri-updater-delta-ci" \
+              https://crates.io/api/v1/crates/tauri-plugin-updater \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["crate"]["max_stable_version"])')"
+            sed -i -E "s/^tauri-plugin-updater = .*/tauri-plugin-updater = \"=${latest}\"/" \
+              crates/plugin/Cargo.toml
           fi
           cargo update -p tauri-plugin-updater
-          resolved="$(cargo tree -p tauri-plugin-updater-delta -i tauri-plugin-updater \n            --depth 0 --all-features | head -1)"
+          resolved="$(cargo tree -p tauri-plugin-updater-delta -i tauri-plugin-updater \
+            --depth 0 --all-features | head -1)"
           echo "::notice title=Updater under test (${{ matrix.target }})::$resolved"
       - name: Test the plugin against it
         run: cargo test -p tauri-plugin-updater-delta --all-features -- --nocapture
