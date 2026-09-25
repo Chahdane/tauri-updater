@@ -33,7 +33,7 @@ use crate::cache::{ArtifactCache, CachedRepresentation};
 use crate::identity::{evaluate_version, Refusal, UpdateIdentity, VersionVerdict};
 use crate::limits::Limits;
 use crate::manifest::{DeltaPlatform, Manifest, TarLayer, TarPatch, TarSupport};
-use crate::recompress::recompress_with_limit;
+use crate::recompress::{rebuild_tar_from_app_bundle, recompress_with_limit};
 use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 
 /// Fetches a URL into a local file.
@@ -62,6 +62,17 @@ pub struct PlanContext<'a> {
     /// nothing to patch a tar against, which is the ordinary state before a
     /// host's first cached update.
     pub cache: Option<&'a ArtifactCache>,
+
+    /// The installed `.app` bundle this process is running from, when the host
+    /// knows it.
+    ///
+    /// A second source for the tar path's base, tried only when the cache
+    /// cannot supply the one a patch was made against — above all on the first
+    /// update after installing from a disk image, when nothing is cached yet.
+    /// The tar rebuilt from it is used only if it and its recompressed
+    /// `.app.tar.gz` both match the digests and sizes the patch declares for its
+    /// base. See `docs/DECISIONS.md` #37.
+    pub installed_app: Option<&'a Path>,
 
     /// Base64 minisign public key, as in `tauri.conf.json`.
     ///
@@ -455,7 +466,7 @@ pub fn plan_update(
             attempted,
         );
     }
-    if let Some(cache) = ctx.cache {
+    if ctx.cache.is_some() || ctx.installed_app.is_some() {
         match entry.tar_patch(identity.current_version()) {
             Ok(Some((layer, tar_patch))) => {
                 // The manifest's representation claim is unauthenticated; the
@@ -477,7 +488,8 @@ pub fn plan_update(
                         entry,
                         layer,
                         tar_patch,
-                        cache,
+                        ctx.cache,
+                        ctx.installed_app,
                         ctx.pubkey,
                         space.path(),
                         ctx.limits,
@@ -761,12 +773,17 @@ fn resolve_identity<'m>(
 /// this build might not perform correctly on this release's artifacts, which is
 /// exactly why its output is checked rather than assumed. Any failure is an
 /// ordinary fallback — the caller has a full download to reach for.
+///
+/// When the cache cannot supply the base, the installed bundle may: see
+/// [`tar_base_from_installed_app`]. Either way the base tar must match the
+/// digest the patch declares before a byte of the patch is downloaded.
 #[allow(clippy::too_many_arguments)]
 fn attempt_tar_delta(
     entry: &DeltaPlatform,
     layer: &TarLayer,
     patch: &TarPatch,
-    cache: &ArtifactCache,
+    cache: Option<&ArtifactCache>,
+    installed_app: Option<&Path>,
     pubkey: &str,
     work_dir: &Path,
     limits: Limits,
@@ -784,58 +801,30 @@ fn attempt_tar_delta(
     limits.check_tar_size(layer.target_tar_size)?;
     limits.check_tar_size(patch.base_tar_size)?;
 
-    // The cached base, re-hashed and re-verified against the key configured
-    // now. Being in the cache establishes nothing.
-    let Some(base) = cache.active(pubkey)? else {
-        return Err(Error::Manifest(
-            "no cached base artifact for the tar path".to_owned(),
-        ));
-    };
-
-    // Is what we have the base this patch was made against? Checked on the
-    // compressed artifact and on the tar, both before anything is expanded or
-    // downloaded — the cheapest possible rejection of a wrong base.
-    if base.entry.compressed_blake3 != patch.base_installer_blake3
-        || base.entry.compressed_size != patch.base_installer_size
-    {
-        return Err(Error::ChecksumMismatch {
-            path: PathBuf::from("<cached base installer>"),
-            expected: patch.base_installer_blake3.clone(),
-            actual: base.entry.compressed_blake3.clone(),
-        });
-    }
-    // A cached entry with no recorded tar is not a wrong base; it is an artifact
-    // this build stored whole, which the tar path cannot start from. Reported as
-    // a mismatch because the consequence is identical: this base is not the one
-    // the patch was made against, so fall back.
-    let Some(cached_tar) = &base.entry.tar else {
-        return Err(Error::Manifest(
-            "the cached base was stored without an inner tar, so the tar path \
-             cannot use it"
-                .to_owned(),
-        ));
-    };
-    if cached_tar.blake3 != patch.base_tar_blake3 || cached_tar.size != patch.base_tar_size {
-        return Err(Error::ChecksumMismatch {
-            path: PathBuf::from("<cached base tar>"),
-            expected: patch.base_tar_blake3.clone(),
-            actual: cached_tar.blake3.clone(),
-        });
-    }
-
     std::fs::create_dir_all(work_dir).map_err(|e| Error::io("create", work_dir, e))?;
-
-    // Expanded from the verified bytes, not from the file they came from, and
-    // checked against the digest the manifest declares rather than against the
-    // one the cache recorded. The cache's own record is a filter; this is the
-    // gate.
     let base_tar = work_dir.join("base.tar");
-    cache.expand_to_tar(
-        &base.artifact,
-        &base_tar,
-        &patch.base_tar_blake3,
-        patch.base_tar_size,
-    )?;
+
+    let from_cache = match cache {
+        Some(cache) => tar_base_from_cache(cache, pubkey, patch, &base_tar),
+        None => Err(Error::Manifest(
+            "no managed cache, so the tar path has no cached base".to_owned(),
+        )),
+    };
+    if let Err(cache_reason) = from_cache {
+        let _ = std::fs::remove_file(&base_tar);
+        let Some(app) = installed_app else {
+            return Err(cache_reason);
+        };
+        if let Err(installed_reason) =
+            tar_base_from_installed_app(app, patch, &base_tar, work_dir, limits)
+        {
+            let _ = std::fs::remove_file(&base_tar);
+            return Err(Error::Manifest(format!(
+                "no usable base for the tar patch: cached base: {cache_reason}; \
+                 installed application: {installed_reason}"
+            )));
+        }
+    }
 
     let patch_path = work_dir.join("update.tar.patch");
     fetch
@@ -905,6 +894,141 @@ fn attempt_tar_delta(
     Ok(artifact)
 }
 
+/// Write the tar path's base from the managed cache's ACTIVE artifact.
+fn tar_base_from_cache(
+    cache: &ArtifactCache,
+    pubkey: &str,
+    patch: &TarPatch,
+    base_tar: &Path,
+) -> Result<(), Error> {
+    // The cached base, re-hashed and re-verified against the key configured
+    // now. Being in the cache establishes nothing.
+    let Some(base) = cache.active(pubkey)? else {
+        return Err(Error::Manifest(
+            "no cached base artifact for the tar path".to_owned(),
+        ));
+    };
+
+    // Is what we have the base this patch was made against? Checked on the
+    // compressed artifact and on the tar, both before anything is expanded or
+    // downloaded — the cheapest possible rejection of a wrong base.
+    if base.entry.compressed_blake3 != patch.base_installer_blake3
+        || base.entry.compressed_size != patch.base_installer_size
+    {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<cached base installer>"),
+            expected: patch.base_installer_blake3.clone(),
+            actual: base.entry.compressed_blake3.clone(),
+        });
+    }
+    // A cached entry with no recorded tar is not a wrong base; it is an artifact
+    // this build stored whole, which the tar path cannot start from. Reported as
+    // a mismatch because the consequence is identical: this base is not the one
+    // the patch was made against, so fall back.
+    let Some(cached_tar) = &base.entry.tar else {
+        return Err(Error::Manifest(
+            "the cached base was stored without an inner tar, so the tar path \
+             cannot use it"
+                .to_owned(),
+        ));
+    };
+    if cached_tar.blake3 != patch.base_tar_blake3 || cached_tar.size != patch.base_tar_size {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<cached base tar>"),
+            expected: patch.base_tar_blake3.clone(),
+            actual: cached_tar.blake3.clone(),
+        });
+    }
+
+    // Expanded from the verified bytes, not from the file they came from, and
+    // checked against the digest the manifest declares rather than against the
+    // one the cache recorded. The cache's own record is a filter; this is the
+    // gate.
+    cache.expand_to_tar(
+        &base.artifact,
+        base_tar,
+        &patch.base_tar_blake3,
+        patch.base_tar_size,
+    )
+}
+
+/// Write the tar path's base by rebuilding it from the installed `.app`.
+///
+/// # Why this exists
+///
+/// Nothing is cached before the first update, so without this every
+/// installation's first update is Full — including every one that came from a
+/// disk image, which is how a macOS application is normally first installed.
+/// But the running application *is* the previous release, laid out on disk.
+/// If the installation preserved what `tauri-bundler` recorded — names, order,
+/// mtimes, owners, modes, contents — then running the bundler's own
+/// `tar::Builder` call over it reproduces the published tar exactly.
+///
+/// # Why it cannot install anything it should not
+///
+/// The rebuilt tar is untrusted input, exactly as a cached base is:
+///
+/// ```text
+/// installed .app  -> rebuilt tar             size + digest == declared base tar
+///                 -> tauri-app-tar-gz-v1     size + digest == declared base installer
+///                 -> + tar patch -> target   the normal five gates, then the
+///                                            signature and release identity
+/// ```
+///
+/// The first two gates only decide whether a patch is *worth downloading*. What
+/// gets installed is still decided by the target digest, the minisign
+/// signature and the authenticated release identity, none of which this base
+/// can influence. A modified, re-signed, partially updated or merely touched
+/// bundle fails the first gate and the update downloads in full. See
+/// `docs/DECISIONS.md` #37.
+///
+/// The rebuilt artifact is deliberately **not** written to the cache. The cache
+/// only holds artifacts whose signature it can re-check, and nobody has a
+/// signature for this one. The verified *target* is staged as usual.
+fn tar_base_from_installed_app(
+    app: &Path,
+    patch: &TarPatch,
+    base_tar: &Path,
+    work_dir: &Path,
+    limits: Limits,
+) -> Result<(), Error> {
+    // Bounded by the declared base size, which the caller has already held to
+    // the local ceiling. A bundle that is larger cannot be the base, and finding
+    // that out must not cost reading all of it.
+    let written = rebuild_tar_from_app_bundle(app, base_tar, patch.base_tar_size)?;
+    let rebuilt = FileHash::of_file(base_tar)?;
+    if written != patch.base_tar_size || rebuilt.to_hex() != patch.base_tar_blake3 {
+        return Err(Error::ChecksumMismatch {
+            path: PathBuf::from("<tar rebuilt from the installed application>"),
+            expected: patch.base_tar_blake3.clone(),
+            actual: rebuilt.to_hex(),
+        });
+    }
+
+    // The published artifact itself, rebuilt with the same recipe the target
+    // will be. Equal tars make this all but certain; checking it anyway means
+    // the base is the exact artifact the release shipped, not merely one whose
+    // inner tar agrees with it.
+    let installer = work_dir.join("base.installer.part");
+    let checked = (|| {
+        recompress_with_limit(base_tar, &installer, limits.max_tar_bytes)?;
+        let size = std::fs::metadata(&installer)
+            .map_err(|e| Error::io("stat", &installer, e))?
+            .len();
+        let digest = FileHash::of_file(&installer)?;
+        if size != patch.base_installer_size || digest.to_hex() != patch.base_installer_blake3 {
+            return Err(Error::ChecksumMismatch {
+                path: PathBuf::from("<installer rebuilt from the installed application>"),
+                expected: patch.base_installer_blake3.clone(),
+                actual: digest.to_hex(),
+            });
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&installer);
+    checked
+}
+
 fn attempt_delta(
     entry: &crate::manifest::DeltaPlatform,
     patch: &crate::manifest::Patch,
@@ -972,6 +1096,7 @@ mod tests {
             &PlanContext {
                 base,
                 cache: None,
+                installed_app: None,
                 pubkey: "",
                 app_id: APP_ID,
                 work_dir,

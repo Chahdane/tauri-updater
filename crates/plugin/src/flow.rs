@@ -159,6 +159,10 @@ pub struct Context<'a> {
     /// as PENDING. `None` disables both — the flow then behaves exactly as it
     /// did before the cache existed.
     pub cache: Option<&'a ArtifactCache>,
+    /// The installed `.app` bundle, when known. A second source for the tar
+    /// path's base when the cache has none; used only if what it rebuilds
+    /// matches the patch's declared base exactly. `docs/DECISIONS.md` #37.
+    pub installed_app: Option<&'a Path>,
     /// Scratch directory. Each update gets its own subdirectory inside it, so
     /// concurrent runs cannot consume one another's files.
     pub work_dir: &'a Path,
@@ -210,6 +214,7 @@ pub(crate) fn run_update_detailed(
         &PlanContext {
             base: ctx.base,
             cache: ctx.cache,
+            installed_app: ctx.installed_app,
             pubkey: ctx.pubkey,
             app_id: ctx.app_id,
             work_dir: ctx.work_dir,
@@ -497,6 +502,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                installed_app: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -537,6 +543,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                installed_app: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -570,6 +577,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                installed_app: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -599,6 +607,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                installed_app: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -633,6 +642,7 @@ mod tests {
                 pubkey: "",
                 base: None,
                 cache: None,
+                installed_app: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),

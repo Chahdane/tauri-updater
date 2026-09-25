@@ -277,6 +277,12 @@ updated app launches                    -> promote to ACTIVE
 later compatible update                 -> TarDelta when published and valid
 ```
 
+On macOS the first update also tries to rebuild the previous release's tar from
+the installed `.app` and use it as the TarDelta base, but only if it matches the
+published base exactly. Otherwise it takes Full as above. This is tested on
+fixtures only. No real install has shown how often an installed bundle matches,
+so do not count on it; see [Decisions #37](docs/DECISIONS.md).
+
 Differential updates are an optimization, not a promise for every release. A
 missing/corrupt cache, missing patch, download failure, unsupported patch, or
 reconstruction mismatch safely degrades to Full. Cache persistence failures are

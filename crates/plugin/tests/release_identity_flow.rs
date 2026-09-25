@@ -151,6 +151,7 @@ fn run(
             pubkey: &release.pubkey,
             base: None,
             cache: None,
+            installed_app: None,
             app_id: APP_ID,
             work_dir: dir,
             limits: Limits::default(),
@@ -499,6 +500,7 @@ fn a_legacy_signature_makes_a_published_delta_unavailable() {
             &PlanContext {
                 base: Some(&fixture.old),
                 cache: None,
+                installed_app: None,
                 pubkey: &pubkey,
                 app_id: APP_ID,
                 work_dir: &dir.path().join("work"),
@@ -583,6 +585,7 @@ fn an_authenticated_contradiction_never_becomes_a_full_download() {
         &PlanContext {
             base: None,
             cache: None,
+            installed_app: None,
             pubkey: &release.pubkey,
             app_id: APP_ID,
             work_dir: dir.path(),
@@ -632,6 +635,7 @@ fn a_genuine_old_release_keeps_its_true_version_and_is_refused_as_a_downgrade() 
             pubkey: &release.pubkey,
             base: None,
             cache: None,
+            installed_app: None,
             app_id: APP_ID,
             work_dir: dir.path(),
             limits: Limits::default(),

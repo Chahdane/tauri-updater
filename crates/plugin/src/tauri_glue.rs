@@ -630,12 +630,15 @@ impl Update {
         #[cfg(not(feature = "test-support"))]
         let base = None;
 
+        let installed_app = installed_app_bundle();
+
         let report = run_update_detailed(
             &identity,
             &Context {
                 pubkey: &self.config.pubkey,
                 base,
                 cache: self.config.cache.as_deref(),
+                installed_app: installed_app.as_deref(),
                 app_id: &self.config.app_id,
                 work_dir: &self.config.work_dir,
                 limits: self.config.limits,
@@ -730,6 +733,30 @@ impl InstallHandoff for TauriInstall<'_> {
             .install(artifact.as_bytes())
             .map_err(|e| Error::Install(e.to_string()))
     }
+}
+
+/// The `.app` bundle this process is running from, on macOS.
+///
+/// The tar path may rebuild its base from it when nothing is cached; that is
+/// safe because the rebuild is digest-gated, and pointless everywhere except a
+/// macOS `.app.tar.gz` installation. `docs/DECISIONS.md` #37.
+fn installed_app_bundle() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    app_bundle_of(&std::env::current_exe().ok()?)
+}
+
+/// `<name>.app/Contents/MacOS/<binary>` to `<name>.app`. Any other layout is not
+/// a bundle this plugin will read from.
+fn app_bundle_of(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?;
+    let contents = macos.parent()?;
+    let app = contents.parent()?;
+    let is_bundle = macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && app.extension()? == "app";
+    is_bundle.then(|| app.to_path_buf())
 }
 
 #[cfg(test)]
@@ -873,5 +900,21 @@ mod tests {
             paths.work_dir,
             Path::new("/safe/app-cache/updater-delta/transactions")
         );
+    }
+
+    #[test]
+    fn only_a_macos_bundle_layout_names_an_installed_app() {
+        assert_eq!(
+            app_bundle_of(Path::new("/Applications/My App.app/Contents/MacOS/my-app")),
+            Some(PathBuf::from("/Applications/My App.app"))
+        );
+        for exe in [
+            "/usr/local/bin/my-app",
+            "/Applications/My App/Contents/MacOS/my-app",
+            "/Applications/My App.app/Contents/Resources/my-app",
+            "my-app",
+        ] {
+            assert_eq!(app_bundle_of(Path::new(exe)), None, "{exe}");
+        }
     }
 }
