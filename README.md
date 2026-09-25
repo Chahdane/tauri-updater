@@ -34,6 +34,11 @@ and release gate have not happened yet.
   bounded reconstruction, cache re-verification, and release-time patch
   round-trips are enforced and tested.
 
+These ratios come from releases that differ by little more than a version
+string. A benchmark with ~88 MiB of bundled assets and a feature-sized change
+exists (`examples/desktop-app/e2e/benchmark.sh`, research F42), but it has not
+been run yet, so no realistic-app number is claimed here.
+
 GitHub-hosted HTTPS Full→TarDelta, Apple Developer ID/notarized, and Windows
 Authenticode-signed end-to-end tests remain credential-bound validation gaps. See
 [Releasing](docs/RELEASING.md) and the evidence ledger in

@@ -865,3 +865,21 @@ project's `delta-v1` identity has no such field (DECISIONS #39).
 *Not yet shown:* the plugin's test suite passing against 2.11.0. The
 `upstream updater / range-max` CI job runs it; it had not run when this entry
 was written.
+
+### F42 — Patch sizes for an app with a realistic payload · **UNPROVEN: benchmark built, not yet run**
+
+Every ratio above comes from releases that differ by a version string, or by
+a small frontend change, in a ~4–13 MB app. That says little about an app that
+ships tens of megabytes of assets and changes some of them.
+
+`examples/desktop-app/e2e/benchmark.sh` (run by the manual `Delta size
+benchmark` workflow on macOS and Windows) builds three releases with ~88 MiB of
+seeded, bundled resources: 1.0.1 changes only the version; 1.0.2 replaces two
+2 MiB media files, adds one, edits ~2% of the lines in five 1 MiB JSON files,
+deletes one, and changes the frontend. 1.0.2 is published from both 1.0.1 and
+1.0.0. The payload generator was checked to be deterministic and to change
+exactly those files; the builds themselves have not run.
+
+Expect the incompressible replaced and added media (6 MiB) to dominate any
+patch. That is a property of the payload, not a result. Record the measured
+`benchmark.json` here when the workflow has run, with its run link.
