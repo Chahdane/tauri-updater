@@ -1870,3 +1870,58 @@ methods, and a defaulted `Fetch::fetch_with_progress`. The 0.1.0 API is
 unchanged, and no identity, cache or install-handoff type is exposed.
 
 Reports are throttled to about one per 256 KiB so a frontend is not flooded.
+
+## 39. The updater range widens to 2.11; 2.12 waits for a design decision
+
+**Decided:** 2026-09-25 · **Status:** active · **Extends #21**
+
+**Decision:** `tauri-plugin-updater = ">=2.10.1, <2.12.0"`. A new CI job,
+`upstream-updater`, runs the plugin's suite against the newest version the
+range admits (must pass) and against the newest published release (allowed
+to fail, as an early warning).
+
+### 2.11.0: all six hold
+
+Read from the published crate, site by site against 2.10.1:
+
+| Behaviour (#21) | 2.11.0 |
+| --- | --- |
+| `Update::install` verifies nothing | unchanged: `install` → `install_inner`, no verification |
+| `verify_signature` called from one place | unchanged: only in `download` |
+| The verifier's exact steps | same steps; returns `Result<()>` instead of `Result<bool>` |
+| `raw_json` retains the fetched document | unchanged |
+| `get_urls` tries installer-specific keys first | function body byte-identical |
+| `validate_endpoints`' http policy | function body byte-identical |
+
+`Update`'s public fields, which the plugin reads, are identical as well. The
+2.11.0 changes are Windows installer spawning errors, a Windows
+`restartAfterInstall` option, and a `system-proxy` feature flag.
+
+### 2.12.0: the verifier changed, in the one place this plugin also writes
+
+2.12.0's `verify_signature` gains `verify_signed_version`: after the minisign
+check it looks in the trusted comment for a tab-separated `version:` field
+and, if present, requires it to equal the announced version. A new
+`requireSignedVersion` option makes a missing field an error. 2.12.0 also adds
+`allowDowngrades`.
+
+That is behaviour 3 changing, and it collides with #27, because this
+project's release identity lives in the same trusted comment:
+
+- `delta-release` writes `delta-v1 app:… v:… …`, space-separated, with no
+  `version:` field. A **stock** 2.12 client with `requireSignedVersion` enabled
+  would refuse every release this tool signs.
+- This plugin verifies on its own and would not apply an app's
+  `requireSignedVersion` choice. Its own check is stronger for `delta-v1`
+  signatures, but for legacy signatures it would allow Full where the app asked
+  upstream to refuse. That is the kind of divergence #21 exists to prevent.
+- `allowDowngrades` would be silently overridden by this plugin's refusal of
+  downgrades (#14).
+
+Admitting 2.12 therefore needs decisions, not just a version bump: probably a
+`delta-v2` comment that also carries upstream's tab-separated `version:` field,
+and honouring (or explicitly refusing) the two new options. Until then the
+range stops below it.
+
+**Revisit when:** those decisions are made, or upstream exposes a verifying
+install handoff (#10).

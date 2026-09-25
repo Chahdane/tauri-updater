@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `tauri-plugin-updater` range widened to `>=2.10.1, <2.12.0` after re-reading
+  the six load-bearing upstream behaviours in 2.11.0. 2.12.0 stays excluded:
+  its verifier now reads a signed version from the trusted comment, which
+  interacts with this project's release identity (DECISIONS #39). A new CI
+  job tests the plugin against the newest in-range and newest published
+  updater.
+
 ### Added
 
 - `ProgressEvent::DownloadProgress { downloaded, total }` reports bytes
