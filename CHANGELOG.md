@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Large Windows installers produced oversized patches.** zstd's match tables
+  are now sized to the previous installer when diffing. On a 105 MB NSIS
+  installer a feature release went from 31.4% of Full (over the publish limit,
+  so clients took Full) to 6.9%. Release-side only; the patch format and
+  clients are unchanged. DECISIONS #43.
+- **The macOS tar layer failed for releases built with `tauri-cli --locked`.**
+  The recompression recipe now pins flate2 1.1.1, zlib-rs 0.5.0 and tar 0.4.43,
+  the compressor tauri-cli 2.10.1 builds with, and the fixture was regenerated
+  from such a build. DECISIONS #42.
+
 ### Added
 
 - **First Windows update as a delta.** An NSIS `installerHooks` file (see
