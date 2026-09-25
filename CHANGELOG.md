@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **First Windows update as a delta.** An NSIS `installerHooks` file (see
+  `examples/desktop-app/windows/delta-seed.nsh`) keeps the installer in
+  `<install dir>\delta-seed\`. With no usable cached base, the direct path
+  uses it only if its size and BLAKE3 match the patch's declared base; it is
+  never cached. Engine: `PlanContext`/`Context` gain `seeded_installer`.
+  DECISIONS #41.
+
+### Added
+
 - **Compressed Full downloads.** A release may publish a zstd copy of the full
   installer (`delta-release --compressed-full-out/--compressed-full-url`).
   Plugin clients that must download the whole installer fetch the copy and
