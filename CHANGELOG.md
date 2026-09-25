@@ -65,7 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **First-update TarDelta on macOS (unproven on a real install).** With no
+- **First-update TarDelta on macOS (demonstrated on a real DMG install on a CI runner, F39).** With no
   usable cached base, the tar path rebuilds the base tar from the installed
   `.app` using `tauri-bundler`'s own `tar::Builder` call. It is used only if
   the tar and its `tauri-app-tar-gz-v1` recompression match the size and

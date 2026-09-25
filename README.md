@@ -310,9 +310,12 @@ later compatible update                 -> TarDelta when published and valid
 
 On macOS the first update also tries to rebuild the previous release's tar from
 the installed `.app` and use it as the TarDelta base, but only if it matches the
-published base exactly. Otherwise it takes Full as above. This is tested on
-fixtures only. No real install has shown how often an installed bundle matches,
-so do not count on it; see [Decisions #37](docs/DECISIONS.md).
+published base exactly. Otherwise it takes Full as above. A real DMG install
+on a macOS CI runner matched and took its first update as a TarDelta (research
+F39). That runner built and installed the app as the same user; on a machine
+where the file owner or layout differs, the bundle will not match and the first
+update is Full, so treat this as a likely saving rather than a guarantee
+([Decisions #37](docs/DECISIONS.md)).
 
 Differential updates are an optimization, not a promise for every release. A
 missing/corrupt cache, missing patch, download failure, unsupported patch, or

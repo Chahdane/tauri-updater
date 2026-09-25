@@ -801,7 +801,7 @@ comparison against the uncompressed tar layer was run. F13 remains a hypothesis.
 Note also that no client consumed this patch in the run — it was measured at
 generation time, because the client took the full path.
 
-### F39 — A first update can rebuild its tar base from the installed bundle · **DEMONSTRATED ON FIXTURES; UNPROVEN ON A REAL INSTALL**
+### F39 — A first update can rebuild its tar base from the installed bundle · **DEMONSTRATED ON A REAL MACOS DMG INSTALL (CI runner)**
 
 With nothing cached, the tar path repeats `tauri-bundler`'s `tar::Builder`
 call over the installed `.app` and uses the result only when the tar and its
@@ -817,8 +817,24 @@ fetching the full artifact; and a usable cache is preferred to the bundle.
 `crates/plugin/tests/tar_delta_flow.rs` (`a_first_update_rebuilds_its_base_…`
 and the four cases beside it).
 
-*Not demonstrated:* that a real application installed from a DMG still matches
-its published tar. Tar headers carry mtime, uid, gid and mode and follow
+*Demonstrated on a real install:* CI run
+[36188574836](https://github.com/Chahdane/tauri-updater/actions/runs/36188574836),
+`macos dmg first-update e2e`. The example app 1.0.0 was bundled as a DMG by
+`cargo tauri build --bundles app,dmg` (tauri-cli 2.10.1 `--locked`), mounted
+read-only, copied out with `ditto`, and launched unmodified. All 7 tar headers
+matched the installed files (mtime, uid, gid, mode and size: 0 mismatches).
+With an empty cache the first update to 1.0.1 was a **TarDelta**: 640,585 of
+4,066,733 bytes downloaded, the tar patch fetched, the full artifact not,
+and the installed binary exactly 1.0.1.
+
+*Scope, precisely:* the DMG was built and installed on the same runner, so
+the file owner matched by construction, and `ditto` stood in for a Finder drag
+(both preserve times and modes). Not shown: an install on another machine
+whose user has a different uid, a notarized and stapled app, or the App Store.
+Those mismatch cases fall back to Full, which the fixture tests cover.
+
+*Earlier wording, kept for the record:* that a real application installed from a DMG still matches
+its published tar was not demonstrated when this entry was first written. Tar headers carry mtime, uid, gid and mode and follow
 `read_dir` order, so the answer depends on how the installation copied the
 bundle. An app installed by Tauri's own updater is known **not** to match
 (directory mtimes are reset by per-entry unpacking), which is harmless because
