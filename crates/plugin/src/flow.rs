@@ -334,7 +334,7 @@ pub(crate) fn run_update_detailed(
                     &target,
                     ctx.limits,
                     &space.path().join("compressed"),
-                    fetch,
+                    &fetch,
                 ) {
                     Ok(rebuilt) => {
                         full = rebuilt;
