@@ -20,6 +20,9 @@ and release gate have not happened yet.
   promoted only after relaunch, then completed `1.0.1 -> 1.0.2` via
   DirectDelta. A corrupt cached installer degraded to Full and still installed
   the exact expected executable.
+- With the installer hook, a real Windows NSIS installation with an **empty
+  cache** took its first update as DirectDelta from the installer kept at
+  install time, and the updater's own install refreshed that copy (research F46).
 - The original solid-LZMA NSIS experiment produced patches that were 98.2520%
   and 98.2523% of Full. The Windows updater artifact now disables NSIS
   compression so unchanged bytes remain reusable, and the release tool refuses
@@ -34,10 +37,17 @@ and release gate have not happened yet.
   bounded reconstruction, cache re-verification, and release-time patch
   round-trips are enforced and tested.
 
-These ratios come from releases that differ by little more than a version
-string. A benchmark with ~88 MiB of bundled assets and a feature-sized change
-exists (`examples/desktop-app/e2e/benchmark.sh`, research F42), but it has not
-been run yet, so no realistic-app number is claimed here.
+Those ratios come from releases that differ by little more than a version
+string. On a benchmark app carrying ~88 MiB of bundled assets, with a
+feature-sized change that replaces and adds about 6 MiB of incompressible media
+and edits some data, the download was **6.6% of Full on Windows (7.0 of 106 MB)
+and 8.8% on macOS (6.9 of 78 MB)**; a client two releases behind paid about
+the same (research F42). That is one controlled payload, not a promise: a real
+application's ratio depends on how much of it changes.
+
+On Windows a first update can be a delta too, when the app ships the
+installer hook below, and a Full download is served from a zstd copy of about
+LZMA size (research F45, F46).
 
 GitHub-hosted HTTPS Full→TarDelta, Apple Developer ID/notarized, and Windows
 Authenticode-signed end-to-end tests remain credential-bound validation gaps. See
