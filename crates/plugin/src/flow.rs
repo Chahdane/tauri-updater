@@ -183,6 +183,11 @@ pub struct Context<'a> {
     /// path's base when the cache has none; used only if what it rebuilds
     /// matches the patch's declared base exactly. `docs/DECISIONS.md` #37.
     pub installed_app: Option<&'a Path>,
+    /// The installer the application kept when it was installed, when known.
+    /// A second source for the direct path's base when the cache has none;
+    /// used only if it matches the patch's declared base exactly.
+    /// `docs/DECISIONS.md` #41.
+    pub seeded_installer: Option<&'a Path>,
     /// Scratch directory. Each update gets its own subdirectory inside it, so
     /// concurrent runs cannot consume one another's files.
     pub work_dir: &'a Path,
@@ -235,6 +240,7 @@ pub(crate) fn run_update_detailed(
             base: ctx.base,
             cache: ctx.cache,
             installed_app: ctx.installed_app,
+            seeded_installer: ctx.seeded_installer,
             pubkey: ctx.pubkey,
             app_id: ctx.app_id,
             work_dir: ctx.work_dir,
@@ -565,6 +571,7 @@ mod tests {
                 base: None,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -606,6 +613,7 @@ mod tests {
                 base: None,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -640,6 +648,7 @@ mod tests {
                 base: None,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -670,6 +679,7 @@ mod tests {
                 base: None,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),
@@ -705,6 +715,7 @@ mod tests {
                 base: None,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 app_id: "dev.example.testapp",
                 work_dir: dir.path(),
                 limits: Limits::default(),

@@ -120,7 +120,13 @@ This trades a larger Full updater artifact for much smaller later deltas. Pass
 `--compressed-full-out` and `--compressed-full-url` to `delta-release` as well:
 plugin clients that need the whole installer then download a zstd copy and
 rebuild the exact installer from it, so they do not pay for the larger Full
-artifact. Stock Tauri clients keep using the uncompressed URL. The
+artifact. Stock Tauri clients keep using the uncompressed URL.
+
+To make the **first** Windows update a delta too, ship the installer hook from
+[examples/desktop-app/windows/delta-seed.nsh](examples/desktop-app/windows/delta-seed.nsh)
+(`"installerHooks"` in the same `nsis` block). It keeps a copy of the installer
+in the install directory; the plugin uses it as the patch base only if it
+matches the base a patch declares (Decisions #41). The
 first update from an older solid-LZMA release may use Full; that successful
 update seeds the delta-friendly installer used as the next release's base.
 

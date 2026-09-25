@@ -634,6 +634,7 @@ impl Update {
         let base = None;
 
         let installed_app = installed_app_bundle();
+        let seeded_installer = seeded_installer();
 
         let report = run_update_detailed(
             &identity,
@@ -642,6 +643,7 @@ impl Update {
                 base,
                 cache: self.config.cache.as_deref(),
                 installed_app: installed_app.as_deref(),
+                seeded_installer: seeded_installer.as_deref(),
                 app_id: &self.config.app_id,
                 work_dir: &self.config.work_dir,
                 limits: self.config.limits,
@@ -757,6 +759,25 @@ fn installed_app_bundle() -> Option<PathBuf> {
     }
     app_bundle_of(&std::env::current_exe().ok()?)
 }
+
+/// The installer an NSIS installation kept beside the application, on Windows.
+///
+/// Written by the `NSIS_HOOK_POSTINSTALL` hook in the example's
+/// `windows/delta-seed.nsh`; any application can ship the same hook. Absent is
+/// ordinary, and a present file is only a candidate: the direct path uses it
+/// only if it matches the base a patch declares. `docs/DECISIONS.md` #41.
+fn seeded_installer() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let seed = exe.parent()?.join(SEED_DIR).join(SEED_FILE);
+    seed.is_file().then_some(seed)
+}
+
+/// Where the installer hook keeps the seed, relative to the install directory.
+const SEED_DIR: &str = "delta-seed";
+const SEED_FILE: &str = "installer.exe";
 
 /// `<name>.app/Contents/MacOS/<binary>` to `<name>.app`. Any other layout is not
 /// a bundle this plugin will read from.
