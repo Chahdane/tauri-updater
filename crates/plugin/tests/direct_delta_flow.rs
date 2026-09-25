@@ -320,6 +320,7 @@ fn run(
             base: None,
             cache,
             installed_app: None,
+            seeded_installer: None,
             app_id: APP_ID,
             work_dir: work,
             limits: Limits::default(),
@@ -342,6 +343,7 @@ fn plan(
             base: None,
             cache,
             installed_app: None,
+            seeded_installer: None,
             pubkey: &w.pubkey,
             app_id: APP_ID,
             work_dir: work,
@@ -390,6 +392,7 @@ fn the_full_relaunch_direct_delta_ladder_completes() {
             base: None,
             cache: Some(&cache),
             installed_app: None,
+            seeded_installer: None,
             app_id: APP_ID,
             work_dir: &work,
             limits: Limits::default(),
@@ -850,6 +853,7 @@ fn a_tampered_final_artifact_installs_nothing() {
             base: None,
             cache: Some(&cache),
             installed_app: None,
+            seeded_installer: None,
             app_id: APP_ID,
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
@@ -884,6 +888,7 @@ fn an_artifact_signed_for_another_application_installs_nothing() {
             base: None,
             cache: Some(&cache),
             installed_app: None,
+            seeded_installer: None,
             app_id: "dev.example.a-different-product",
             work_dir: &dir.path().join("work"),
             limits: Limits::default(),
@@ -964,6 +969,7 @@ fn an_oversized_target_is_refused_before_anything_is_fetched() {
             base: None,
             cache: Some(&cache),
             installed_app: None,
+            seeded_installer: None,
             pubkey: &w.pubkey,
             app_id: APP_ID,
             work_dir: &dir.path().join("work"),
@@ -1135,4 +1141,123 @@ fn a_compressed_copy_cannot_install_bytes_the_signature_does_not_cover() {
         handoff.installed.borrow().is_empty(),
         "nothing may be installed"
     );
+}
+
+// ---- the installer seeded at install time (DECISIONS #41) ----------------
+
+fn run_seeded(
+    w: &World,
+    from: &str,
+    to: &str,
+    cache: Option<&ArtifactCache>,
+    seed: &Path,
+    handoff: &RecordingHandoff,
+    work: &Path,
+) -> tauri_plugin_updater_delta::Result<Outcome> {
+    run_update(
+        &w.identity(from, to),
+        &Context {
+            pubkey: &w.pubkey,
+            base: None,
+            cache,
+            installed_app: None,
+            seeded_installer: Some(seed),
+            app_id: APP_ID,
+            work_dir: work,
+            limits: Limits::default(),
+        },
+        &w.server,
+        handoff,
+    )
+}
+
+#[test]
+fn a_first_update_uses_the_installer_kept_at_install_time() {
+    // Nothing cached: before the seed, this was always Full.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    assert!(cache.state().expect("state").active.is_none());
+    let seed = dir.path().join("delta-seed").join("installer.exe");
+    std::fs::create_dir_all(seed.parent().expect("parent")).expect("mkdir");
+    std::fs::copy(&w.installers["1.0.1"], &seed).expect("seed");
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run_seeded(
+        &w,
+        "1.0.1",
+        "1.0.2",
+        Some(&cache),
+        &seed,
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert!(
+        matches!(outcome, Outcome::InstalledFromDelta { .. }),
+        "expected DirectDelta from the seed, got {}",
+        outcome.path_name()
+    );
+    assert!(w.server.fetched(&patch_url("1.0.1", "1.0.2")));
+    assert!(!w.server.fetched(&installer_url("1.0.2")));
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
+
+    // The target is staged as usual; the seed never becomes a cache entry.
+    let state = cache.state().expect("state");
+    assert!(state.active.is_none());
+    assert_eq!(state.pending.expect("pending").version, "1.0.2");
+}
+
+#[test]
+fn a_seed_from_another_version_is_rejected_before_the_patch_is_downloaded() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+    let seed = dir.path().join("installer.exe");
+    std::fs::copy(&w.installers["1.0.0"], &seed).expect("seed");
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run_seeded(
+        &w,
+        "1.0.1",
+        "1.0.2",
+        Some(&cache),
+        &seed,
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert!(
+        !w.server.fetched(&patch_url("1.0.1", "1.0.2")),
+        "a mismatched seed must be caught before any patch bytes are spent"
+    );
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
+}
+
+#[test]
+fn a_missing_seed_falls_back_to_full() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let w = world(dir.path(), &pair);
+    let cache = open_cache(&dir.path().join("cache"), &w.pubkey);
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run_seeded(
+        &w,
+        "1.0.1",
+        "1.0.2",
+        Some(&cache),
+        &dir.path().join("no-such-installer.exe"),
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
 }

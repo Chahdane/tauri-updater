@@ -11,7 +11,8 @@
         "displayLanguageSelector": false,
         "languages": [
           "English"
-        ]
+        ],
+        "installerHooks": "./windows/delta-seed.nsh"
       }
     }
   },
