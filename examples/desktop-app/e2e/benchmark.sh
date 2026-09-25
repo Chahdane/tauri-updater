@@ -32,12 +32,15 @@ case "$(uname -s)" in
     PLATFORM="darwin-$(uname -m | sed 's/arm64/aarch64/')"
     ARTIFACT_GLOB="$ROOT/target/release/bundle/macos/*.app.tar.gz"
     TAR_LAYER=1
+    # delta-release recognises a tarball by its .tar.gz name, so keep it.
+    ARTIFACT="artifact.app.tar.gz"
     DELTA_RELEASE="$ROOT/target/release/delta-release"
     ;;
   MINGW*|MSYS*|CYGWIN*)
     PLATFORM="windows-x86_64"
     ARTIFACT_GLOB="$ROOT/target/release/bundle/nsis/*-setup.exe"
     TAR_LAYER=0
+    ARTIFACT="artifact.exe"
     DELTA_RELEASE="$ROOT/target/release/delta-release.exe"
     ;;
   *) echo "FATAL: the benchmark builds macOS or Windows updater artifacts" >&2; exit 1 ;;
@@ -139,7 +142,7 @@ build() {
   shopt -s nullglob
   local found=($ARTIFACT_GLOB)
   [ "${#found[@]}" -eq 1 ] || { echo "FATAL: expected one artifact, found ${#found[@]}" >&2; exit 1; }
-  cp "${found[0]}" "$dest/artifact"
+  cp "${found[0]}" "$dest/$ARTIFACT"
 }
 
 build 1.0.0
@@ -152,15 +155,15 @@ publish() {
     --platform "$PLATFORM"
     --app-config "$OUT/v$to/tauri.conf.json"
     --target-version "$to"
-    --new-installer "$OUT/v$to/artifact"
-    --installer-url "https://example.invalid/v$to/artifact"
+    --new-installer "$OUT/v$to/$ARTIFACT"
+    --installer-url "https://example.invalid/v$to/$ARTIFACT"
     --max-direct-patch-percent 100
     --manifest "$OUT/manifest-$to.json"
   )
   for from in "$@"; do
     args+=(
       --from-version "$from"
-      --previous-installer "$OUT/v$from/artifact"
+      --previous-installer "$OUT/v$from/$ARTIFACT"
       --patch-url "https://example.invalid/$from-$to.zst"
       --patch-out "$OUT/$from-$to.zst"
     )
@@ -176,15 +179,15 @@ publish() {
 publish 1.0.1 1.0.0
 publish 1.0.2 1.0.1 1.0.0
 
-"$PYTHON" - "$OUT" "$PLATFORM" <<'PY'
+"$PYTHON" - "$OUT" "$PLATFORM" "$ARTIFACT" <<'PY'
 import json, os, subprocess, sys
-out, platform = sys.argv[1], sys.argv[2]
+out, platform, artifact = sys.argv[1], sys.argv[2], sys.argv[3]
 size = lambda p: os.path.getsize(p) if os.path.exists(p) else None
 record = {
     "platform": platform,
     "commit": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
     "payload": "32x2MiB random + 24x1MiB JSON lines; see e2e/benchmark.sh",
-    "artifacts": {v: size(f"{out}/v{v}/artifact") for v in ("1.0.0", "1.0.1", "1.0.2")},
+    "artifacts": {v: size(f"{out}/v{v}/{artifact}") for v in ("1.0.0", "1.0.1", "1.0.2")},
     "pairs": {},
 }
 for frm, to, kind in [("1.0.0", "1.0.1", "version only"),
@@ -206,7 +209,7 @@ for frm, to, kind in [("1.0.0", "1.0.1", "version only"),
         # Windows). Not a backend this project ships.
         import bsdiff4, gzip
         def payload(v):
-            data = open(f"{out}/v{v}/artifact", "rb").read()
+            data = open(f"{out}/v{v}/{artifact}", "rb").read()
             return gzip.decompress(data) if tar is not None else data
         started = __import__("time").time()
         bs = len(bsdiff4.diff(payload(frm), payload(to)))
