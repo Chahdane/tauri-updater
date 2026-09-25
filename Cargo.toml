@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
@@ -44,8 +44,8 @@ url = "2"
 # publication: cargo strips the path and a consumer resolves the registry
 # version, so without one `cargo package` refuses the dependent crates
 # outright. See docs/RELEASING.md.
-tauri-updater-delta-core = { path = "crates/delta-core", version = "0.1.0" }
-tauri-updater-delta-release = { path = "crates/delta-release", version = "0.1.0" }
+tauri-updater-delta-core = { path = "crates/delta-core", version = "0.2.0" }
+tauri-updater-delta-release = { path = "crates/delta-release", version = "0.2.0" }
 # Never published. Left without a version deliberately: cargo strips a
 # version-less dev-dependency when packaging, which is exactly right for a
 # fixtures crate that will not exist on crates.io.
