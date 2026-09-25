@@ -618,6 +618,9 @@ impl Update {
             }
             let event = match phase {
                 FlowPhase::Downloading => ProgressEvent::Downloading,
+                FlowPhase::Transferred { downloaded, total } => {
+                    ProgressEvent::DownloadProgress { downloaded, total }
+                }
                 FlowPhase::Reconstructing => ProgressEvent::Reconstructing,
                 FlowPhase::Verifying => ProgressEvent::Verifying,
                 FlowPhase::Installing { .. } => ProgressEvent::Installing,

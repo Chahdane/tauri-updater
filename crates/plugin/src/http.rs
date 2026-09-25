@@ -339,6 +339,15 @@ fn scheme_allowed(url: &str, insecure: bool) -> std::result::Result<(), String> 
 
 impl Fetch for HttpFetch {
     fn fetch(&self, url: &str, out: &Path) -> std::result::Result<(), String> {
+        self.fetch_with_progress(url, out, &|_, _| {})
+    }
+
+    fn fetch_with_progress(
+        &self,
+        url: &str,
+        out: &Path,
+        progress: &dyn Fn(u64, Option<u64>),
+    ) -> std::result::Result<(), String> {
         scheme_allowed(url, self.insecure)?;
 
         let request = self.client.get(url);
@@ -369,7 +378,10 @@ impl Fetch for HttpFetch {
         // failed or truncated transfer can never leave something at a path that
         // later looks like a finished download.
         let partial = out.with_extension("part");
-        let result = self.stream_to(&mut response, &partial);
+        let advertised = response.content_length();
+        let result = self.stream_to(&mut response, &partial, &|received| {
+            progress(received, advertised)
+        });
 
         match result {
             Ok(()) => std::fs::rename(&partial, out)
@@ -382,21 +394,33 @@ impl Fetch for HttpFetch {
     }
 }
 
+/// How many bytes pass between download progress reports.
+///
+/// Coarse enough that a frontend is not flooded with events for a large
+/// artifact, fine enough to move a progress bar smoothly.
+const PROGRESS_STEP: u64 = 256 * 1024;
+
 impl HttpFetch {
     /// Stream the body to `partial`, stopping if it exceeds the cap.
     ///
     /// The count is of bytes actually received, so a lying or absent
     /// `Content-Length` and a chunked body are all bounded by the same check.
+    ///
+    /// `progress` is called with the running total at most once per
+    /// [`PROGRESS_STEP`] bytes, and once more at the end.
     fn stream_to(
         &self,
         response: &mut reqwest::blocking::Response,
         partial: &Path,
+        progress: &dyn Fn(u64),
     ) -> std::result::Result<(), String> {
         let mut file =
             std::fs::File::create(partial).map_err(|e| format!("creating {partial:?}: {e}"))?;
 
         let mut buffer = vec![0u8; 64 * 1024];
         let mut written: u64 = 0;
+        let mut reported: u64 = 0;
+        progress(0);
 
         loop {
             let read = response.read(&mut buffer).map_err(|e| {
@@ -425,6 +449,13 @@ impl HttpFetch {
 
             file.write_all(&buffer[..read])
                 .map_err(|e| format!("writing {partial:?}: {e}"))?;
+            if written - reported >= PROGRESS_STEP {
+                reported = written;
+                progress(written);
+            }
+        }
+        if reported != written {
+            progress(written);
         }
 
         file.flush()

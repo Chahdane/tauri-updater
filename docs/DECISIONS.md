@@ -1846,3 +1846,27 @@ the cache had no usable base — in practice, once per installation.
 
 **Revisit when:** a real DMG install/update run has been measured, or
 `tauri-bundler` changes how it writes the archive.
+
+## 38. Downloads report bytes; the other phases still do not
+
+**Decided:** 2026-09-25 · **Status:** active · **Refines #34**
+
+**Decision:** `ProgressEvent::DownloadProgress { downloaded, total }` reports
+bytes received during each download, and `Outcome` gains
+`full_artifact_size()` and `bytes_saved()` beside the existing
+`downloaded_bytes()`.
+
+#34 declined percentages because the stages do not share reliable totals. That
+is still true of patch application, recompression and installation, so those
+remain phases. A download is different: the count of bytes received is exact,
+and it is what a user waiting on a slow link wants to see. `total` is the
+server's `Content-Length`: unauthenticated, possibly absent, used for display
+only, and bounding nothing (the streaming limit in #19 does that). A download
+restarts its count, so a delta that falls back to Full shows two downloads
+rather than one misleading bar.
+
+Everything is additive: a new variant on a `#[non_exhaustive]` enum, new
+methods, and a defaulted `Fetch::fetch_with_progress`. The 0.1.0 API is
+unchanged, and no identity, cache or install-handoff type is exposed.
+
+Reports are throttled to about one per 256 KiB so a frontend is not flooded.
