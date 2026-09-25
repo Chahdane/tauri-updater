@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-09-22
 
-**Audience:** project owner, Claude, Codex, and future maintainers
+**Audience:** project owner and future maintainers
 
 **Repository:** `Chahdane/tauri-updater`
 
