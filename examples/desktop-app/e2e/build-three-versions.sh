@@ -99,7 +99,17 @@ PY
   cp "$APP_DIR/tauri.conf.json" "$OUT/v$version/app-config/"
   cp "$APP_DIR/Cargo.toml" "$OUT/v$version/app-config/"
 
-  ( cd "$APP_DIR" && cargo tauri build --features e2e-control >/dev/null 2>&1 )
+  # With BUILD_DMG=1, 1.0.0 is also bundled as the disk image a user would
+  # download, from the same .app the updater archive is made from, so
+  # run-dmg-first-update-e2e.sh can install it the way a user does.
+  local bundles=()
+  if [ "${BUILD_DMG:-0}" = 1 ] && [ "$version" = 1.0.0 ]; then
+    bundles=(--bundles app,dmg)
+  fi
+  ( cd "$APP_DIR" && cargo tauri build --features e2e-control ${bundles[@]+"${bundles[@]}"} >/dev/null 2>&1 )
+  if [ "${#bundles[@]}" -gt 0 ]; then
+    cp "$ROOT"/target/release/bundle/dmg/*.dmg "$OUT/v$version/DeltaUpdaterExample.dmg"
+  fi
   local bundle="$ROOT/target/release/bundle/macos"
   cp -R "$bundle/$APP_NAME" "$OUT/v$version/"
   cp "$bundle/$APP_NAME.tar.gz" "$OUT/v$version/"
