@@ -464,13 +464,13 @@ fn a_legacy_signature_makes_a_published_delta_unavailable() {
             notes: None,
             pub_date: None,
             app_id: APP_ID,
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: "https://example.com/patch.zst",
                 patch_out: &patch,
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &key,

@@ -20,7 +20,9 @@ use minisign::KeyPair;
 use tauri_updater_delta_core::manifest::Manifest;
 use tauri_updater_delta_core::{try_reconstruct, FileHash, Reconstruction, TargetSpec};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
+use tauri_updater_delta_release::{
+    build_release, prove_patch_reconstructs, Predecessor, ReleaseRequest,
+};
 
 const PLATFORM: &str = "linux-x86_64";
 
@@ -70,13 +72,13 @@ fn publish(dir: &Path, pair: &KeyPair) -> Published {
         notes: Some("Phase 2 end-to-end"),
         pub_date: Some("2026-08-12T10:00:00Z"),
         app_id: "dev.example.testapp",
-        predecessor: Some(Predecessor {
+        predecessors: &[Predecessor {
             from_version: tauri_updater_delta_fixtures::OLD_VERSION,
             installer: &fixture.old,
             patch_url: "https://releases.example.com/1.0.0-to-1.0.1.zst",
             patch_out: &patch,
             tar_layer: None,
-        }),
+        }],
         allow_insecure_urls: false,
     };
 
@@ -126,6 +128,7 @@ enum ClientOutcome {
 /// file standing in for a download — the same inputs Phase 3's plugin will have.
 fn run_client(
     manifest_json: &str,
+    from_version: &str,
     base: &Path,
     downloaded_patch: &Path,
     out: &Path,
@@ -135,9 +138,7 @@ fn run_client(
         return ClientOutcome::FullDownload;
     };
 
-    let Some((entry, patch)) =
-        manifest.patch_for(PLATFORM, tauri_updater_delta_fixtures::OLD_VERSION)
-    else {
+    let Some((entry, patch)) = manifest.patch_for(PLATFORM, from_version) else {
         return ClientOutcome::FullDownload;
     };
 
@@ -178,6 +179,7 @@ fn a_client_updates_from_nothing_but_the_manifest() {
 
     let outcome = run_client(
         &published.manifest_json,
+        tauri_updater_delta_fixtures::OLD_VERSION,
         &published.installed,
         &published.patch,
         &out,
@@ -214,6 +216,7 @@ fn a_corrupt_patch_falls_back_instead_of_installing() {
     assert_eq!(
         run_client(
             &published.manifest_json,
+            tauri_updater_delta_fixtures::OLD_VERSION,
             &published.installed,
             &corrupt,
             &out,
@@ -241,6 +244,7 @@ fn a_truncated_patch_falls_back_instead_of_installing() {
     assert_eq!(
         run_client(
             &published.manifest_json,
+            tauri_updater_delta_fixtures::OLD_VERSION,
             &published.installed,
             &cut,
             &out,
@@ -268,6 +272,7 @@ fn the_wrong_base_version_falls_back_instead_of_installing() {
     assert_eq!(
         run_client(
             &published.manifest_json,
+            tauri_updater_delta_fixtures::OLD_VERSION,
             &wrong,
             &published.patch,
             &out,
@@ -294,6 +299,7 @@ fn a_manifest_signed_by_another_key_falls_back() {
     assert_eq!(
         run_client(
             &published.manifest_json,
+            tauri_updater_delta_fixtures::OLD_VERSION,
             &published.installed,
             &published.patch,
             &out,
@@ -323,6 +329,7 @@ fn an_unknown_backend_falls_back() {
     assert_eq!(
         run_client(
             &tampered,
+            tauri_updater_delta_fixtures::OLD_VERSION,
             &published.installed,
             &published.patch,
             &out,
@@ -389,15 +396,16 @@ fn both_layers_carry_the_same_signature() {
 }
 
 #[test]
-fn a_second_upgrade_path_joins_the_existing_manifest() {
+fn several_upgrade_paths_are_built_in_one_release() {
     let dir = tempfile::tempdir().expect("temp dir");
     let pair = keypair();
     let key = signing_key(&pair);
     let fixture = tauri_updater_delta_fixtures::appimage_pair(dir.path());
 
-    // First release run: 1.0.0 -> 1.0.1.
     let first_patch = dir.path().join("from-1.0.0.zst");
-    let (manifest, _) = build_release(
+    let older = tauri_updater_delta_fixtures::write(dir.path(), "app_0.9.0.AppImage", b"older");
+    let second_patch = dir.path().join("from-0.9.0.zst");
+    let (manifest, summary) = build_release(
         &ReleaseRequest {
             platform: PLATFORM,
             version: "1.0.1",
@@ -406,45 +414,28 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
-                from_version: "1.0.0",
-                installer: &fixture.old,
-                patch_url: "https://example.com/from-1.0.0.zst",
-                patch_out: &first_patch,
-                tar_layer: None,
-            }),
+            predecessors: &[
+                Predecessor {
+                    from_version: "1.0.0",
+                    installer: &fixture.old,
+                    patch_url: "https://example.com/from-1.0.0.zst",
+                    patch_out: &first_patch,
+                    tar_layer: None,
+                },
+                Predecessor {
+                    from_version: "0.9.0",
+                    installer: &older,
+                    patch_url: "https://example.com/from-0.9.0.zst",
+                    patch_out: &second_patch,
+                    tar_layer: None,
+                },
+            ],
             allow_insecure_urls: false,
         },
         &key,
         None,
     )
-    .expect("first release");
-
-    // Second run for the same release, from a different installed version.
-    let older = tauri_updater_delta_fixtures::write(dir.path(), "app_0.9.0.AppImage", b"older");
-    let second_patch = dir.path().join("from-0.9.0.zst");
-    let (manifest, _) = build_release(
-        &ReleaseRequest {
-            platform: PLATFORM,
-            version: "1.0.1",
-            new_installer: &fixture.new,
-            installer_url: "https://example.com/app.AppImage",
-            notes: None,
-            pub_date: None,
-            app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
-                from_version: "0.9.0",
-                installer: &older,
-                patch_url: "https://example.com/from-0.9.0.zst",
-                patch_out: &second_patch,
-                tar_layer: None,
-            }),
-            allow_insecure_urls: false,
-        },
-        &key,
-        Some(manifest),
-    )
-    .expect("second release");
+    .expect("release with several predecessors");
 
     let patches = &manifest.delta.as_ref().expect("delta layer").platforms[PLATFORM].patches;
     assert_eq!(
@@ -454,6 +445,41 @@ fn a_second_upgrade_path_joins_the_existing_manifest() {
     );
     assert!(patches.contains_key("1.0.0"));
     assert!(patches.contains_key("0.9.0"));
+    assert_eq!(summary.patches.len(), 2);
+    assert!(first_patch.is_file());
+    assert!(second_patch.is_file());
+    let target = FileHash::of_file(&fixture.new).expect("target digest");
+    prove_patch_reconstructs(&fixture.old, &first_patch, target)
+        .expect("the first predecessor patch must round-trip");
+    prove_patch_reconstructs(&older, &second_patch, target)
+        .expect("the second predecessor patch must round-trip");
+
+    let manifest_json = manifest.to_json().expect("serialise multi-path release");
+    let rebuilt = dir.path().join("rebuilt-from-0.9.0.AppImage");
+    assert_eq!(
+        run_client(
+            &manifest_json,
+            "0.9.0",
+            &older,
+            &second_patch,
+            &rebuilt,
+            &pair,
+        ),
+        ClientOutcome::Installed,
+        "a client two versions behind must take its direct-to-current patch"
+    );
+    assert_eq!(
+        run_client(
+            &manifest_json,
+            "0.8.0",
+            &older,
+            &dir.path().join("no-patch-was-published.zst"),
+            &dir.path().join("must-not-be-written.AppImage"),
+            &pair,
+        ),
+        ClientOutcome::FullDownload,
+        "a client whose version has no patch must choose Full"
+    );
 }
 
 #[test]
@@ -472,13 +498,13 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.0",
                 installer: &fixture.old,
                 patch_url: "https://example.com/a.zst",
                 patch_out: &dir.path().join("a.zst"),
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &key,
@@ -497,13 +523,13 @@ fn a_new_release_replaces_patches_that_target_the_old_one() {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.1",
                 installer: &fixture.old,
                 patch_url: "https://example.com/b.zst",
                 patch_out: &dir.path().join("b.zst"),
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &key,
@@ -535,13 +561,13 @@ fn refuses_to_patch_a_version_to_itself() {
             notes: None,
             pub_date: None,
             app_id: "dev.example.testapp",
-            predecessor: Some(Predecessor {
+            predecessors: &[Predecessor {
                 from_version: "1.0.1",
                 installer: &fixture.old,
                 patch_url: "https://example.com/a.zst",
                 patch_out: &dir.path().join("a.zst"),
                 tar_layer: None,
-            }),
+            }],
             allow_insecure_urls: false,
         },
         &signing_key(&pair),

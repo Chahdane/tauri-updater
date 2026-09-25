@@ -1,8 +1,7 @@
 //! `delta-release` — generate a patch and update the release manifest.
 //!
 //! File in, file out. Nothing here talks to the network, so it can be run
-//! locally against two installers exactly as CI runs it against two release
-//! artifacts.
+//! locally against release artifacts exactly as CI runs it.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -41,17 +40,16 @@ struct Args {
     #[arg(long)]
     target_version: String,
 
-    /// Version this patch upgrades from.
+    /// Version a patch upgrades from. Repeat for every supported predecessor.
     ///
-    /// Omit on a first release. All four predecessor flags — this,
-    /// `--previous-installer`, `--patch-url` and `--patch-out` — are required
-    /// together or not at all, so a release either describes a complete upgrade
-    /// path or describes none. See `docs/DECISIONS.md` #32.
+    /// Omit on a first release. Repeat all four predecessor flags — this,
+    /// `--previous-installer`, `--patch-url` and `--patch-out` — the same number
+    /// of times in matching order. See `docs/DECISIONS.md` #7 and #32.
     #[arg(
         long,
         requires_all = ["previous_installer", "patch_url", "patch_out"]
     )]
-    from_version: Option<String>,
+    from_version: Vec<String>,
 
     /// Application bundle identifier, as in `tauri.conf.json`'s `identifier`.
     ///
@@ -77,9 +75,9 @@ struct Args {
     #[arg(long)]
     app_config: Option<PathBuf>,
 
-    /// Installer that users on --from-version already have.
+    /// Installer that users on the corresponding --from-version already have.
     #[arg(long, requires = "from_version")]
-    previous_installer: Option<PathBuf>,
+    previous_installer: Vec<PathBuf>,
 
     /// Installer being released.
     #[arg(long)]
@@ -89,13 +87,13 @@ struct Args {
     #[arg(long)]
     installer_url: String,
 
-    /// Public URL the patch will be served from.
+    /// Public URL the corresponding patch will be served from.
     #[arg(long, requires = "from_version")]
-    patch_url: Option<String>,
+    patch_url: Vec<String>,
 
-    /// Where to write the generated patch.
+    /// Where to write the corresponding generated patch.
     #[arg(long, requires = "from_version")]
-    patch_out: Option<PathBuf>,
+    patch_out: Vec<PathBuf>,
 
     /// Publish a direct patch only when it is strictly smaller than this
     /// percentage of the full installer.
@@ -111,7 +109,7 @@ struct Args {
     )]
     max_direct_patch_percent: u8,
 
-    /// Fail instead of publishing Full-only when the direct patch misses
+    /// Fail instead of omitting a predecessor when any direct patch misses
     /// `--max-direct-patch-percent`.
     ///
     /// Intended for CI demonstrations which promise an efficient delta. Normal
@@ -145,19 +143,19 @@ struct Args {
     #[arg(long)]
     private_key: Option<String>,
 
-    /// Also generate a tar-layer patch, written here.
+    /// Also generate tar-layer patches, written here in predecessor order.
     ///
     /// Only meaningful for gzipped tarball artifacts such as macOS
     /// `.app.tar.gz`. The direct patch is generated either way, so a release
     /// that cannot produce a tar layer still publishes normally.
     #[arg(long, requires_all = ["tar_patch_url", "from_version"])]
-    tar_patch_out: Option<PathBuf>,
+    tar_patch_out: Vec<PathBuf>,
 
-    /// Public URL the tar-layer patch will be served from.
+    /// Public URL the corresponding tar-layer patch will be served from.
     #[arg(long, requires = "tar_patch_out")]
-    tar_patch_url: Option<String>,
+    tar_patch_url: Vec<String>,
 
-    /// Fail the release if a tar-layer patch cannot be produced.
+    /// Fail the release if any requested tar-layer patch cannot be produced.
     ///
     /// A missing tar layer is invisible in the manifest — the release looks
     /// fine and every client silently does the expensive thing — so a project
@@ -196,8 +194,39 @@ fn main() -> ExitCode {
     }
 }
 
+fn validate_predecessor_argument_counts(args: &Args) -> Result<()> {
+    let predecessor_count = args.from_version.len();
+    for (flag, count) in [
+        ("--previous-installer", args.previous_installer.len()),
+        ("--patch-url", args.patch_url.len()),
+        ("--patch-out", args.patch_out.len()),
+    ] {
+        if count != predecessor_count {
+            return Err(tauri_updater_delta_release::Error::Request(format!(
+                "received {predecessor_count} --from-version value(s), but {count} {flag} value(s); repeat all four predecessor flags in matching order"
+            )));
+        }
+    }
+
+    if args.tar_patch_out.len() != args.tar_patch_url.len() {
+        return Err(tauri_updater_delta_release::Error::Request(format!(
+            "received {} --tar-patch-out value(s), but {} --tar-patch-url value(s)",
+            args.tar_patch_out.len(),
+            args.tar_patch_url.len()
+        )));
+    }
+    if !args.tar_patch_out.is_empty() && args.tar_patch_out.len() != predecessor_count {
+        return Err(tauri_updater_delta_release::Error::Request(format!(
+            "received {predecessor_count} predecessor(s), but {} tar-layer patch pair(s); provide one tar-layer pair per predecessor or none",
+            args.tar_patch_out.len()
+        )));
+    }
+    Ok(())
+}
+
 fn run() -> Result<()> {
     let args = Args::parse();
+    validate_predecessor_argument_counts(&args)?;
 
     // The version contract, checked before the key is even loaded: a release
     // that signs the wrong version is not recoverable once published, and the
@@ -232,36 +261,21 @@ fn run() -> Result<()> {
 
     let key = load_key(args.private_key.as_deref())?;
 
-    let tar_layer = match (&args.tar_patch_out, &args.tar_patch_url) {
-        (Some(out), Some(url)) => Some(TarLayerOptions {
-            patch_url: url,
-            patch_out: out,
-            work_dir: None,
-            max_tar_bytes: args.max_tar_bytes,
-            required: args.require_tar_layer,
-        }),
-        _ => None,
-    };
-
-    // clap's `requires_all` has already established that these are all present
-    // or all absent, so the four `zip`s below cannot disagree.
-    let predecessor = match (
-        &args.from_version,
-        &args.previous_installer,
-        &args.patch_url,
-        &args.patch_out,
-    ) {
-        (Some(from_version), Some(installer), Some(patch_url), Some(patch_out)) => {
-            Some(Predecessor {
-                from_version,
-                installer,
-                patch_url,
-                patch_out,
-                tar_layer,
-            })
-        }
-        _ => None,
-    };
+    let predecessors = (0..args.from_version.len())
+        .map(|index| Predecessor {
+            from_version: &args.from_version[index],
+            installer: &args.previous_installer[index],
+            patch_url: &args.patch_url[index],
+            patch_out: &args.patch_out[index],
+            tar_layer: (!args.tar_patch_out.is_empty()).then(|| TarLayerOptions {
+                patch_url: &args.tar_patch_url[index],
+                patch_out: &args.tar_patch_out[index],
+                work_dir: None,
+                max_tar_bytes: args.max_tar_bytes,
+                required: args.require_tar_layer,
+            }),
+        })
+        .collect::<Vec<_>>();
 
     let request = ReleaseRequest {
         platform: &args.platform,
@@ -271,40 +285,34 @@ fn run() -> Result<()> {
         notes: args.notes.as_deref(),
         pub_date: args.pub_date.as_deref(),
         app_id: &app_id,
-        predecessor,
+        predecessors: &predecessors,
         allow_insecure_urls: args.dangerously_allow_loopback_http_urls,
     };
 
     let existing = load_manifest(&args.manifest)?;
     let (mut manifest, summary) = build_release(&request, &key, existing)?;
 
-    let mut direct_patch_omitted = None;
-    let oversized_direct_patch = match (
-        args.from_version.as_deref(),
-        summary.patch_size,
-        args.patch_out.as_deref(),
-    ) {
-        (Some(from_version), Some(patch_size), Some(patch_out))
-            if !patch_is_below_percent_limit(
-                patch_size,
-                summary.installer_size,
-                args.max_direct_patch_percent,
-            ) =>
-        {
-            Some((from_version, patch_out))
+    let mut direct_patch_omissions = Vec::new();
+    for (index, patch) in summary.patches.iter().enumerate() {
+        if patch_is_below_percent_limit(
+            patch.patch_size,
+            summary.installer_size,
+            args.max_direct_patch_percent,
+        ) {
+            continue;
         }
-        _ => None,
-    };
-    if let Some((from_version, patch_out)) = oversized_direct_patch {
-        let percent = summary.ratio_percent().unwrap_or(0.0);
+
+        let patch_out = &args.patch_out[index];
+        let percent = patch.ratio_percent(summary.installer_size);
         let reason = format!(
-            "direct patch is {percent:.2}% of Full; it must be strictly below {}%",
-            args.max_direct_patch_percent
+            "{} -> {} direct patch is {percent:.2}% of Full; it must be strictly below {}%",
+            patch.from_version, args.target_version, args.max_direct_patch_percent
         );
 
         // A generated-but-unpublished file is dangerous in a release
         // directory: a later glob can upload it even though the manifest
-        // correctly omitted it. Delete it before reporting or returning.
+        // correctly omitted it. Delete every oversized predecessor patch before
+        // reporting or returning.
         match std::fs::remove_file(patch_out) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -321,16 +329,21 @@ fn run() -> Result<()> {
             .as_mut()
             .and_then(|delta| delta.platforms.get_mut(args.platform.as_str()))
         {
-            entry.patches.remove(from_version);
+            entry.patches.remove(&patch.from_version);
         }
-        manifest.validate()?;
+        direct_patch_omissions.push((patch.from_version.clone(), reason));
+    }
+    manifest.validate()?;
 
-        if args.require_direct_patch {
-            return Err(tauri_updater_delta_release::Error::Request(format!(
-                "{reason}; refusing the release because --require-direct-patch was set"
-            )));
-        }
-        direct_patch_omitted = Some(reason);
+    if args.require_direct_patch && !direct_patch_omissions.is_empty() {
+        let reasons = direct_patch_omissions
+            .iter()
+            .map(|(_, reason)| reason.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(tauri_updater_delta_release::Error::Request(format!(
+            "{reasons}; refusing the release because --require-direct-patch was set"
+        )));
     }
 
     if let Some(path) = &args.signature_out {
@@ -348,73 +361,85 @@ fn run() -> Result<()> {
         println!("signature written to {}", path.display());
     }
 
-    match (
-        summary.patch_size,
-        summary.ratio_percent(),
-        direct_patch_omitted.as_deref(),
-    ) {
-        (Some(_), Some(_), Some(reason)) => {
-            eprintln!("warning: {reason}");
-            eprintln!("warning: oversized direct patch omitted; clients will download Full");
-        }
-        (Some(patch), Some(percent), None) => {
-            println!(
-                "{} -> {} on {}: patch {} bytes, installer {} bytes ({:.2}% of a full download)",
-                args.from_version.as_deref().unwrap_or("?"),
-                args.target_version,
-                args.platform,
-                patch,
-                summary.installer_size,
-                percent,
-            );
-            if let Some(path) = &args.patch_out {
-                println!("patch written to {}", path.display());
-            }
-        }
+    if summary.patches.is_empty() {
         // A first release, or any release with no predecessor supplied. Said
         // plainly, because this used to be the case that produced nothing at
         // all -- see docs/DECISIONS.md #32.
-        (None, None, _) => {
-            println!(
-                "{} on {}: no predecessor, so no patches. Publishing a complete \
-                 full-download release: installer {} bytes, signed, with an \
-                 authenticated release identity.",
-                args.target_version, args.platform, summary.installer_size,
-            );
-        }
-        _ => unreachable!("patch size and ratio are always present together"),
+        println!(
+            "{} on {}: no predecessor, so no patches. Publishing a complete \
+             full-download release: installer {} bytes, signed, with an \
+             authenticated release identity.",
+            args.target_version, args.platform, summary.installer_size,
+        );
     }
 
-    match (&summary.tar_patch_size, &summary.tar_layer_skipped) {
-        (Some(size), _) => {
-            let percent = if summary.installer_size == 0 {
-                0.0
-            } else {
-                *size as f64 / summary.installer_size as f64 * 100.0
-            };
-            println!(
-                "tar-layer patch {size} bytes ({percent:.2}% of a full download), \
-                 round-tripped to the exact published artifact"
+    for (index, patch) in summary.patches.iter().enumerate() {
+        let direct_omission = direct_patch_omissions
+            .iter()
+            .find(|(from_version, _)| from_version == &patch.from_version)
+            .map(|(_, reason)| reason);
+        if let Some(reason) = direct_omission {
+            eprintln!("warning: {reason}");
+            eprintln!(
+                "warning: oversized direct patch from {} omitted",
+                patch.from_version
             );
-            if let Some(path) = &args.tar_patch_out {
-                println!("tar-layer patch written to {}", path.display());
-            }
+        } else {
+            println!(
+                "{} -> {} on {}: direct patch {} bytes, installer {} bytes ({:.2}% of a full download), round-tripped",
+                patch.from_version,
+                args.target_version,
+                args.platform,
+                patch.patch_size,
+                summary.installer_size,
+                patch.ratio_percent(summary.installer_size),
+            );
+            println!("patch written to {}", args.patch_out[index].display());
         }
-        // Loud on stderr rather than quiet on stdout: a missing tar layer looks
-        // exactly like a successful release in every other respect.
-        (None, Some(reason)) => {
-            eprintln!("warning: no tar layer published: {reason}");
-            if direct_patch_omitted.is_some() {
-                eprintln!(
-                    "warning: the direct patch also missed its size limit; clients will use Full."
+
+        match (&patch.tar_patch_size, &patch.tar_layer_skipped) {
+            (Some(size), _) => {
+                let percent = if summary.installer_size == 0 {
+                    0.0
+                } else {
+                    *size as f64 / summary.installer_size as f64 * 100.0
+                };
+                println!(
+                    "{} -> {} tar-layer patch {size} bytes ({percent:.2}% of a full download), round-tripped to the exact published artifact",
+                    patch.from_version, args.target_version
                 );
-            } else {
-                eprintln!(
-                    "warning: clients will use the direct patch. Pass --require-tar-layer to fail."
+                println!(
+                    "tar-layer patch written to {}",
+                    args.tar_patch_out[index].display()
                 );
             }
+            // Loud on stderr rather than quiet on stdout: a missing tar layer
+            // looks exactly like a successful release in every other respect.
+            (None, Some(reason)) => {
+                eprintln!(
+                    "warning: no tar layer from {} published: {reason}",
+                    patch.from_version
+                );
+                if direct_omission.is_some() {
+                    eprintln!(
+                        "warning: its direct patch also missed the size limit; clients on {} will use Full.",
+                        patch.from_version
+                    );
+                } else {
+                    eprintln!(
+                        "warning: clients on {} will use the direct patch. Pass --require-tar-layer to fail.",
+                        patch.from_version
+                    );
+                }
+            }
+            (None, None) if direct_omission.is_some() => {
+                eprintln!(
+                    "warning: clients on {} have no published patch and will use Full",
+                    patch.from_version
+                );
+            }
+            (None, None) => {}
         }
-        (None, None) => {}
     }
 
     if args.dry_run {
@@ -472,5 +497,11 @@ mod patch_limit_tests {
     #[test]
     fn ratio_math_cannot_overflow_at_u64_sizes() {
         assert!(!patch_is_below_percent_limit(u64::MAX, u64::MAX, 30));
+    }
+
+    #[test]
+    fn the_limit_decision_is_independent_for_each_predecessor() {
+        let publish = [5, 30, 29, 90].map(|patch| patch_is_below_percent_limit(patch, 100, 30));
+        assert_eq!(publish, [true, false, true, false]);
     }
 }
