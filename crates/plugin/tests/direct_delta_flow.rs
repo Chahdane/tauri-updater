@@ -52,7 +52,9 @@ use tauri_updater_delta_core::manifest::{
 use tauri_updater_delta_core::release_identity::{current_platform, REPRESENTATION_OPAQUE_V1};
 use tauri_updater_delta_core::{FileHash, Limits, UpdateIdentity, VerifiedArtifact};
 use tauri_updater_delta_release::signing::SigningKey;
-use tauri_updater_delta_release::{build_release, Predecessor, ReleaseRequest};
+use tauri_updater_delta_release::{
+    add_compressed_full, build_release, Predecessor, ReleaseRequest,
+};
 
 const APP_ID: &str = "dev.example.testapp";
 
@@ -983,4 +985,143 @@ fn an_oversized_target_is_refused_before_anything_is_fetched() {
         "got: {reason}"
     );
     assert!(w.server.requested.borrow().is_empty());
+}
+
+// ---- the compressed full copy (DECISIONS #40) ----------------------------
+
+fn compressed_url(version: &str) -> String {
+    format!("https://example.com/App_{version}_x64-setup.exe.zst")
+}
+
+/// Publish a compressed full copy of `version` on its own manifest.
+fn publish_compressed_full(w: &mut World, dir: &Path, version: &str) -> u64 {
+    let out = dir.join(format!("App_{version}.zst"));
+    let installer = w.installers[version].clone();
+    let full = add_compressed_full(
+        w.manifests.get_mut(version).expect("manifest"),
+        &current_platform(),
+        &installer,
+        &compressed_url(version),
+        &out,
+        false,
+    )
+    .expect("compress")
+    .expect("the fixture installer is compressible");
+    w.server.replace(
+        &compressed_url(version),
+        std::fs::read(&out).expect("read copy"),
+    );
+    full.size
+}
+
+#[test]
+fn a_full_download_uses_the_compressed_copy_when_one_is_published() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    let compressed_size = publish_compressed_full(&mut w, dir.path(), "1.0.2");
+
+    // 0.9.0 has no patch, so this is a Full download.
+    let handoff = RecordingHandoff::default();
+    let outcome = run(
+        &w,
+        "0.9.0",
+        "1.0.2",
+        None,
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert_eq!(
+        outcome,
+        Outcome::InstalledFromCompressedFull {
+            downloaded: compressed_size,
+            saved_against: w.bytes("1.0.2").len() as u64,
+        }
+    );
+    assert!(compressed_size < w.bytes("1.0.2").len() as u64 / 2);
+    assert!(w.server.fetched(&compressed_url("1.0.2")));
+    assert!(
+        !w.server.fetched(&installer_url("1.0.2")),
+        "the uncompressed installer must not also be downloaded"
+    );
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
+}
+
+#[test]
+fn a_corrupt_compressed_copy_falls_back_to_the_uncompressed_installer() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    publish_compressed_full(&mut w, dir.path(), "1.0.2");
+    w.server
+        .replace(&compressed_url("1.0.2"), b"not a zstd frame".to_vec());
+
+    let handoff = RecordingHandoff::default();
+    let outcome = run(
+        &w,
+        "0.9.0",
+        "1.0.2",
+        None,
+        &handoff,
+        &dir.path().join("work"),
+    )
+    .expect("update");
+
+    assert_eq!(outcome, Outcome::InstalledFromFullDownload);
+    assert!(
+        w.server.fetched(&compressed_url("1.0.2")),
+        "the copy was tried first"
+    );
+    assert!(w.server.fetched(&installer_url("1.0.2")));
+    assert_eq!(handoff.installed.borrow()[0], w.bytes("1.0.2"));
+}
+
+#[test]
+fn a_compressed_copy_cannot_install_bytes_the_signature_does_not_cover() {
+    // A server that swaps in another genuine release's compressed copy and
+    // rewrites the declared digest to match it gets past the reconstruction
+    // gate, and must then fail the signature check: fail closed, install nothing.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pair = keypair();
+    let mut w = world(dir.path(), &pair);
+    publish_compressed_full(&mut w, dir.path(), "1.0.1");
+    let older = w.manifests["1.0.1"]
+        .delta
+        .as_ref()
+        .expect("delta")
+        .platforms[&current_platform()]
+        .clone();
+    {
+        let entry = w
+            .manifests
+            .get_mut("1.0.2")
+            .expect("manifest")
+            .delta
+            .as_mut()
+            .expect("delta")
+            .platforms
+            .get_mut(&current_platform())
+            .expect("entry");
+        entry.compressed_full = older.compressed_full.clone();
+        entry.target_installer_blake3 = older.target_installer_blake3.clone();
+        entry.target_installer_size = older.target_installer_size;
+    }
+
+    let handoff = RecordingHandoff::default();
+    let result = run(
+        &w,
+        "0.9.0",
+        "1.0.2",
+        None,
+        &handoff,
+        &dir.path().join("work"),
+    );
+
+    assert!(result.is_err(), "got {result:?}");
+    assert!(
+        handoff.installed.borrow().is_empty(),
+        "nothing may be installed"
+    );
 }

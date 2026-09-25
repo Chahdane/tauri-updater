@@ -580,6 +580,80 @@ pub fn plan_update(
     }
 }
 
+/// The compressed full copy published for the artifact Tauri selected, if any.
+///
+/// Read from the same single document as everything else (#13), through the
+/// same platform recovery [`plan_update`] uses. `None` for a document without
+/// one, one this build cannot decode, or one [`plan_update`] would refuse
+/// anyway; every `None` means "download the uncompressed installer".
+pub fn compressed_full_for(
+    identity: &UpdateIdentity,
+) -> Option<(crate::manifest::CompressedFull, TargetSpec)> {
+    let manifest = Manifest::from_json(identity.raw_json()).ok()?;
+    let entry = resolve_identity(&manifest, identity).ok()??;
+    let full = entry.compressed_full()?.clone();
+    let target = TargetSpec::new(
+        &full.backend_id,
+        entry.target_installer_size,
+        &entry.target_installer_blake3,
+    )
+    .ok()?;
+    Some((full, target))
+}
+
+/// Download a compressed full copy and rebuild the exact installer from it.
+///
+/// The copy is a patch against an empty base, so it goes through
+/// [`try_reconstruct`]: its own digest is checked before decoding, the output
+/// is bounded by the installer's declared size (held to the local ceiling
+/// first), and the result must equal the declared installer digest. It is a
+/// transport optimisation only: on any `Err` the caller downloads the
+/// uncompressed installer, and the signature and release identity are checked
+/// afterwards exactly as for that download. See `docs/DECISIONS.md` #40.
+pub fn fetch_compressed_full(
+    full: &crate::manifest::CompressedFull,
+    target: &TargetSpec,
+    limits: Limits,
+    work_dir: &Path,
+    fetch: &dyn Fetch,
+) -> Result<PathBuf, Error> {
+    limits.check_target_size(target.size)?;
+    if full.size >= target.size {
+        return Err(Error::Manifest(
+            "the compressed full copy is not smaller than the installer".to_owned(),
+        ));
+    }
+
+    std::fs::create_dir_all(work_dir).map_err(|e| Error::io("create", work_dir, e))?;
+    let compressed = work_dir.join("full.compressed");
+    fetch
+        .fetch(&full.url, &compressed)
+        .map_err(|e| Error::Fetch(format!("downloading the compressed full copy: {e}")))?;
+
+    let size = std::fs::metadata(&compressed)
+        .map_err(|e| Error::io("stat", &compressed, e))?
+        .len();
+    let digest = FileHash::of_file(&compressed)?;
+    if size != full.size || digest.to_hex() != full.blake3 {
+        return Err(Error::ChecksumMismatch {
+            path: compressed,
+            expected: full.blake3.clone(),
+            actual: digest.to_hex(),
+        });
+    }
+
+    let empty = work_dir.join("empty.base");
+    std::fs::write(&empty, []).map_err(|e| Error::io("create", &empty, e))?;
+    let out = work_dir.join("full.artifact");
+    let result = match try_reconstruct(&empty, &compressed, &out, target) {
+        Reconstruction::Verified(path) => Ok(path),
+        Reconstruction::FallBack(reason) => Err(reason),
+    };
+    let _ = std::fs::remove_file(&compressed);
+    let _ = std::fs::remove_file(&empty);
+    result
+}
+
 /// Materialise the managed cache's ACTIVE artifact as a direct-patch base.
 ///
 /// # Why the cache, and why only for an opaque representation
@@ -1272,6 +1346,7 @@ mod tests {
                             },
                         )]),
                         tar_layer: None,
+                        compressed_full: None,
                     },
                 )]),
             }),

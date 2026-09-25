@@ -552,6 +552,11 @@ jobs:
             --manifest dist/manifest.json
             --signature-out "$new_installer.sig"
             --max-direct-patch-percent 30
+            # A zstd copy of the uncompressed installer for plugin clients that
+            # must download it whole (docs/DECISIONS.md #40). Stock Tauri keeps
+            # using --installer-url.
+            --compressed-full-out "$new_installer.zst"
+            --compressed-full-url "$base/$(basename "$new_installer").zst"
           )
 
           predecessor_count=0
@@ -615,6 +620,7 @@ jobs:
           assets=(
             dist/*-setup.exe
             dist/*-setup.exe.sig
+            dist/*-setup.exe.zst
             dist/manifest.json
             dist/*-windows.zst
           )

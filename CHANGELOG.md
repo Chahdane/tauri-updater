@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Compressed Full downloads.** A release may publish a zstd copy of the full
+  installer (`delta-release --compressed-full-out/--compressed-full-url`).
+  Plugin clients that must download the whole installer fetch the copy and
+  rebuild the exact installer, which is then verified exactly as before;
+  stock Tauri clients are unaffected. This removes most of the Full-size
+  cost of `compression: "none"` on Windows. New `Outcome` variant
+  `InstalledFromCompressedFullDownload` and `UpdateSource::CompressedFull`
+  (both enums are `#[non_exhaustive]`). DECISIONS #40.
+
+### Added
+
 - A realistic size benchmark: `examples/desktop-app/e2e/benchmark.sh` and the
   manual `Delta size benchmark` workflow build three releases with ~88 MiB of
   bundled assets on macOS and Windows. Not yet run; see research F42.
