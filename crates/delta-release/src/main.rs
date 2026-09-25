@@ -10,8 +10,8 @@ use clap::Parser;
 use tauri_updater_delta_release::signing::SigningKey;
 use tauri_updater_delta_release::version_contract::{check_app_version, AppVersionSources};
 use tauri_updater_delta_release::{
-    build_release, load_manifest, write_manifest, Predecessor, ReleaseRequest, Result,
-    TarLayerOptions,
+    add_compressed_full, build_release, load_manifest, write_manifest, Predecessor, ReleaseRequest,
+    Result, TarLayerOptions,
 };
 
 /// Environment variable Tauri uses for the signing key, reused here so a project
@@ -177,6 +177,20 @@ struct Args {
     /// every other host. `release-check` applies the identical rule.
     #[arg(long)]
     dangerously_allow_loopback_http_urls: bool,
+
+    /// Also publish a zstd-compressed copy of the full installer, written here.
+    ///
+    /// Plugin clients that must download the whole installer fetch this
+    /// instead and rebuild the exact installer from it; stock Tauri clients keep
+    /// using --installer-url. Round-tripped before it is described, and omitted
+    /// if it is not smaller. Most useful with uncompressed NSIS installers. See
+    /// docs/DECISIONS.md #40.
+    #[arg(long, requires = "compressed_full_url")]
+    compressed_full_out: Option<PathBuf>,
+
+    /// Public URL the compressed full copy will be served from.
+    #[arg(long, requires = "compressed_full_out")]
+    compressed_full_url: Option<String>,
 
     /// Do everything except write the manifest — generate the patch, sign, and
     /// print what would be published.
@@ -344,6 +358,28 @@ fn run() -> Result<()> {
         return Err(tauri_updater_delta_release::Error::Request(format!(
             "{reasons}; refusing the release because --require-direct-patch was set"
         )));
+    }
+
+    if let (Some(out), Some(url)) = (&args.compressed_full_out, &args.compressed_full_url) {
+        match add_compressed_full(
+            &mut manifest,
+            &args.platform,
+            &args.new_installer,
+            url,
+            out,
+            args.dangerously_allow_loopback_http_urls,
+        )? {
+            Some(full) => println!(
+                "compressed full copy {} bytes ({:.2}% of the {}-byte installer), round-tripped, written to {}",
+                full.size,
+                full.size as f64 / summary.installer_size.max(1) as f64 * 100.0,
+                summary.installer_size,
+                out.display()
+            ),
+            None => eprintln!(
+                "warning: the compressed full copy was not smaller than the installer; not published"
+            ),
+        }
     }
 
     if let Some(path) = &args.signature_out {

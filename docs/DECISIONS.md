@@ -1925,3 +1925,52 @@ range stops below it.
 
 **Revisit when:** those decisions are made, or upstream exposes a verifying
 install handoff (#10).
+
+## 40. A compressed copy of the full installer, for plugin clients
+
+**Decided:** 2026-09-25 · **Status:** active · **Follows research/NSIS_COMPRESSION.md option E**
+
+**Decision:** a platform's delta entry may carry `compressed_full`: a zstd
+copy of the full installer, encoded as a patch from an **empty** base. A
+plugin client that must download the whole installer fetches this copy,
+rebuilds the installer with `try_reconstruct`, and continues exactly as for
+an uncompressed download. `delta-release --compressed-full-out/--compressed-full-url`
+publishes it; the Windows release job does.
+
+### Why
+
+Windows deltas need an uncompressed NSIS installer (#36, F38, F40): with
+solid LZMA a patch is ~98% of Full, with `compression: "none"` it is ~5–8%.
+The price was a Full download about 4× larger than stock Tauri's, paid on every
+first update and every fallback. This removes that price for plugin clients
+without touching the delta path.
+
+### Why it is safe
+
+- **Nothing new is trusted.** The signature still covers only the
+  uncompressed installer. The rebuilt bytes must equal
+  `target_installer_blake3` before the signature and release-identity checks
+  run, and those run unchanged. A copy that rebuilds anything else is refused
+  by the digest; a copy paired with a forged digest is refused by the
+  signature, which fails closed (#11) as on every other path.
+- **It reuses the hardened decoder.** An empty-base patch goes through the same
+  bounded window, output ceiling, trailing-data check and exact-size gate as a
+  delta (#8, #19). Its own digest is checked before decoding, and the declared
+  installer size is held to `Limits::max_target_bytes` first.
+- **It is only ever an optimisation.** Any failure — missing, corrupt, larger
+  than the installer, an encoding this build cannot decode — falls back to the
+  Tauri layer's URL, which is what a Full download always used.
+
+### Compatibility
+
+Additive, as the tar layer was (#25): the manifest schema does not change,
+0.1.0 clients ignore the field, stock Tauri never sees it, and the plugin's
+public API gains a `#[non_exhaustive]` variant (`InstalledFromCompressedFullDownload`,
+`UpdateSource::CompressedFull`) so the byte counts stay honest.
+
+### What is not yet shown
+
+The size of the copy for a real uncompressed NSIS installer. The compression
+study's `zstd_19` estimate and the next release will measure it. The copy is
+published only if it is smaller than the installer, so an unhelpful one is
+never offered.
