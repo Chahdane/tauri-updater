@@ -20,6 +20,11 @@ updates:
       - dependency-name: "libz-rs-sys"
       - dependency-name: "tar"
       - dependency-name: "tauri-plugin-updater"
+      # Patch engine and release signing: upgraded one at a time, checked
+      # against the pinned patch digest (F2) and Tauri's verifier (#6).
+      - dependency-name: "zstd"
+      - dependency-name: "minisign"
+      - dependency-name: "base64"
 
   - package-ecosystem: github-actions
     directory: /
