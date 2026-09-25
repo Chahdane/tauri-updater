@@ -826,3 +826,27 @@ that installation already has a cache. The settling experiment: build two
 releases, install the first by mounting its DMG and copying the `.app` with
 Finder, run the update against an empty cache, and require the request log to
 show the tar patch fetched and the full artifact not fetched.
+
+### F40 — `compression: "none"` makes Windows direct patches ~5% of Full, at 4× the Full size · **STRONG OBSERVATION**
+
+CI run [36025510400](https://github.com/Chahdane/tauri-updater/actions/runs/36025510400)
+(`main`, commit `793de7c`, `windows-latest`, tauri-cli 2.10.1), the NSIS E2E job,
+with the example app built by `cargo tauri build` and published by
+`delta-release`:
+
+| Pair | Full installer | Direct patch | Patch / Full |
+| --- | ---: | ---: | ---: |
+| 1.0.0 → 1.0.1 | 12,658,708 | 640,768 | 5.0619% |
+| 1.0.1 → 1.0.2 | 12,658,708 | 630,200 | 4.9784% |
+
+Against F38's solid-LZMA builds of the same app (Full 3,171,360; patch
+3,115,925; 98.25%): each delta update downloads 4.9× fewer bytes, and each Full
+download is 4.0× larger.
+
+A strong observation rather than a demonstration of a typical ratio: the builds
+differ only in their version string, which is the smallest possible release,
+and the two settings were measured in different runs. The controlled
+comparison, with a feature-sized change and zlib and per-file LZMA added, is
+`examples/desktop-app/e2e/measure-nsis-compression.sh`, run manually by the
+`NSIS compression study` workflow. It has not been run yet. Options and
+trade-offs: [NSIS_COMPRESSION.md](NSIS_COMPRESSION.md).
