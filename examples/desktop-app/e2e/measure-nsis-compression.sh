@@ -115,7 +115,10 @@ PY
 }
 
 build() {
-  local variant="$1" version="$2" dest="$OUT/$variant/v$version"
+  # Separate statements: bash expands every word of one `local` before
+  # assigning any, so $version would not exist yet.
+  local variant="$1" version="$2"
+  local dest="$OUT/$variant/v$version"
   echo "==> $variant $version"
   configure "$variant" "$version"
   mkdir -p "$dest"
