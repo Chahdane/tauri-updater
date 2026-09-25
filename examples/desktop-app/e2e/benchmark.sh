@@ -200,6 +200,20 @@ for frm, to, kind in [("1.0.0", "1.0.1", "version only"),
         "tar_patch": tar, "tar_percent": pct(tar),
         "best_download": best, "best_percent": pct(best),
     }
+    if os.environ.get("DELTA_BENCH_BSDIFF") == "1":
+        # Research only: what an executable-aware diff would cost on the same
+        # bytes the shipped backend patches (the tar on macOS, the installer on
+        # Windows). Not a backend this project ships.
+        import bsdiff4, gzip
+        def payload(v):
+            data = open(f"{out}/v{v}/artifact", "rb").read()
+            return gzip.decompress(data) if tar is not None else data
+        started = __import__("time").time()
+        bs = len(bsdiff4.diff(payload(frm), payload(to)))
+        record["pairs"][f"{frm}->{to}"].update({
+            "bsdiff_patch": bs, "bsdiff_percent": pct(bs),
+            "bsdiff_seconds": round(__import__("time").time() - started, 1),
+        })
 json.dump(record, open(f"{out}/benchmark.json", "w"), indent=2)
 print(json.dumps(record, indent=2))
 print(f"::notice title=Delta benchmark ({platform})::" + "; ".join(
