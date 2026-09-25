@@ -1,0 +1,55 @@
+name: Delta size benchmark
+
+# Run by hand. Builds the example app three times per platform with ~88 MiB of
+# bundled resources and measures Full, direct and tar patch sizes. Results
+# feed research/FINDINGS.md F42; nothing here is published.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI_VERSION: "2.10.1"
+
+jobs:
+  benchmark:
+    name: benchmark / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Restore the pinned Tauri CLI
+        id: tauri-cli
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-tauri
+            ~/.cargo/bin/cargo-tauri.exe
+          key: cargo-tauri-${{ runner.os }}-${{ env.TAURI_CLI_VERSION }}
+
+      - name: Install the pinned Tauri CLI
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo install tauri-cli --version "=${TAURI_CLI_VERSION}" --locked
+
+      - name: Build three versions and measure
+        shell: bash
+        run: ./examples/desktop-app/e2e/benchmark.sh "$RUNNER_TEMP/delta-benchmark"
+
+      - name: Keep the measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: delta-benchmark-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/delta-benchmark/benchmark.json
+            ${{ runner.temp }}/delta-benchmark/manifest-*.json
+          if-no-files-found: error

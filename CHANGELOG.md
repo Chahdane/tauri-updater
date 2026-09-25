@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A realistic size benchmark: `examples/desktop-app/e2e/benchmark.sh` and the
+  manual `Delta size benchmark` workflow build three releases with ~88 MiB of
+  bundled assets on macOS and Windows. Not yet run; see research F42.
+
 ### Changed
 
 - `tauri-plugin-updater` range widened to `>=2.10.1, <2.12.0` after re-reading
