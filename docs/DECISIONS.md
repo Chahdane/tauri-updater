@@ -1820,7 +1820,7 @@ rebuild matches only when the installation preserved all of them:
 
 | How the app got there | Expected |
 | --- | --- |
-| Dragged from a DMG built from the same `.app` | **Plausible, unproven.** Finder copies preserve mtimes and modes; owner and `read_dir` order depend on the machine. |
+| Dragged from a DMG built from the same `.app` | **Demonstrated on a macOS CI runner** (F39): all tar headers matched and the first update was a TarDelta. Owner and `read_dir` order still depend on the machine, so another user's install may not match. |
 | Installed by Tauri's updater (`tar` unpack) | **Will not match.** Entries are unpacked one by one, so directory mtimes become the extraction time (`updater.rs:1236`). This is the cached case anyway. |
 | Renamed bundle, modified or re-signed bundle, app that writes into its own bundle | Will not match. |
 
