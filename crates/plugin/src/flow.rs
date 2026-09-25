@@ -50,6 +50,12 @@ pub trait InstallHandoff {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FlowPhase {
     Downloading,
+    /// Bytes received so far by the current download, and the server's
+    /// advertised length if it sent one. Display only; bounds nothing.
+    Transferred {
+        downloaded: u64,
+        total: Option<u64>,
+    },
     Reconstructing,
     Verifying,
     /// About to hand the verified artifact to the installer, having chosen
@@ -87,7 +93,11 @@ struct ObservedFetch<'a> {
 impl Fetch for ObservedFetch<'_> {
     fn fetch(&self, url: &str, out: &Path) -> std::result::Result<(), String> {
         (self.progress)(FlowPhase::Downloading);
-        let result = self.inner.fetch(url, out);
+        let result = self
+            .inner
+            .fetch_with_progress(url, out, &|downloaded, total| {
+                (self.progress)(FlowPhase::Transferred { downloaded, total })
+            });
         if result.is_ok() && url != self.full_url {
             // Patch validation and reconstruction begin immediately after a
             // successful patch fetch. There is no honest percentage to report,

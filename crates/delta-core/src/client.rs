@@ -44,6 +44,23 @@ use crate::{try_reconstruct, Error, FileHash, Reconstruction, TargetSpec};
 pub trait Fetch {
     /// Download `url`, writing the body to `out`.
     fn fetch(&self, url: &str, out: &Path) -> Result<(), String>;
+
+    /// [`fetch`](Fetch::fetch), reporting bytes received as they arrive.
+    ///
+    /// `progress` receives the running total and the server's advertised
+    /// length, if any. Both are for display only: the advertised length is
+    /// unauthenticated and bounds nothing, and every size that matters is
+    /// checked elsewhere. The default reports nothing, so existing
+    /// implementations keep working unchanged.
+    fn fetch_with_progress(
+        &self,
+        url: &str,
+        out: &Path,
+        progress: &dyn Fn(u64, Option<u64>),
+    ) -> Result<(), String> {
+        let _ = progress;
+        self.fetch(url, out)
+    }
 }
 
 /// Everything the planner needs about the host.

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ProgressEvent::DownloadProgress { downloaded, total }` reports bytes
+  received during each download (about every 256 KiB). `total` is the server's
+  advertised length, for display only. `Outcome::full_artifact_size()` and
+  `Outcome::bytes_saved()` join `downloaded_bytes()`. All additive; see
+  DECISIONS #38. The example app shows progress and the bytes saved.
+- Engine: `Fetch::fetch_with_progress`, with a default that reports nothing.
+
+### Added
+
 - **First-update TarDelta on macOS (unproven on a real install).** With no
   usable cached base, the tar path rebuilds the base tar from the installed
   `.app` using `tauri-bundler`'s own `tar::Builder` call. It is used only if

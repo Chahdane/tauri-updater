@@ -163,8 +163,13 @@ internals to frontend code. The complete version is
 
 `check_with` and `check_and_install_with` accept a callback for truthful coarse
 phases: Checking, Downloading, Reconstructing, Verifying, Installing, and
-Finished. Percentages are not invented where the underlying work cannot report
-them accurately. An `Err` is the failure signal.
+Finished. Downloads also report `DownloadProgress { downloaded, total }` byte
+counts, where `total` is the server's advertised length when it sent one. The
+other phases report no percentage, because the underlying work cannot report
+one accurately. An `Err` is the failure signal.
+
+A successful `Outcome` reports what the update cost: `downloaded_bytes()`,
+`full_artifact_size()` and `bytes_saved()` (zero for a Full download).
 
 ### 5. Produce release artifacts
 
