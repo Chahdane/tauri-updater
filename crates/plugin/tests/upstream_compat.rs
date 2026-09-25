@@ -14,6 +14,14 @@
 //! | `get_urls` tries `{os}-{arch}-{installer}` first | `updater.rs:1420` | Binding delta metadata to Tauri's selection (#13) |
 //! | `validate_endpoints`' http policy | `config.rs:145` | Mirroring it in `HttpFetch` (#19) |
 //!
+//! Line numbers are from 2.10.1. 2.11.0 was re-read site by site (2026-09-25):
+//! `get_urls`, `validate_endpoints` and `base64_to_string` are byte-identical,
+//! `install` and `install_inner` still verify nothing, `verify_signature` is
+//! still called only from `download` and differs only in returning `()`
+//! instead of `true`, and `raw_json` is retained exactly as before. 2.12.0 was
+//! read and **not** added: its verifier also checks a signed version in the
+//! trusted comment, which changes the third row (DECISIONS #39).
+//!
 //! Not one of those is guaranteed by upstream's public API. They are
 //! observations about an implementation, and an implementation is free to change
 //! in a patch release. A `"2"` requirement would have let all six drift while
@@ -37,7 +45,7 @@ use std::path::Path;
 /// Add to this list **only** after re-reading each of those six sites in the new
 /// version. Widening it without doing that reading converts a verified claim
 /// into an assumed one, silently.
-const VERIFIED_UPDATER_VERSIONS: &[&str] = &["2.10.1"];
+const VERIFIED_UPDATER_VERSIONS: &[&str] = &["2.10.1", "2.11.0"];
 
 /// Read the resolved version of `name` from the workspace lock file.
 fn locked_version(name: &str) -> Option<String> {

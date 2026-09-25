@@ -46,9 +46,10 @@ Authenticode-signed end-to-end tests remain credential-bound validation gaps. Se
 - Rust 1.88 or newer.
 - A Tauri v2 application already using updater artifacts: a macOS
   `.app.tar.gz` and/or a Windows x86_64 NSIS `-setup.exe`.
-- `tauri-plugin-updater` 2.10.1. The delta plugin deliberately supports
-  `>=2.10.1, <2.11.0` because its security assumptions were verified against
-  that upstream implementation.
+- `tauri-plugin-updater` 2.10.1 or 2.11.0. The delta plugin deliberately
+  supports `>=2.10.1, <2.12.0` because its security assumptions were verified
+  by reading those two upstream implementations. 2.12.0 is not supported yet;
+  see [Decisions #39](docs/DECISIONS.md).
 - An HTTPS location for `manifest.json`, the full artifacts, and patches.
 - A Tauri updater signing key. Keep the private key out of source control.
 
@@ -322,22 +323,26 @@ constants, so it fails rather than drifts.
 | Architecture | macOS `aarch64` and Windows `x86_64` **demonstrated**; Intel macOS and Windows ARM64 not demonstrated |
 | Rust | 1.88 or newer |
 | `tauri` | 2 |
-| `tauri-plugin-updater` | `>=2.10.1, <2.11.0` |
+| `tauri-plugin-updater` | `>=2.10.1, <2.12.0` |
 | Release bundler | tauri-cli 2.10.1 (exact) |
 | Artifact representation | macOS `app-tar-gz-v1`; Windows `opaque-v1` |
 | Recompression recipe | macOS `tauri-app-tar-gz-v1` (`tar` 0.4.x into `flate2` with the zlib-rs backend); none for NSIS |
 | Delta backend | `zstd` |
 
 The updater range is narrow on purpose: six behaviours this plugin's safety
-depends on are observations about `tauri-plugin-updater` 2.10.1's implementation
-rather than guarantees of its API. A caret range would let any of them change
-while CI stayed green.
+depends on are observations about `tauri-plugin-updater`'s implementation
+rather than guarantees of its API. They were read in 2.10.1 and again, site by
+site, in 2.11.0. A caret range would let any of them change while CI stayed
+green. 2.12.0 changes one of them: its verifier also reads a signed version from
+the trusted comment, where this plugin keeps its release identity. That needs a
+design decision before it can be admitted (Decisions #39).
 
 **Pin `=2.10.1` if you want exactly the configuration this release tested.** The
 strongest evidence here is against that one version: its source was read for each
-of the six behaviours, and a test asserts *this repository's* lockfile resolves to
-it. Your project resolves the range independently, so a later 2.10.x is possible
-and untested by us. The consequences of drift are degradation rather than
+of the six behaviours, the real-install E2E runs ran against it, and a test
+asserts *this repository's* lockfile resolves to it. 2.11.0 is supported on the
+strength of the same source reading, and the `upstream updater / range-max` CI
+job runs the plugin's suite against it; no real-install E2E has used it. The consequences of drift are degradation rather than
 compromise — this plugin performs its own signature and identity verification
 regardless of upstream, so a changed upstream behaviour costs the delta path and
 falls back to a full download rather than weakening what gets installed — but if
