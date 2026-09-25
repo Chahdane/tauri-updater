@@ -19,13 +19,19 @@ async fn check_for_updates(app: tauri::AppHandle) -> Result<String, String> {
     update::run(&app).await
 }
 
+/// The latest update progress line, polled by the UI while an update runs.
+#[tauri::command]
+fn update_progress() -> String {
+    update::progress()
+}
+
 fn main() {
     let delta_builder = tauri_plugin_updater_delta::Builder::new();
     #[cfg(feature = "e2e-control")]
     let delta_builder = control::configure_delta(delta_builder);
 
     let builder = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![check_for_updates])
+        .invoke_handler(tauri::generate_handler![check_for_updates, update_progress])
         // The official updater still owns checking and installing.
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Ours makes the download smaller when it can.
