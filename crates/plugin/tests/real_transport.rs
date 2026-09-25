@@ -202,6 +202,7 @@ fn run(
             base,
             cache: None,
             installed_app: None,
+            seeded_installer: None,
             app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),

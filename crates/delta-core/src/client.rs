@@ -91,6 +91,16 @@ pub struct PlanContext<'a> {
     /// base. See `docs/DECISIONS.md` #37.
     pub installed_app: Option<&'a Path>,
 
+    /// The installer that installed the running version, kept by the
+    /// application's own installer, when the host knows where.
+    ///
+    /// A second source for the **direct** path's base, tried only when the
+    /// cache cannot supply the one a patch was made against: above all on
+    /// Windows before the first update, when nothing is cached yet. Used only
+    /// for an opaque representation and only if its size and BLAKE3 equal the
+    /// base the patch declares. Never cached. See `docs/DECISIONS.md` #41.
+    pub seeded_installer: Option<&'a Path>,
+
     /// Base64 minisign public key, as in `tauri.conf.json`.
     ///
     /// Needed here rather than only at install time, because a cached base is
@@ -556,6 +566,20 @@ pub fn plan_update(
         Some(base) => base.to_path_buf(),
         None => match cached_direct_base(ctx, patch, space.path(), &binding) {
             Ok(base) => base,
+            Err(cache_reason) if ctx.seeded_installer.is_some() => {
+                match seeded_direct_base(ctx, patch, &binding) {
+                    Ok(base) => base,
+                    Err(seed_reason) => {
+                        return fallback(
+                            last_reason.or(Some(Error::Manifest(format!(
+                                "no usable base for the direct patch: cached base: \
+                                 {cache_reason}; seeded installer: {seed_reason}"
+                            )))),
+                            attempted,
+                        )
+                    }
+                }
+            }
             // The tar path's reason first when there is one. It ran earlier and
             // it is the cheaper path, so why *it* declined is what a reader
             // wants -- "the recipe is one this build cannot perform" explains
@@ -652,6 +676,72 @@ pub fn fetch_compressed_full(
     let _ = std::fs::remove_file(&compressed);
     let _ = std::fs::remove_file(&empty);
     result
+}
+
+/// Use the installer the application kept at install time as a direct base.
+///
+/// The Windows counterpart of [`tar_base_from_installed_app`]: a way for the
+/// first update to be a delta when nothing is cached. The seed is a file any
+/// process running as this user can replace, so it is untrusted exactly as
+/// the cache is. It must be the base the patch was made against by size and
+/// BLAKE3, checked before the patch is downloaded, and the reconstruction is
+/// then gated by the target digest, the signature and the release identity
+/// like every other delta. It is never written to the cache, which only holds
+/// artifacts whose signature it can re-check. See `docs/DECISIONS.md` #41.
+fn seeded_direct_base(
+    ctx: &PlanContext<'_>,
+    patch: &crate::manifest::Patch,
+    binding: &crate::release_identity::ReleaseBinding,
+) -> Result<PathBuf, Error> {
+    let Some(seed) = ctx.seeded_installer else {
+        return Err(Error::Manifest("no seeded installer".to_owned()));
+    };
+
+    // The same economics as the cached direct base: a `.app.tar.gz` has a
+    // cheaper path of its own, and must not have a failed tar path relabelled
+    // as a successful direct one.
+    if ctx
+        .cache
+        .is_some_and(|cache| cache.representation() != CachedRepresentation::Opaque)
+    {
+        return Err(Error::Manifest(
+            "the seeded installer is only a base for an opaque artifact".to_owned(),
+        ));
+    }
+    if let Some(signed) = binding.identity() {
+        signed
+            .check_representation(crate::release_identity::REPRESENTATION_OPAQUE_V1)
+            .map_err(|e| Error::ReleaseIdentity(e.to_string()))?;
+    }
+
+    let Some((declared_blake3, declared_size)) = patch.declared_base() else {
+        return Err(Error::Manifest(
+            "the patch declares no base installer, so the seed cannot be matched \
+             against it before downloading"
+                .to_owned(),
+        ));
+    };
+
+    // Size first: it is free, and it rejects every other version's installer
+    // without reading a byte of it.
+    let size = std::fs::metadata(seed)
+        .map_err(|e| Error::io("stat", seed, e))?
+        .len();
+    if size != declared_size {
+        return Err(Error::UnexpectedOutputSize {
+            expected: declared_size,
+            actual: size,
+        });
+    }
+    let digest = FileHash::of_file(seed)?;
+    if digest.to_hex() != declared_blake3 {
+        return Err(Error::ChecksumMismatch {
+            path: seed.to_path_buf(),
+            expected: declared_blake3.to_owned(),
+            actual: digest.to_hex(),
+        });
+    }
+    Ok(seed.to_path_buf())
 }
 
 /// Materialise the managed cache's ACTIVE artifact as a direct-patch base.
@@ -1188,6 +1278,7 @@ mod tests {
                 base,
                 cache: None,
                 installed_app: None,
+                seeded_installer: None,
                 pubkey: "",
                 app_id: APP_ID,
                 work_dir,

@@ -8,7 +8,9 @@
 # 1.0.0 -> 1.0.1 -> 1.0.2 in place, through the real NSIS installer Tauri
 # invokes, and the cache has to carry the base from one transition to the next.
 #
-# **Transition 1 must select Full and transition 2 must select DirectDelta.**
+# **Transition 1 must select DirectDelta from the installer seeded at install
+# time (docs/DECISIONS.md #41), transition 2 DirectDelta from the cache, and a
+# corrupted cache with no seed must degrade to Full.**
 # Asserting the installed bytes alone cannot tell those apart -- both produce
 # the published installer -- and an updater that silently downloaded everything
 # would pass a hash-only check twice. That is not hypothetical; it is what the
@@ -294,9 +296,18 @@ echo "   1.0.1  $H_101"
 echo "   1.0.2  $H_102"
 echo
 
-# ---- transition 1: empty cache must select Full --------------------------
+seed_hash() {
+  local seed
+  seed="$(dirname "$APP_EXE")/delta-seed/installer.exe"
+  [ -f "$seed" ] && sha256sum "$seed" | awk '{print $1}' || echo "no-seed"
+}
+SETUP_100="$(sha256sum "$OUT/v1.0.0/$PRODUCT-setup.exe" | awk '{print $1}')"
+SETUP_101="$(sha256sum "$OUT/v1.0.1/$PRODUCT-setup.exe" | awk '{print $1}')"
 
-echo "== transition 1: 1.0.0 -> 1.0.1, cache EMPTY =="
+# ---- transition 1: empty cache, seeded installer, must select DirectDelta ---
+
+echo "== transition 1: 1.0.0 -> 1.0.1, cache EMPTY, installer seeded =="
+check "the installer hook kept the 1.0.0 installer" "$SETUP_100" "$(seed_hash)"
 : > "$SCRATCH/requests.log"
 launch "manifest-1.0.1.served.json"
 check "running version" "1.0.0" "$(ask version)"
@@ -314,15 +325,18 @@ OUTCOME1="$(journal)"
 wait_for_installed "$H_101" || true
 T1_END=$(python -c 'import time;print(time.time())')
 
-# The load-bearing assertion. No valid base exists, so the direct path must not
-# be taken.
-check "selected path is FULL" "full" "$OUTCOME1"
+# The load-bearing assertion. The cache is empty, so the only base that can
+# make this a delta is the installer the hook kept.
+check "selected path is a DIRECT DELTA from the seed" "delta" "$OUTCOME1"
 REQUESTS1="$(cat "$SCRATCH/requests.log")"
-contains "the full installer was downloaded" "/v1.0.1/$PRODUCT-setup.exe" "$REQUESTS1"
-not_contains "no patch was downloaded" "/patch-1.0.0-1.0.1.zst" "$REQUESTS1"
+contains "the patch was downloaded" "/patch-1.0.0-1.0.1.zst" "$REQUESTS1"
+not_contains "the full installer was NOT downloaded" "/v1.0.1/$PRODUCT-setup.exe" "$REQUESTS1"
 
 kill_app
 check "installed executable is now 1.0.1" "$H_101" "$(installed_hash)"
+# The updater ran the 1.0.1 installer silently; the hook must have replaced the
+# seed, so it keeps describing the installed version.
+check "the seed is now the 1.0.1 installer" "$SETUP_101" "$(seed_hash)"
 
 echo "   -- relaunch as 1.0.1, which is what licenses the promotion --"
 launch "manifest-1.0.1.served.json"
@@ -405,6 +419,8 @@ open(p, "wb").write(bytes(b))
 PY
   echo "     (corrupted $(basename "$BLOB"))"
 
+  # Without this the seed would supply the base and hide the cache failure.
+  rm -rf "$(dirname "$APP_EXE")/delta-seed"
   : > "$SCRATCH/requests.log"
   launch "manifest-1.0.2.served.json"
   trigger
@@ -443,7 +459,7 @@ json.dump({
     "main_binary_sha256": {"1.0.0": h100, "1.0.1": h101, "1.0.2": h102},
     "transition_1": {
         "from": "1.0.0", "to": "1.0.1",
-        "cache_state_before": "EMPTY",
+        "cache_state_before": "EMPTY, installer seeded",
         "selected_path": outcome1,
         "seconds": round(float(t1e) - float(t1s), 3),
     },
@@ -453,7 +469,7 @@ json.dump({
         "selected_path": outcome2,
         "seconds": round(float(t2e) - float(t2s), 3),
     },
-    "degradation_corrupt_cache_blob": {"selected_path": outcome3},
+    "degradation_corrupt_cache_blob_no_seed": {"selected_path": outcome3},
     "cache_bytes_on_disk": du(cache),
     "build": versions,
 }, open(report, "w"), indent=2)

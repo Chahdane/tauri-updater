@@ -1974,3 +1974,51 @@ The size of the copy for a real uncompressed NSIS installer. The compression
 study's `zstd_19` estimate and the next release will measure it. The copy is
 published only if it is smaller than the installer, so an unhelpful one is
 never offered.
+
+## 41. The Windows installer keeps a copy of itself for the first update
+
+**Decided:** 2026-09-25 · **Status:** active · **The Windows counterpart of #37**
+
+**Decision:** the example's NSIS installer runs a `NSIS_HOOK_POSTINSTALL`
+hook (`examples/desktop-app/windows/delta-seed.nsh`) that copies the running
+installer to `<install dir>\delta-seed\installer.exe`. When the managed cache
+cannot supply a direct patch's base, the plugin may use that file instead,
+only for an `opaque-v1` artifact and only if its size and BLAKE3 equal the base
+the patch declares. It is checked before the patch is downloaded and never
+written to the cache. Uninstall removes it.
+
+### Why
+
+Before this, every Windows installation's first update was Full because
+nothing was cached, and with `compression: "none"` that Full download is the
+largest one there is. The installer that installed the app *is* the base the
+next release's patch was generated against, and NSIS knows where it is.
+
+### Why it is safe
+
+The same argument as #37. The seed is a file anything running as this user
+can replace, so it is untrusted exactly as the cache is. A wrong seed fails
+the declared-base check and costs nothing; a right seed only enables a
+reconstruction whose output must still match the target digest, the
+signature and the release identity. It is never cached, because the cache only
+holds artifacts whose signature it can re-check (#24, #30).
+
+### Why it keeps working
+
+Tauri's updater runs each new installer silently, and the hook runs then too,
+so the seed is always the installer of the version now installed. If the cache
+is lost, the seed still supplies the base. The Windows E2E asserts both: the
+first transition is a DirectDelta from the seed, and afterwards the seed is the
+new installer.
+
+### Costs
+
+- Disk: one copy of the uncompressed installer in the install directory.
+- It applies to apps that ship the hook. It is opt-in configuration, not
+  something the plugin can add on its own.
+- A user who installed from a *different* installer (for example a separately
+  compressed website download) gets no match and a Full first update, now a
+  compressed one (#40).
+
+**Revisit when:** Tauri offers a supported place for installer-side state, or
+the disk cost matters more than the first-update download.
