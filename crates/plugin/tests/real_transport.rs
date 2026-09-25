@@ -201,6 +201,7 @@ fn run(
             pubkey: &w.pubkey,
             base,
             cache: None,
+            installed_app: None,
             app_id: "dev.example.testapp",
             work_dir: work,
             limits: Limits::default(),

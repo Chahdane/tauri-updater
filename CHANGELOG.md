@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-update TarDelta on macOS (unproven on a real install).** With no
+  usable cached base, the tar path rebuilds the base tar from the installed
+  `.app` using `tauri-bundler`'s own `tar::Builder` call. It is used only if
+  the tar and its `tauri-app-tar-gz-v1` recompression match the size and
+  BLAKE3 the patch declares for its base; otherwise the update is Full. The
+  rebuilt base is never cached. See DECISIONS #37.
+- Engine API: `PlanContext` and the `test-support` `Context` gain an
+  `installed_app` field. `tauri-updater-delta-core` now depends on `tar`
+  (already present in every plugin build via `tauri-plugin-updater`). The
+  application-facing plugin API is unchanged.
+
 ### Changed
 
 - `delta-release` accepts several predecessor groups in one invocation and

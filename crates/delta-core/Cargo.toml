@@ -26,12 +26,15 @@ semver.workspace = true
 tempfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The writer tauri-bundler uses. Rebuilding a base tar from an installed .app
+# repeats its exact call (DECISIONS #37); the recompression tests also use it
+# as the reference writer. Already in every plugin build via
+# tauri-plugin-updater, so this adds no new code to the tree.
+tar = "0.4"
 thiserror.workspace = true
 zstd.workspace = true
 
 [dev-dependencies]
 minisign.workspace = true
-# The reference writer the recompression tests compare against.
-tar = "0.4"
 tauri-updater-delta-fixtures.workspace = true
 tempfile.workspace = true
