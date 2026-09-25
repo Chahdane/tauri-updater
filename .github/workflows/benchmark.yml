@@ -6,6 +6,10 @@ name: Delta size benchmark
 on:
   workflow_dispatch:
     inputs:
+      fixture:
+        description: "Also regenerate the macOS recompression fixture (macOS job)"
+        type: boolean
+        default: false
       bsdiff:
         description: "Also measure bsdiff patches (research only)"
         type: boolean
@@ -62,6 +66,19 @@ jobs:
         env:
           DELTA_BENCH_BSDIFF: ${{ inputs.bsdiff && '1' || '0' }}
         run: ./examples/desktop-app/e2e/benchmark.sh "$RUNNER_TEMP/delta-benchmark"
+
+      - name: Regenerate the macOS recompression fixture
+        if: inputs.fixture && runner.os == 'macOS'
+        shell: bash
+        run: ./examples/desktop-app/e2e/make-macos-fixture.sh "$RUNNER_TEMP/macos-fixture"
+
+      - name: Keep the regenerated fixture
+        if: inputs.fixture && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-recompression-fixture
+          path: ${{ runner.temp }}/macos-fixture/
+          if-no-files-found: error
 
       - name: Keep the measurements
         uses: actions/upload-artifact@v4
