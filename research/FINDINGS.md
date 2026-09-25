@@ -850,3 +850,18 @@ comparison, with a feature-sized change and zlib and per-file LZMA added, is
 `examples/desktop-app/e2e/measure-nsis-compression.sh`, run manually by the
 `NSIS compression study` workflow. It has not been run yet. Options and
 trade-offs: [NSIS_COMPRESSION.md](NSIS_COMPRESSION.md).
+
+### F41 — tauri-plugin-updater 2.11.0 keeps all six load-bearing behaviours; 2.12.0 does not · **DEMONSTRATED by source reading**
+
+The published 2.11.0 and 2.12.0 crates were read against 2.10.1 at each of the
+six sites in `crates/plugin/tests/upstream_compat.rs`. 2.11.0: three function
+bodies byte-identical, the verifier's steps unchanged (return type only),
+`install` still unverified, `raw_json` still retained, `Update`'s public fields
+identical. 2.12.0: the verifier additionally parses the minisign trusted
+comment for a tab-separated `version:` field (`signed_version`,
+`verify_signed_version`), with an opt-in `requireSignedVersion`. This
+project's `delta-v1` identity has no such field (DECISIONS #39).
+
+*Not yet shown:* the plugin's test suite passing against 2.11.0. The
+`upstream updater / range-max` CI job runs it; it had not run when this entry
+was written.

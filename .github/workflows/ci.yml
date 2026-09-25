@@ -186,6 +186,48 @@ jobs:
           [ "$count" -eq 2 ] \
             || { echo "::error::expected 2 compile_fail doctests, saw $count"; exit 1; }
 
+  # ---------------------------------------------------------------------------
+  # The plugin's suite against newer tauri-plugin-updater releases.
+  #
+  # `range-max` resolves the newest version the declared range admits and must
+  # pass: it is what a consumer's `cargo update` can pick. `latest` forces the
+  # newest published release, including one outside the range. It is an early
+  # warning and may fail: the range only widens after a person re-reads the six
+  # upstream behaviours in crates/plugin/tests/upstream_compat.rs, which is
+  # expected to fail here until then. See docs/DECISIONS.md #21 and #39.
+  # ---------------------------------------------------------------------------
+  upstream-updater:
+    name: upstream updater / ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.target == 'latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [range-max, latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \n            libwebkit2gtk-4.1-dev \n            libgtk-3-dev \n            libayatana-appindicator3-dev \n            librsvg2-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: upstream-${{ matrix.target }}
+      - name: Resolve the updater version under test
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.target }}" = latest ]; then
+            latest="$(curl -fsSL -A "tauri-updater-delta-ci" \n              https://crates.io/api/v1/crates/tauri-plugin-updater \n              | python3 -c 'import json,sys; print(json.load(sys.stdin)["crate"]["max_stable_version"])')"
+            sed -i -E "s/^tauri-plugin-updater = .*/tauri-plugin-updater = \"=${latest}\"/" \n              crates/plugin/Cargo.toml
+          fi
+          cargo update -p tauri-plugin-updater
+          resolved="$(cargo tree -p tauri-plugin-updater-delta -i tauri-plugin-updater \n            --depth 0 --all-features | head -1)"
+          echo "::notice title=Updater under test (${{ matrix.target }})::$resolved"
+      - name: Test the plugin against it
+        run: cargo test -p tauri-plugin-updater-delta --all-features -- --nocapture
+
   msrv:
     name: msrv
     runs-on: ubuntu-latest
