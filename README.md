@@ -14,7 +14,7 @@ when a delta can't be used it falls back to a normal full download.
 
 - 🪟 Windows x86_64 NSIS and 🍎 macOS `.app.tar.gz`
 - 📉 Benchmark with ~6 MiB of new media: **7.0 MB instead of 106 MB** on
-  Windows, 6.9 MB instead of 78 MB on macOS (research F42)
+  Windows, 6.9 MB instead of 78 MB on macOS ([research F42](research/FINDINGS.md#f42--patch-sizes-for-an-app-with-a-realistic-payload--demonstrated-for-the-benchmark-app))
 - 🔐 Signature re-verified, downgrades refused, untrusted cache re-checked
 - ⚡ Two `.plugin(...)` lines in your app plus a release step → [Quickstart](#quickstart)
 
@@ -40,7 +40,7 @@ and release gate have not happened yet.
   the exact expected executable.
 - With the installer hook, a real Windows NSIS installation with an **empty
   cache** took its first update as DirectDelta from the installer kept at
-  install time, and the updater's own install refreshed that copy (research F46).
+  install time, and the updater's own install refreshed that copy ([research F46](research/FINDINGS.md#f46--the-first-windows-update-is-a-delta-from-an-installer-kept-at-install-time--demonstrated-on-a-real-windows-x86_64-nsis-install)).
 - The original solid-LZMA NSIS experiment produced patches that were 98.2520%
   and 98.2523% of Full. The Windows updater artifact now disables NSIS
   compression so unchanged bytes remain reusable, and the release tool refuses
@@ -60,12 +60,12 @@ string. On a benchmark app carrying ~88 MiB of bundled assets, with a
 feature-sized change that replaces and adds about 6 MiB of incompressible media
 and edits some data, the download was **6.6% of Full on Windows (7.0 of 106 MB)
 and 8.8% on macOS (6.9 of 78 MB)**; a client two releases behind paid about
-the same (research F42). That is one controlled payload, not a promise: a real
+the same ([research F42](research/FINDINGS.md#f42--patch-sizes-for-an-app-with-a-realistic-payload--demonstrated-for-the-benchmark-app)). That is one controlled payload, not a promise: a real
 application's ratio depends on how much of it changes.
 
 On Windows a first update can be a delta too, when the app ships the
 installer hook below, and a Full download is served from a zstd copy of about
-LZMA size (research F45, F46).
+LZMA size (research [F45](research/FINDINGS.md#f45--nsis-compression-settings-measured-together--demonstrated-for-the-example-app), [F46](research/FINDINGS.md#f46--the-first-windows-update-is-a-delta-from-an-installer-kept-at-install-time--demonstrated-on-a-real-windows-x86_64-nsis-install)).
 
 GitHub-hosted HTTPS Full→TarDelta, Apple Developer ID/notarized, and Windows
 Authenticode-signed end-to-end tests remain credential-bound validation gaps. See
