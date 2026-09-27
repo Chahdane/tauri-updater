@@ -1,4 +1,4 @@
-//! The v0.1 compatibility contract, checked against the files that define it.
+//! The compatibility contract, checked against the files that define it.
 //!
 //! # Why this is a test
 //!
@@ -152,7 +152,7 @@ fn the_readme_limits_client_support_to_demonstrated_targets() {
     ] {
         assert!(
             !readme.contains(forbidden),
-            "the README must not claim {forbidden:?} for v0.1"
+            "the README must not claim {forbidden:?}"
         );
     }
 }

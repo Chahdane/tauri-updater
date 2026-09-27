@@ -1,9 +1,5 @@
 # tauri-plugin-updater-delta
 
-Differential updates for Tauri v2. The plugin keeps Tauri's official update
-check and installer, but may reconstruct the exact published artifact from a
-smaller patch before handing it to `tauri-plugin-updater`.
-
 <p align="center">
   <img src="docs/assets/demo.gif" alt="A Tauri demo app updating from 1.3.0 to 1.4.0 with a 714 KB delta instead of the 15.9 MB full download" width="600">
 </p>
@@ -12,7 +8,21 @@ smaller patch before handing it to `tauri-plugin-updater`.
 instead of a 15.9 MB full download. The ratio depends on what changed between
 releases.</sub></p>
 
-This is pre-release software. The supported v0.1 paths are **macOS
+**Tauri's updater re-downloads the whole installer on every release.**
+This plugin downloads only what changed. Same manifest, same signing key, and
+when a delta can't be used it falls back to a normal full download.
+
+- 🪟 Windows x86_64 NSIS and 🍎 macOS `.app.tar.gz`
+- 📉 Benchmark with ~6 MiB of new media: **7.0 MB instead of 106 MB** on
+  Windows, 6.9 MB instead of 78 MB on macOS (research F42)
+- 🔐 Signature re-verified, downgrades refused, untrusted cache re-checked
+- ⚡ Two `.plugin(...)` lines in your app plus a release step → [Quickstart](#quickstart)
+
+Differential updates for Tauri v2. The plugin keeps Tauri's official update
+check and installer, but may reconstruct the exact published artifact from a
+smaller patch before handing it to `tauri-plugin-updater`.
+
+This is pre-release software. The supported v0.2 paths are **macOS
 `.app.tar.gz`** and **Windows x86_64 NSIS `-setup.exe`**. Linux, Windows MSI,
 and Windows ARM64 client support are not claimed, and the final security audit
 and release gate have not happened yet.
@@ -190,7 +200,7 @@ async fn check_for_updates(app: tauri::AppHandle) -> Result<String, String> {
 ```
 
 For a frontend button, expose that Rust function as a normal `#[tauri::command]`
-and invoke it from the frontend. v0.1 is intentionally Rust-first; it does not
+and invoke it from the frontend. v0.2 is intentionally Rust-first; it does not
 add a second JS/TS updater SDK or expose identity, cache, and verification
 internals to frontend code. The complete version is
 [examples/desktop-app/src/update.rs](examples/desktop-app/src/update.rs).
@@ -346,14 +356,14 @@ Plain HTTP and explicit endpoint/base overrides exist only under the non-default
 `test-support` feature used by this repository's E2E harness. They are absent
 from a normal build.
 
-## Supported versions (v0.1)
+## Supported versions (v0.2)
 
 Everything below is a constraint the code actually enforces.
 `crates/plugin/tests/supported_versions.rs` checks this table against the
 dependency constraints, workspace fields, pinned CI environment and engine
 constants, so it fails rather than drifts.
 
-| | v0.1 |
+| | v0.2 |
 | --- | --- |
 | Client platform | macOS `.app.tar.gz`; Windows NSIS `-setup.exe` |
 | Architecture | macOS `aarch64` and Windows `x86_64` **demonstrated**; Intel macOS and Windows ARM64 not demonstrated |
