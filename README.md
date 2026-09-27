@@ -12,11 +12,11 @@ releases.</sub></p>
 This plugin downloads only what changed. Same manifest, same signing key, and
 when a delta can't be used it falls back to a normal full download.
 
-- 🪟 Windows x86_64 NSIS and 🍎 macOS `.app.tar.gz`
-- 📉 Benchmark with ~6 MiB of new media: **7.0 MB instead of 106 MB** on
+- Windows x86_64 NSIS and macOS `.app.tar.gz`
+- Benchmark with ~6 MiB of new media: **7.0 MB instead of 106 MB** on
   Windows, 6.9 MB instead of 78 MB on macOS ([research F42](research/FINDINGS.md#f42--patch-sizes-for-an-app-with-a-realistic-payload--demonstrated-for-the-benchmark-app))
-- 🔐 Signature re-verified, downgrades refused, untrusted cache re-checked
-- ⚡ Two `.plugin(...)` lines in your app plus a release step → [Quickstart](#quickstart)
+- Signature re-verified, downgrades refused, untrusted cache re-checked
+- Two `.plugin(...)` lines in your app plus a release step → [Quickstart](#quickstart)
 
 Differential updates for Tauri v2. The plugin keeps Tauri's official update
 check and installer, but may reconstruct the exact published artifact from a
