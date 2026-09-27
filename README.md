@@ -4,6 +4,14 @@ Differential updates for Tauri v2. The plugin keeps Tauri's official update
 check and installer, but may reconstruct the exact published artifact from a
 smaller patch before handing it to `tauri-plugin-updater`.
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="A Tauri demo app updating from 1.3.0 to 1.4.0 with a 714 KB delta instead of the 15.9 MB full download" width="600">
+</p>
+
+<p align="center"><sub>A small demo app taking a 1.3.0 → 1.4.0 update as a 714 KB delta
+instead of a 15.9 MB full download. The ratio depends on what changed between
+releases.</sub></p>
+
 This is pre-release software. The supported v0.1 paths are **macOS
 `.app.tar.gz`** and **Windows x86_64 NSIS `-setup.exe`**. Linux, Windows MSI,
 and Windows ARM64 client support are not claimed, and the final security audit
