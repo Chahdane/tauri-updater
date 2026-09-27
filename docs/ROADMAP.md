@@ -1,6 +1,6 @@
 # Roadmap
 
-v0.1 covers the demonstrated macOS `.app.tar.gz` and Windows x86_64 NSIS
+v0.2 covers the demonstrated macOS `.app.tar.gz` and Windows x86_64 NSIS
 `-setup.exe` paths. Engine tests run on all three desktop CI platforms, but
 that is not a Linux client-support claim.
 
